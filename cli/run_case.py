@@ -119,11 +119,15 @@ async def _check_llm(args: argparse.Namespace) -> int:
         r = await llm.chat([{"role": "user", "content": "只回复两个字:正常"}])
     except Exception as e:  # noqa: BLE001
         print(f"\n❌ 调用失败:{type(e).__name__}: {e}")
-        print("   常见原因:模型名缺 provider 前缀 / api_base 路径(是否要 /v1) / api_key 错误 / 网关不可达。")
+        print(
+            "   常见原因:模型名缺 provider 前缀 / api_base 路径(是否要 /v1) / api_key 错误 / 网关不可达。"
+        )
         return 1
     print(f"\n✅ 连通正常。")
     print(f"   回复: {r.content!r}")
-    print(f"   tokens: prompt={r.usage.prompt_tokens} completion={r.usage.completion_tokens} total={r.usage.total_tokens}")
+    print(
+        f"   tokens: prompt={r.usage.prompt_tokens} completion={r.usage.completion_tokens} total={r.usage.total_tokens}"
+    )
     return 0
 
 
@@ -165,7 +169,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--max-steps", type=int, default=30, help="ReAct 最大步数")
     p.add_argument("--context", default="", help="附加业务上下文(注入 Prompt)")
     p.add_argument("--model", default=None, help="LLM 模型名(默认读 env LLM_MODEL)")
-    p.add_argument("--api-base", default=None, help="LLM API base/base_url(默认读 env LLM_API_BASE)")
+    p.add_argument(
+        "--api-base", default=None, help="LLM API base/base_url(默认读 env LLM_API_BASE)"
+    )
     p.add_argument("--api-key", default=None, help="LLM API key(默认读 env LLM_API_KEY)")
     p.add_argument("--spec-only", action="store_true", help="只生成并打印 TestSpec,不执行")
     p.add_argument("--check-llm", action="store_true", help="只做 LLM 连通性自检,不跑用例")

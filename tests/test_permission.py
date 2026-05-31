@@ -102,7 +102,7 @@ async def test_sync_approver_supported():
 
 async def test_agent_blocks_denied_tool_and_does_not_execute():
     from harness.agent import TestCaseAgent
-    from tests.test_agent import SNAPSHOT_OK, _FakeMCP, _case, _resp, _spec, _ScriptedLLM
+    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
 
     chk = PermissionChecker(approver=lambda req: False)  # 一律拒绝
     mcp = _FakeMCP(SNAPSHOT_OK)
@@ -126,7 +126,7 @@ async def test_agent_blocks_denied_tool_and_does_not_execute():
 
 async def test_agent_trust_mode_executes():
     from harness.agent import TestCaseAgent
-    from tests.test_agent import SNAPSHOT_OK, _FakeMCP, _case, _resp, _spec, _ScriptedLLM
+    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
 
     chk = PermissionChecker(trust_mode=True)
     mcp = _FakeMCP(SNAPSHOT_OK)

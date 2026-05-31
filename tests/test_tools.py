@@ -119,7 +119,7 @@ async def test_has_and_names():
 
 async def test_agent_routes_custom_tool_call():
     from harness.agent import TestCaseAgent
-    from tests.test_agent import SNAPSHOT_OK, _FakeMCP, _case, _resp, _spec, _ScriptedLLM
+    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
 
     reg = ToolRegistry()
 

@@ -116,7 +116,7 @@ class _RecordingLLM:
 
 async def test_agent_injects_domain_skill_into_system_prompt():
     from harness.agent import TestCaseAgent
-    from tests.test_agent import SNAPSHOT_OK, _FakeMCP, _case, _resp, _spec
+    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _spec
 
     mgr = SkillManager()
     mgr.register(DomainSkill(name="域", content="DOMAIN_MARK_业务术语"))
@@ -135,7 +135,7 @@ async def test_agent_injects_domain_skill_into_system_prompt():
 
 async def test_agent_pageskill_activates_after_navigation():
     from harness.agent import TestCaseAgent
-    from tests.test_agent import SNAPSHOT_OK, _FakeMCP, _case, _resp, _spec
+    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _spec
 
     # SNAPSHOT_OK 的 Page URL 是 https://intranet/order/list
     mgr = SkillManager()

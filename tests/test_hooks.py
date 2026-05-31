@@ -99,8 +99,8 @@ def test_hookresult_bool():
 
 
 async def test_agent_before_case_failure_skips_execution():
-    from tests.test_agent import SNAPSHOT_OK, _FakeMCP, _case, _spec, _ScriptedLLM, _resp
     from harness.agent import TestCaseAgent
+    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
 
     mgr = HookManager()
 
@@ -120,8 +120,8 @@ async def test_agent_before_case_failure_skips_execution():
 
 
 async def test_agent_after_case_runs_on_success():
-    from tests.test_agent import SNAPSHOT_OK, _FakeMCP, _case, _spec, _ScriptedLLM, _resp
     from harness.agent import TestCaseAgent
+    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
 
     mgr = HookManager()
     cleaned = []
