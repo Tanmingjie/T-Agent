@@ -58,9 +58,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 实施进度
 
 - 阶段一 ✅ T-01~T-10(主干跑通,断言驱动 PASS/FAIL;saucedemo 端到端验证过)
-- 阶段二 ✅ T-11~T-19(自愈 / Context Compact / Hooks / Session+LoginHook / 预置条件分类器 / Skill / Permission / Orchestrator / Custom Tool)。单测 238 passed。**待用真实用例做阶段二验收**。
-- **下一步:阶段三**(T-20 CodeGenerator+BDD / T-21 SQLModel 持久化 / T-22 Page Intelligence 词汇表)
-- 阶段四/五:工程化界面 / 用例管理平台集成(未开始)
+- 阶段二 ✅ T-11~T-19(自愈 / Context Compact / Hooks / Session+LoginHook / 预置条件分类器 / Skill / Permission / Orchestrator / Custom Tool)。四条验收标准 saucedemo 真实演示通过(见 `examples/acceptance_stage2.py`)。
+- 阶段三 ✅ T-20~T-22(`codegen/`BDDGenerator / `storage/db.py` SQLModel 持久化 / `intelligence/`词汇表+Scanner)。
+- **下一步:阶段四**(工程化界面 T-23~T-27:FastAPI 路由+SSE / React 控制台)。阶段五(用例管理平台集成)规格明确"现在不做",只预留 `external_id`。
+- 全量单测 **274 passed / 1 skipped**。
 
 ### 待确认的自主决策(Sprint 2-C,趁我休息时按合理默认实现)
 - Permission:**无 approver 时高危操作默认拒绝**;控制工具(mark_step_done)豁免权限检查。
