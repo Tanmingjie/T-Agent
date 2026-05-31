@@ -1,0 +1,27 @@
+# ── 核心运行时 ───────────────────────────────────────────────
+# LLM 接入(tool_call 容错 / 统一切换接口)
+litellm>=1.51.0
+# MCP 官方 Python SDK —— stdio 连接 playwright-mcp(锁主版本,避免协议漂移)
+mcp>=1.1.0,<2.0.0
+# 数据结构 / 持久化(业务代码不直接写 SQL)
+pydantic>=2.9.0
+sqlmodel>=0.0.22
+aiosqlite>=0.20.0
+# Excel 容错解析
+openpyxl>=3.1.5
+
+# ── 输出层 / 代码生成(阶段三起用) ─────────────────────────────
+pytest-bdd>=8.1.0
+playwright>=1.49.0
+black>=24.10.0
+isort>=5.13.2
+
+# ── 后端 API(阶段四起用) ──────────────────────────────────────
+fastapi>=0.115.0
+uvicorn[standard]>=0.32.0
+
+# ── 测试 ────────────────────────────────────────────────────
+pytest>=8.3.0
+pytest-asyncio>=0.24.0
+
+# 浏览器层另需 Node 侧:  npx @playwright/mcp   (stdio 模式,勿用 CDP HTTP)

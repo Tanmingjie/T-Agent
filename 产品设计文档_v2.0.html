@@ -1,0 +1,649 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 自动化测试平台 — 产品设计文档 v2.0</title>
+<style>
+  :root {
+    --bg: #0f1419;
+    --panel: #161b22;
+    --panel2: #1c2128;
+    --border: #2d333b;
+    --text: #e6edf3;
+    --muted: #8b949e;
+    --dim: #6e7681;
+    --primary: #6366f1;
+    --accent: #58a6ff;
+    --teal: #2dd4bf;
+    --green: #3fb950;
+    --purple: #bc8cff;
+    --amber: #f0b429;
+    --red: #f85149;
+    --code-bg: #0d1117;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--bg); color: var(--text);
+    font-family: -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    font-size: 15px; line-height: 1.7;
+    display: flex;
+  }
+
+  /* ── 侧边导航 ── */
+  nav {
+    position: fixed; top: 0; left: 0; width: 260px; height: 100vh;
+    background: var(--panel); border-right: 1px solid var(--border);
+    overflow-y: auto; padding: 24px 0; z-index: 100;
+  }
+  nav .brand {
+    padding: 0 22px 18px; border-bottom: 1px solid var(--border); margin-bottom: 12px;
+  }
+  nav .brand h1 { font-size: 16px; color: var(--text); font-weight: 700; line-height: 1.4; }
+  nav .brand span { font-size: 12px; color: var(--dim); }
+  nav a {
+    display: block; padding: 7px 22px; color: var(--muted);
+    text-decoration: none; font-size: 13.5px; border-left: 2px solid transparent;
+    transition: all .15s;
+  }
+  nav a:hover { color: var(--text); background: var(--panel2); }
+  nav a.sub { padding-left: 38px; font-size: 12.5px; color: var(--dim); }
+  nav a.section-title { color: var(--accent); font-weight: 600; margin-top: 8px; }
+
+  /* ── 主内容 ── */
+  main { margin-left: 260px; padding: 48px 56px; max-width: 1000px; width: 100%; }
+
+  h2 {
+    font-size: 26px; color: var(--text); font-weight: 700; margin: 48px 0 18px;
+    padding-bottom: 12px; border-bottom: 2px solid var(--primary);
+  }
+  h2:first-child { margin-top: 0; }
+  h3 { font-size: 19px; color: var(--accent); font-weight: 650; margin: 32px 0 12px; }
+  h4 { font-size: 16px; color: var(--teal); font-weight: 600; margin: 22px 0 10px; }
+  p { margin: 10px 0; color: var(--text); }
+  strong { color: #fff; font-weight: 650; }
+
+  ul, ol { margin: 10px 0 10px 24px; }
+  li { margin: 5px 0; color: var(--text); }
+  li::marker { color: var(--accent); }
+
+  code {
+    background: var(--code-bg); color: var(--teal);
+    padding: 2px 6px; border-radius: 4px; font-size: 13px;
+    font-family: "SF Mono", Consolas, "Courier New", monospace;
+  }
+  pre {
+    background: var(--code-bg); border: 1px solid var(--border);
+    border-radius: 8px; padding: 16px 18px; overflow-x: auto;
+    margin: 14px 0; font-size: 13px; line-height: 1.7;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  pre code { background: none; padding: 0; color: var(--muted); }
+  .c-key { color: var(--purple); }
+  .c-val { color: var(--green); }
+  .c-cmt { color: var(--dim); }
+  .c-kw  { color: var(--accent); }
+
+  /* ── 表格 ── */
+  table { width: 100%; border-collapse: collapse; margin: 16px 0; font-size: 13.5px; }
+  th {
+    background: var(--panel2); color: var(--accent); text-align: left;
+    padding: 10px 12px; font-weight: 600; border: 1px solid var(--border);
+  }
+  td {
+    padding: 9px 12px; border: 1px solid var(--border);
+    color: var(--text); vertical-align: top; line-height: 1.6;
+  }
+  tr:nth-child(even) td { background: var(--panel); }
+
+  /* ── 标注框 ── */
+  .callout {
+    border-radius: 8px; padding: 14px 18px; margin: 16px 0;
+    border-left: 4px solid; font-size: 14px;
+  }
+  .callout strong { display: inline; }
+  .c-info { background: rgba(88,166,255,.08); border-color: var(--accent); }
+  .c-warn { background: rgba(240,180,41,.08); border-color: var(--amber); }
+  .c-danger { background: rgba(248,81,73,.08); border-color: var(--red); }
+  .c-ok { background: rgba(63,185,80,.08); border-color: var(--green); }
+  .c-tip { background: rgba(188,140,255,.08); border-color: var(--purple); }
+  .callout .label { font-weight: 700; margin-right: 6px; }
+  .c-info .label { color: var(--accent); }
+  .c-warn .label { color: var(--amber); }
+  .c-danger .label { color: var(--red); }
+  .c-ok .label { color: var(--green); }
+  .c-tip .label { color: var(--purple); }
+
+  /* ── 卡片网格 ── */
+  .grid { display: grid; gap: 14px; margin: 16px 0; }
+  .grid-2 { grid-template-columns: 1fr 1fr; }
+  .grid-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .card {
+    background: var(--panel); border: 1px solid var(--border);
+    border-radius: 8px; padding: 14px 16px;
+  }
+  .card h4 { margin-top: 0; font-size: 14.5px; }
+  .card ul { margin: 8px 0 0 18px; }
+  .card li { font-size: 13px; color: var(--muted); }
+
+  /* ── 流程步骤 ── */
+  .flow { display: flex; flex-wrap: wrap; align-items: stretch; gap: 8px; margin: 18px 0; }
+  .flow-node {
+    flex: 1; min-width: 130px; background: var(--panel2);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 12px 14px; position: relative;
+  }
+  .flow-node .num {
+    display: inline-block; width: 22px; height: 22px; line-height: 22px;
+    text-align: center; border-radius: 50%; background: var(--primary);
+    color: #fff; font-size: 12px; font-weight: 700; margin-bottom: 6px;
+  }
+  .flow-node .t { font-weight: 650; font-size: 13.5px; color: var(--text); }
+  .flow-node .d { font-size: 12px; color: var(--dim); margin-top: 4px; line-height: 1.5; }
+
+  /* ── 徽章 ── */
+  .badge {
+    display: inline-block; border-radius: 4px; padding: 1px 8px;
+    font-size: 11.5px; font-weight: 700; margin-left: 6px; vertical-align: middle;
+  }
+  .b-p0 { background: rgba(248,81,73,.18); color: var(--red); }
+  .b-p1 { background: rgba(240,180,41,.18); color: var(--amber); }
+  .b-p2 { background: rgba(88,166,255,.18); color: var(--accent); }
+  .b-new { background: rgba(63,185,80,.18); color: var(--green); }
+
+  /* ── 封面 ── */
+  .cover {
+    text-align: center; padding: 60px 0 40px; border-bottom: 1px solid var(--border);
+    margin-bottom: 20px;
+  }
+  .cover h1 { font-size: 38px; color: #fff; font-weight: 800; margin-bottom: 12px; }
+  .cover .sub { font-size: 18px; color: var(--accent); margin-bottom: 6px; }
+  .cover .ver { font-size: 14px; color: var(--dim); }
+  .cover .meta {
+    display: inline-grid; grid-template-columns: auto auto; gap: 8px 0;
+    margin-top: 28px; text-align: left; background: var(--panel);
+    border: 1px solid var(--border); border-radius: 10px; padding: 18px 24px;
+  }
+  .cover .meta .k { color: var(--accent); font-weight: 600; padding-right: 24px; font-size: 13.5px; }
+  .cover .meta .v { color: var(--text); font-size: 13.5px; }
+
+  .updated-tag {
+    display: inline-block; background: rgba(63,185,80,.15); color: var(--green);
+    font-size: 11px; font-weight: 700; padding: 2px 8px; border-radius: 4px;
+    margin-left: 8px; vertical-align: middle;
+  }
+
+  @media (max-width: 980px) {
+    nav { display: none; }
+    main { margin-left: 0; padding: 24px; }
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<nav>
+  <div class="brand">
+    <h1>AI 自动化测试平台</h1>
+    <span>产品设计文档 v2.0</span>
+  </div>
+  <a href="#overview" class="section-title">1. 产品概述</a>
+  <a href="#arch" class="section-title">2. 整体架构</a>
+  <a href="#arch-layers" class="sub">2.1 五层架构</a>
+  <a href="#arch-flow" class="sub">2.2 完整执行流</a>
+  <a href="#input" class="section-title">3. 输入层</a>
+  <a href="#input-excel" class="sub">3.1 Excel 格式</a>
+  <a href="#input-precond" class="sub">3.2 预置条件分类</a>
+  <a href="#spec" class="section-title">4. TestSpec</a>
+  <a href="#assertion" class="section-title">5. 断言机制 ★</a>
+  <a href="#pi" class="section-title">6. Page Intelligence</a>
+  <a href="#harness" class="section-title">7. Agent Harness</a>
+  <a href="#harness-session" class="sub">7.1 Session Profile</a>
+  <a href="#harness-react" class="sub">7.2 ReAct Loop</a>
+  <a href="#harness-heal" class="sub">7.3 Self-Healing</a>
+  <a href="#harness-subagent" class="sub">7.4 Subagent</a>
+  <a href="#harness-context" class="sub">7.5 Context Compact</a>
+  <a href="#harness-skill" class="sub">7.6 Skill / Prompt</a>
+  <a href="#harness-hooks" class="sub">7.7 Hooks</a>
+  <a href="#harness-tools" class="sub">7.8 Custom Tools</a>
+  <a href="#harness-perm" class="sub">7.9 Permission</a>
+  <a href="#output" class="section-title">8. 输出层</a>
+  <a href="#tech" class="section-title">9. 技术选型</a>
+  <a href="#data" class="section-title">10. 数据结构</a>
+  <a href="#plan" class="section-title">11. 实施计划</a>
+  <a href="#risk" class="section-title">12. 风险与约束</a>
+</nav>
+
+<main>
+
+<div class="cover">
+  <h1>AI 自动化测试平台</h1>
+  <div class="sub">产品设计文档</div>
+  <div class="ver">Product Design Document &nbsp;|&nbsp; v2.0</div>
+  <div class="meta">
+    <div class="k">产品定位</div><div class="v">内网 Web 业务测试自动化执行平台</div>
+    <div class="k">输入</div><div class="v">业务测试用例（Excel / 测试管理平台 API）</div>
+    <div class="k">输出</div><div class="v">测试执行结果 + pytest-bdd Playwright 测试代码</div>
+    <div class="k">LLM</div><div class="v">Qwen3 397B 本地部署，数据不出内网</div>
+    <div class="k">浏览器层</div><div class="v">playwright-mcp stdio 模式（绕过内网代理）</div>
+    <div class="k">部署方式</div><div class="v">私有化单机部署，单人工具</div>
+  </div>
+</div>
+
+<!-- ═══ 1. 产品概述 ═══ -->
+<h2 id="overview">1. 产品概述</h2>
+
+<h3>1.1 产品定位</h3>
+<p>面向测试工程师的<strong>内网 Web 自动化测试平台</strong>。输入业务测试用例（Excel / 测试管理平台），AI Agent 自动驱动浏览器执行，产出可长期维护的 <strong>pytest-bdd Playwright 测试代码</strong>。本地 LLM，私有化部署，数据不出内网。</p>
+
+<h3>1.2 核心价值</h3>
+<ul>
+  <li><strong>降低自动化门槛：</strong>测试工程师用业务用例直接驱动 AI 执行，无需手写 Playwright 代码</li>
+  <li><strong>测试资产沉淀：</strong>AI 执行录制自动转换为高质量 BDD 测试代码，供长期维护</li>
+  <li><strong>内网友好：</strong>playwright-mcp stdio 模式绕过公司代理，本地 LLM 数据不出网</li>
+  <li><strong>自愈能力：</strong>界面变化后 Agent 自动重新定位元素，减少人工维护选择器的成本</li>
+  <li><strong>可信断言：</strong>预期结果转为结构化断言，由规则引擎验证，PASS/FAIL 可复现可定位</li>
+</ul>
+
+<h3>1.3 边界约束</h3>
+<table>
+  <tr><th style="width:22%">类别</th><th>内容</th></tr>
+  <tr><td>不做</td><td>多人协作/账号体系、CI/CD 集成、TypeScript 代码生成、公网 LLM、跨浏览器（Firefox/WebKit）</td></tr>
+  <tr><td>暂不做（预留接口）</td><td>测试管理平台 API 对接、Page Object 模式生成、并发执行、报告导出 HTML/Excel、失败断点续跑</td></tr>
+  <tr><td>核心约束</td><td>私有化部署、本地 LLM（Qwen3 397B）、单人工具、playwright-mcp stdio、用例间串行执行</td></tr>
+</table>
+
+<!-- ═══ 2. 整体架构 ═══ -->
+<h2 id="arch">2. 整体架构</h2>
+
+<h3 id="arch-layers">2.1 五层架构概览</h3>
+<div class="flow">
+  <div class="flow-node"><span class="num">1</span><div class="t">输入层</div><div class="d">Excel / API → TestCase + 预置条件分类</div></div>
+  <div class="flow-node"><span class="num">2</span><div class="t">TestSpec 层</div><div class="d">结构化执行规格 + 断言翻译</div></div>
+  <div class="flow-node"><span class="num">3</span><div class="t">Page Intelligence</div><div class="d">词汇表 / 操作图谱 / 预解析</div></div>
+  <div class="flow-node"><span class="num">4</span><div class="t">Agent Harness</div><div class="d">ReAct + 自愈 + 断言验证</div></div>
+  <div class="flow-node"><span class="num">5</span><div class="t">输出层</div><div class="d">BDD 代码 + 执行记录</div></div>
+</div>
+<p>之上是<strong>工程化界面（Platform UI）</strong>，为每一层提供操作入口。</p>
+
+<h3 id="arch-flow">2.2 完整执行流（16 步）</h3>
+<table>
+  <tr><th style="width:6%">步骤</th><th style="width:22%">动作</th><th>说明 + 涉及的 Harness 机制</th></tr>
+  <tr><td>1</td><td>Excel 导入</td><td>openpyxl 解析 → TestCase 结构体（步骤/预置/预期拆分，容错）</td></tr>
+  <tr><td>2</td><td>预置条件分类</td><td>LLM 三分类：状态声明→Hook / 操作步骤→Given / 模糊→用户确认。结果记忆</td></tr>
+  <tr><td>3</td><td>用例预解析 + 断言翻译</td><td>结合词汇表生成 TestSpec：模糊词→精确元素，预期结果→结构化断言。用户确认</td></tr>
+  <tr><td>4</td><td>启动 TestCase Subagent</td><td><strong>Subagent 隔离</strong>：每用例独立 context，asyncio 协程</td></tr>
+  <tr><td>5</td><td>before_case Hooks</td><td><strong>Hooks</strong>：init_env_aw → LoginHook（Session Profile Cookie 复用）。失败即止</td></tr>
+  <tr><td>6</td><td>Prompt 组装 + Skill 注入</td><td><strong>Skill</strong>：Base + DomainSkill + Task(TestSpec) + ToolSkill + Hook 状态</td></tr>
+  <tr><td>7</td><td>Reason — LLM 推理</td><td><strong>ReAct</strong>：读 StepPlan + A11y Tree(截断) + PageSkill → 决策。记录 reasoning</td></tr>
+  <tr><td>8</td><td>Permission 检查</td><td><strong>Permission</strong>：高危词/prod 环境 → 暂停等待确认（Reason 后 Act 前）</td></tr>
+  <tr><td>9</td><td>Act — 执行工具</td><td><strong>ReAct</strong>：MCP tool / Custom Tool。录制 ActionStep（intent）</td></tr>
+  <tr><td>10</td><td>Observe — 感知结果</td><td><strong>ReAct</strong>：A11y Tree + URL + 截图。PageSkill 按 URL 切换。更新 StepPlan</td></tr>
+  <tr><td>11</td><td>断言验证</td><td><strong>Assertion</strong>：该步 expect 断言由规则引擎验证（非 LLM 眼判）</td></tr>
+  <tr><td>12</td><td>Context Compact + 循环检测</td><td><strong>Context</strong>：done 步骤归档、A11y 截断、Skill 卸载。连续 3 步相同则终止</td></tr>
+  <tr><td>13</td><td>Self-Healing（失败时）</td><td><strong>Healing Subagent</strong>：独立 context，P1→P5 多策略 + 截图 + 词汇表</td></tr>
+  <tr><td>14</td><td>after_case Hooks</td><td><strong>Hooks</strong>：清理数据、退出登录、on_failure 告警</td></tr>
+  <tr><td>15</td><td>CodeGenerator → BDD 代码</td><td><strong>CodeGen</strong>：TestSpec + 录制 → feature + step_defs。断言→expect()。ast 验证</td></tr>
+  <tr><td>16</td><td>持久化 + Orchestrator 汇总</td><td>ExecutionRecord 入库、截图存盘、词汇表增量更新、Suite 汇总报告</td></tr>
+</table>
+
+<!-- ═══ 3. 输入层 ═══ -->
+<h2 id="input">3. 输入层</h2>
+
+<h3 id="input-excel">3.1 Excel 用例格式</h3>
+<table>
+  <tr><th style="width:18%">字段</th><th style="width:42%">说明</th><th>示例</th></tr>
+  <tr><td>用例名称</td><td>用例的唯一标识名称</td><td>采购申请单提交验证</td></tr>
+  <tr><td>预置条件</td><td>执行前需满足的条件（混合态：状态声明 + 操作步骤）</td><td>已登录系统；环境已装好；设置环境变量 CONF=10</td></tr>
+  <tr><td>测试步骤</td><td>有序操作步骤，支持多行（1. / ① / 换行三种格式）。<strong>数据写死在步骤里</strong></td><td>1. 进入采购申请页面<br>2. 标题填"测试采购单"<br>3. 点击提交</td></tr>
+  <tr><td>预期结果</td><td>执行后的预期验证点，翻译为结构化断言</td><td>申请单状态变为"待审批"，显示提交成功提示</td></tr>
+</table>
+<div class="callout c-info"><span class="label">说明：</span>测试数据直接写死在测试步骤文本里，平台不做数据工厂/动态生成。这简化了 TestSpec 的 data 处理。</div>
+
+<h3 id="input-precond">3.2 预置条件三分类</h3>
+<p>预置条件为<strong>混合态</strong>（既有状态声明，也有操作步骤），使用 LLM 做意图分类，<strong>不用关键词匹配</strong>（成功率低）。</p>
+<table>
+  <tr><th style="width:14%">类型</th><th style="width:28%">示例</th><th>处理方式</th></tr>
+  <tr><td>① 状态声明</td><td>"已登录系统" / "环境已装好"</td><td>映射到 Hook，平台自动处理（映射规则用户可维护）</td></tr>
+  <tr><td>② 操作步骤</td><td>"设置环境变量 CONF=10"</td><td>转为 Agent Given 步骤，在 Hook 之后执行</td></tr>
+  <tr><td>③ 模糊/低置信</td><td>"准备好测试环境"</td><td>界面标黄，用户手动选择：Hook / Given / 忽略</td></tr>
+</table>
+<div class="callout c-warn"><span class="label">重要：</span>分类结果首次确认后记忆到用例，下次执行跳过确认。用户可在用例详情页随时修改。</div>
+
+<!-- ═══ 4. TestSpec ═══ -->
+<h2 id="spec">4. TestSpec（执行规格）<span class="updated-tag">v2 新增</span></h2>
+
+<h3>4.1 定位：软计划，不是硬脚本</h3>
+<p>TestSpec 是介于"用例文本"和"Agent 执行"之间的<strong>结构化执行规格</strong>，由"预解析 + 词汇表 + Page Intelligence"共同生成。它统一了三件事：<strong>预解析输出 + 用户确认对象 + 代码生成输入</strong>。</p>
+<div class="callout c-tip"><span class="label">关键设计：</span>TestSpec 记录"动作 + 目标语义 + 数据 + 断言"，但<strong>不锁定具体 selector</strong>（selector 由执行时词汇表/自愈动态解析）。它是"执行计划"不是"执行脚本"，Agent 执行时仍可自愈、调整，保留 AI 弹性。</div>
+
+<h3>4.2 TestSpec 结构</h3>
+<pre><code><span class="c-key">case_id</span>: <span class="c-val">"TC001"</span>
+<span class="c-key">name</span>: <span class="c-val">"采购申请单提交验证"</span>
+<span class="c-key">base_url</span>: <span class="c-val">"http://erp.corp.com/purchase"</span>
+<span class="c-key">given</span>:                          <span class="c-cmt"># 来自预置条件②类（操作步骤）</span>
+  - <span class="c-key">action</span>: <span class="c-val">set_env</span>
+    <span class="c-key">data</span>: <span class="c-val">"CONF=10"</span>
+<span class="c-key">steps</span>:
+  - <span class="c-key">action</span>: <span class="c-val">navigate</span>
+    <span class="c-key">target</span>: <span class="c-val">"采购申请页"</span>
+  - <span class="c-key">action</span>: <span class="c-val">fill</span>
+    <span class="c-key">target</span>: <span class="c-val">"标题输入框"</span>      <span class="c-cmt"># 词汇表解析为真实元素</span>
+    <span class="c-key">data</span>: <span class="c-val">"测试采购单"</span>          <span class="c-cmt"># 步骤里写死的数据</span>
+  - <span class="c-key">action</span>: <span class="c-val">click</span>
+    <span class="c-key">target</span>: <span class="c-val">"提交"</span>              <span class="c-cmt"># 不锁 selector，执行时解析</span>
+<span class="c-key">assertions</span>:                     <span class="c-cmt"># 来自预期结果，翻译为结构化断言</span>
+  - <span class="c-key">type</span>: <span class="c-val">text_equals</span>
+    <span class="c-key">target</span>: <span class="c-val">"状态字段"</span>
+    <span class="c-key">expected</span>: <span class="c-val">"待审批"</span>
+  - <span class="c-key">type</span>: <span class="c-val">element_visible</span>
+    <span class="c-key">target</span>: <span class="c-val">"提交成功提示"</span></code></pre>
+
+<h3>4.3 引入 TestSpec 的收益</h3>
+<div class="grid grid-2">
+  <div class="card"><h4>① 执行更稳定</h4><ul><li>Agent 按已确定 Spec 执行，不"边想边做"</li><li>本地 LLM 运行时推理压力降低</li></ul></div>
+  <div class="card"><h4>② 可审查可修正</h4><ul><li>用户执行前看到完整 Spec，可改</li><li>修正后记忆，下次复用</li></ul></div>
+  <div class="card"><h4>③ 代码生成更精确</h4><ul><li>Spec 已含动作 + 断言</li><li>从 Spec 生成，不依赖执行录制的噪声</li></ul></div>
+  <div class="card"><h4>④ 复用与版本化</h4><ul><li>Spec 可保存、diff、版本管理</li><li>自愈更新 selector 后回写 Spec</li></ul></div>
+</div>
+
+<!-- ═══ 5. 断言机制 ═══ -->
+<h2 id="assertion">5. 断言机制 <span class="badge b-new">v2 核心强化</span></h2>
+
+<h3>5.1 核心思路：把"判断"从运行时移到翻译时</h3>
+<div class="callout c-danger"><span class="label">问题：</span>预期"状态变为待审批"若靠 LLM 在运行时看 A11y Tree 眼判 PASS/FAIL，<strong>不可靠</strong>——页面任何位置有"待审批"字样就误判，LLM 倾向脑补成功，两次判断可能不一致，本地模型误判率更高。</div>
+<div class="callout c-ok"><span class="label">方案：</span>预期结果 → 结构化断言（Assertion）。LLM 只在生成 TestSpec 时做<strong>一次性翻译</strong>（可审查可修正），执行时由<strong>规则引擎确定性验证</strong>。把"判断"从运行时移到翻译时。</div>
+
+<div class="flow">
+  <div class="flow-node"><div class="t">预期结果</div><div class="d">自然语言</div></div>
+  <div class="flow-node"><div class="t">LLM 翻译</div><div class="d">一次性，可审查</div></div>
+  <div class="flow-node"><div class="t">结构化 Assertion</div><div class="d">存入 TestSpec</div></div>
+  <div class="flow-node"><div class="t">规则引擎验证</div><div class="d">确定性，可信</div></div>
+  <div class="flow-node"><div class="t">PASS/FAIL + 证据</div><div class="d">可复现可定位</div></div>
+</div>
+
+<h3>5.2 五类结构化断言（按可靠性排序）</h3>
+<table>
+  <tr><th style="width:16%">类型</th><th style="width:10%">可靠性</th><th style="width:34%">能力</th><th>断言示例</th></tr>
+  <tr><td>① DOM 元素断言</td><td style="color:var(--green)">最高</td><td>元素存在/可见/可点击/数量/状态（disabled/checked）</td><td><code>element_visible(role=status name=待审批)</code></td></tr>
+  <tr><td>② 文本内容断言</td><td style="color:var(--green)">高</td><td><strong>限定具体元素内</strong>匹配文本（=/包含/正则）</td><td><code>text_equals([data-field=status], "待审批")</code></td></tr>
+  <tr><td>③ URL/导航断言</td><td style="color:var(--accent)">高</td><td>URL 等于/包含/匹配，页面标题</td><td><code>url_contains("/approval/pending")</code></td></tr>
+  <tr><td>④ 数据断言（Custom Tool）</td><td style="color:var(--accent)">业务级</td><td>数据库查询/内部 API 校验，最贴业务真相</td><td><code>db_query(order_id, status=待审批)</code></td></tr>
+  <tr><td>⑤ LLM 语义断言</td><td style="color:var(--red)">兜底</td><td>无法结构化时的最后手段，标记低置信需复核</td><td><code>llm_judge("页面显示成功提示")</code></td></tr>
+</table>
+<div class="callout c-info"><span class="label">关键：</span>文本断言<strong>限定在具体元素内</strong>匹配，而非全页搜索——这直接解决了"全页有'待审批'就误判"的问题。降级策略：能转 DOM/文本/URL 就转，转不了用 Custom Tool，最后才用 LLM 兜底。</div>
+
+<h3>5.3 翻译规则</h3>
+<table>
+  <tr><th style="width:32%">预期结果（原文）</th><th style="width:36%">翻译为 Assertion</th><th>说明</th></tr>
+  <tr><td>"状态变为待审批"</td><td>text_equals(status元素, "待审批")</td><td>词汇表定位"状态"元素，限定范围匹配</td></tr>
+  <tr><td>"提交成功，跳转列表页"</td><td>url_contains("/list") AND element_visible(成功提示)</td><td>一个预期拆成多个断言（AND 关系）</td></tr>
+  <tr><td>"列表新增一条记录"</td><td>element_count(列表行, increased) 或 db_query</td><td>UI 计数或数据库验证（后者更可靠）</td></tr>
+  <tr><td>"页面显示错误提示"</td><td>element_visible(role=alert)</td><td>语义角色定位</td></tr>
+</table>
+
+<h3>5.4 断言与自愈的关系</h3>
+<div class="grid grid-2">
+  <div class="card"><h4>断言失败的两种归因</h4><ul><li><strong>真失败：</strong>操作执行了但业务结果不对 → FAIL（真 bug）</li><li><strong>断言 selector 失效：</strong>界面变了，断言定位元素的 selector 失效 → 触发自愈重定位断言目标</li></ul></div>
+  <div class="card"><h4>带来的提升</h4><ul><li>结果可信：规则引擎判定，可复现</li><li>失败可定位：明确哪个断言、期望/实际、附证据截图</li><li>代码精确：Assertion 直接映射 Playwright expect()</li></ul></div>
+</div>
+<div class="callout c-tip"><span class="label">设计要点：</span>Healing Subagent 同时服务于"操作元素定位"和"断言元素定位"。断言失败也可触发自愈。</div>
+
+<!-- ═══ 6. Page Intelligence ═══ -->
+<h2 id="pi">6. Page Intelligence 层</h2>
+
+<h3>6.1 设计目标</h3>
+<p>解决<strong>业务用例文本质量差</strong>的核心问题：用例里的模糊词（"提交"）映射到页面真实 UI 元素（"保存并提交"按钮）。同时辅助 Self-Healing 快速重定位变化后的元素，辅助断言翻译。</p>
+
+<h3>6.2 三个核心能力</h3>
+<table>
+  <tr><th style="width:22%">能力</th><th style="width:44%">说明</th><th>可见可维护</th></tr>
+  <tr><td>词汇表 Vocabulary</td><td>业务词→UI元素映射。执行前注入 Prompt，自愈/断言翻译时查表</td><td>可新增/修改/废弃，手动条目优先级高于 AI 扫描</td></tr>
+  <tr><td>操作图谱 Action Map</td><td>页面按功能区分组的可交互元素，含角色/名称/状态</td><td>可标注业务含义，标记废弃，显示 stale</td></tr>
+  <tr><td>用例预解析</td><td>执行前用 LLM + 词汇表生成 TestSpec（含断言翻译）</td><td>默认手动确认（可配自动），歧义词高亮</td></tr>
+</table>
+
+<h3>6.3 扫描策略：A+C 组合</h3>
+<ul>
+  <li><strong>策略 A（手动首次扫描）：</strong>用户手动触发，选择 Session Profile（登录态），扫描 base_url 及关键子页面，建立初始词汇表</li>
+  <li><strong>策略 C（执行中自动增量）：</strong>Agent 执行过程中访问到新页面时自动增量扫描，补充词汇表</li>
+</ul>
+<div class="callout c-warn"><span class="label">冷启动处理：</span>首次对某 base_url 执行用例时，若词汇表为空，<strong>提示先执行一次 Page Scan</strong>，保证 TestSpec 生成有基础数据。</div>
+
+<h3>6.4 缓存设计</h3>
+<table>
+  <tr><th style="width:26%">字段</th><th>说明</th></tr>
+  <tr><td>缓存 Key</td><td>url_pattern + page_title + login_role（组合唯一）</td></tr>
+  <tr><td>URL 路由匹配</td><td>/order/123 和 /order/456 共用一条，Key 为 /order/{id}</td></tr>
+  <tr><td>更新触发</td><td>手动 / 自愈失败标记 stale / 定时（可配置）</td></tr>
+  <tr><td>登录态隔离</td><td>同一 URL 不同角色分开存储词汇表</td></tr>
+</table>
+
+<!-- ═══ 7. Agent Harness ═══ -->
+<h2 id="harness">7. Agent Harness 层</h2>
+
+<h3 id="harness-session">7.1 Session Profile（登录态管理）</h3>
+<p>将账号信息、登录脚本、Cookie 缓存打包为可复用配置单元。Suite 绑定 Profile，Page Scanner 和 Hook 共用同一套机制。</p>
+<table>
+  <tr><th style="width:24%">字段</th><th>说明</th></tr>
+  <tr><td>name</td><td>Profile 名称，如"采购员账号"</td></tr>
+  <tr><td>login_aw</td><td>登录 AW 引用（用户已有 pytest 脚本）</td></tr>
+  <tr><td>cookie_store</td><td>Cookie 持久化路径</td></tr>
+  <tr><td>valid_until</td><td>Cookie 有效期，过期自动重新执行 login_aw</td></tr>
+  <tr><td>base_url</td><td>该 Profile 对应的系统入口</td></tr>
+</table>
+<div class="callout c-ok"><span class="label">复用机制：</span>before_case Hook 检查 valid_until，未过期直接注入 Cookie 跳过登录；过期则执行 login_aw 刷新。Cookie 有效期内跨用例共享，同 Suite 多用例无需重复登录。</div>
+
+<h3 id="harness-react">7.2 ReAct 执行模式</h3>
+<table>
+  <tr><th style="width:18%">步骤</th><th style="width:48%">说明</th><th>录制字段</th></tr>
+  <tr><td>Reason</td><td>读 StepPlan + A11y Tree(截断) → 输出思考链，决策工具和元素</td><td>step.reasoning</td></tr>
+  <tr><td>Act</td><td>执行 MCP tool / Custom Tool / Hook 动作</td><td>tool_name / tool_input / intent</td></tr>
+  <tr><td>Observe</td><td>获取 A11y Tree + 截图 + URL，更新 StepPlan</td><td>tool_result / screenshot / url</td></tr>
+</table>
+<p><strong>StepPlan（TodoWrite）：</strong>TestSpec.steps → StepPlan 列表，状态机 pending/active/done/failed/skipped。每步完成 LLM 调用 <code>mark_step_done</code> 更新。防止多步骤用例跳步/遗漏/重复。</p>
+
+<h3 id="harness-heal">7.3 Self-Healing（自愈机制）</h3>
+<p><strong>触发条件：</strong>元素未找到、操作无效（页面无变化）、连续重复（循环检测）、超时、<strong>断言 selector 失效</strong>。</p>
+<h4>多策略定位优先级</h4>
+<table>
+  <tr><th style="width:14%">优先级</th><th style="width:22%">策略</th><th>原理 / 抗变化能力</th></tr>
+  <tr><td>P1 最高</td><td>语义角色定位</td><td>role + accessible name，由内容决定，不随样式变化 — 极强</td></tr>
+  <tr><td>P2</td><td>文本内容定位</td><td>元素可见文字，文案不改即有效 — 强</td></tr>
+  <tr><td>P3</td><td>语义属性定位</td><td>aria-label / placeholder / title — 中强</td></tr>
+  <tr><td>P4</td><td>位置关系定位</td><td>相对稳定锚点的位置关系 — 中</td></tr>
+  <tr><td>P5 最低</td><td>截图视觉定位</td><td>截图 → LLM 视觉分析，兜底 — 弱</td></tr>
+</table>
+<h4>自愈流程</h4>
+<ol>
+  <li>失败触发 → 抓取当前 A11y Tree 全量快照 + 截图（双通道，借鉴 browser-use）</li>
+  <li>LLM 分析：失败信息 + 当前快照 + 原始意图 → 生成 3 个候选方案（含置信度）</li>
+  <li>按 P1→P5 逐一尝试，成功则继续并将新选择器回写 ActionStep + 词汇表</li>
+  <li>全部失败 → 重新规划绕路 → 超出 max_heal_attempts → FAIL + 自愈报告</li>
+</ol>
+<div class="callout c-danger"><span class="label">核心原则：</span>ActionStep 存"操作意图"（自然语言），不只存选择器。意图是自愈重定位的依据；选择器是实现细节，界面变了就废了。词汇表是第一优先查询来源。</div>
+
+<h3 id="harness-subagent">7.4 Subagent（上下文隔离）</h3>
+<p>避免上下文污染，按<strong>用例级</strong>隔离（不是步骤级——用例内步骤有状态依赖必须共享 context）。</p>
+<table>
+  <tr><th style="width:24%">Subagent 类型</th><th style="width:46%">作用</th><th>优先级</th></tr>
+  <tr><td>用例 Subagent</td><td>每用例独立 context，批量执行时互不污染。用例A失败的错误上下文不影响用例B</td><td><span class="badge b-p0">P0 必做</span></td></tr>
+  <tr><td>自愈 Subagent</td><td>自愈的失败尝试/快照/截图在独立 context 分析，主 context 只拿回一行摘要</td><td><span class="badge b-p1">P1 强烈建议</span></td></tr>
+  <tr><td>Scanner Subagent</td><td>Page Intelligence 扫描独立 context，大量 A11y 数据不污染执行</td><td><span class="badge b-p1">P1 自然实现</span></td></tr>
+</table>
+<div class="callout c-info"><span class="label">边界：</span>隔离粒度是用例级。用例内步骤之间不拆 Subagent（步骤2需要知道步骤1做了什么，状态必须同 context 传递）。</div>
+
+<h3 id="harness-context">7.5 Context Compact（上下文压缩）</h3>
+<ul>
+  <li><strong>L1 步骤归档：</strong>StepPlan 标记 done 后，从活跃 context 移出，归档为一行摘要</li>
+  <li><strong>L2 A11y Tree 截断：</strong>注入前按当前步骤关键词做相关度过滤，只保留相关元素（借鉴 browser-use）</li>
+  <li><strong>L3 Skill 卸载：</strong>离开页面时卸载对应 PageSkill</li>
+  <li><strong>自愈特殊处理：</strong>自愈中不压缩（需完整失败上下文），自愈成功后整个过程压缩为一行立即归档</li>
+</ul>
+
+<h3 id="harness-skill">7.6 System Prompt 分层 + Skill 体系</h3>
+<table>
+  <tr><th style="width:16%">层级</th><th style="width:54%">内容</th><th>来源</th></tr>
+  <tr><td>Base</td><td>角色定义、ReAct 格式、Behavioral Nudges（防循环指令）、TEST_RESULT 规范、安全边界</td><td>平台固定</td></tr>
+  <tr><td>Context</td><td>用户自定义业务知识，支持 {{base_url}} 变量插值</td><td>Case > Suite > 全局</td></tr>
+  <tr><td>Task</td><td>TestSpec、StepPlan、Hook 状态</td><td>每次执行注入</td></tr>
+  <tr><td>Tools</td><td>MCP + 自定义工具描述（相关度截断）</td><td>动态生成</td></tr>
+</table>
+<p><strong>三种 Skill：</strong>DomainSkill（Suite 级业务术语，借鉴 SKILL.md）、PageSkill（按 URL 动态加载/卸载）、ToolSkill（相关度过滤注入）。</p>
+
+<h3 id="harness-hooks">7.7 Hooks 系统</h3>
+<table>
+  <tr><th style="width:24%">Hook 时机</th><th style="width:44%">典型用途</th><th>失败处理</th></tr>
+  <tr><td>before_suite</td><td>整批初始化全局环境</td><td>终止整批</td></tr>
+  <tr><td>before_case ★</td><td>init_env_aw + LoginHook</td><td>当前用例 FAIL，不进 Agent</td></tr>
+  <tr><td>after_case ★</td><td>清理数据，退出登录</td><td>记录错误，不影响结果</td></tr>
+  <tr><td>on_heal</td><td>自愈触发时通知上报</td><td>仅通知</td></tr>
+  <tr><td>on_failure</td><td>失败时截图 + 告警</td><td>仅通知</td></tr>
+  <tr><td>after_suite</td><td>生成汇总报告</td><td>记录错误</td></tr>
+</table>
+
+<h3 id="harness-tools">7.8 Custom Tools（自定义工具）</h3>
+<p>用户已有自动化脚本可接入，LLM <strong>按需调用</strong>（区别于 Hook 的强制执行）。</p>
+<div class="grid grid-2">
+  <div class="card"><h4>接入方式</h4><ul><li>Python 装饰器 @tool（借鉴 browser-use @tools.action）</li><li>YAML 配置（command 字段，无需改原脚本）</li></ul></div>
+  <div class="card"><h4>典型场景</h4><ul><li>数据库断言（数据断言的实现）</li><li>内部 API 校验、测试数据准备</li><li>发送钉钉/企微通知</li></ul></div>
+</div>
+<div class="callout c-warn"><span class="label">Hook vs Tool：</span>Hook = 每次必须执行、与测试意图无关的前置/后置（初始化、登录）。Tool = LLM 按任务上下文决定调用的能力（数据断言、API 校验）。</div>
+
+<h3 id="harness-perm">7.9 Permission（操作许可）</h3>
+<ul>
+  <li><strong>高危操作白名单：</strong>tool_call 含"删除/提交/支付/确认"等词 → 暂停确认</li>
+  <li><strong>环境保护锁：</strong>base_url 命中 prod 域名 → 必须用户显式解锁</li>
+  <li><strong>触发位置：</strong>Reason 之后 Act 之前（步骤 8），asyncio.Event 暂停，UI 弹窗</li>
+  <li><strong>信任模式：</strong>可配置跳过所有拦截</li>
+</ul>
+
+<!-- ═══ 8. 输出层 ═══ -->
+<h2 id="output">8. 输出层</h2>
+
+<h3>8.1 CodeGenerator 抽象层</h3>
+<p>统一接口 <code>generate(record) → str</code>，不同产品线实现不同 Generator，Suite 配置时选择。</p>
+<table>
+  <tr><th style="width:28%">Generator</th><th style="width:44%">输出</th><th>状态</th></tr>
+  <tr><td>BDDGenerator（默认）</td><td>pytest-bdd：feature + step_defs.py + conftest.py</td><td>默认实现</td></tr>
+  <tr><td>PlainGenerator</td><td>普通 pytest + playwright</td><td>可扩展</td></tr>
+  <tr><td>PageObjectGenerator</td><td>pytest + Page Object 模式</td><td>预留</td></tr>
+</table>
+
+<h3>8.2 BDD 代码生成规则</h3>
+<table>
+  <tr><th style="width:16%">BDD 结构</th><th style="width:40%">来源</th><th>说明</th></tr>
+  <tr><td>Given</td><td>预置条件②类（操作步骤）+ Hook 状态</td><td>对应 TestSpec.given</td></tr>
+  <tr><td>When</td><td>TestSpec.steps（业务步骤粒度，非 tool_call 粒度）</td><td>按原始用例步骤合并</td></tr>
+  <tr><td>Then</td><td>TestSpec.assertions</td><td><strong>断言直接映射 expect()</strong></td></tr>
+</table>
+<ul>
+  <li><strong>选择器：</strong>词汇表提供稳定选择器，优先 get_by_role / get_by_label</li>
+  <li><strong>代码质量：</strong>可读性 &gt; 简洁性，业务含义中文注释，供长期维护</li>
+  <li><strong>验证：</strong>ast.parse 语法验证 + black 格式化 +（建议）自动 pytest 回放验证"可信代码"</li>
+</ul>
+
+<h3>8.3 执行记录存储</h3>
+<table>
+  <tr><th style="width:26%">内容</th><th>说明</th></tr>
+  <tr><td>执行总览</td><td>用例 / Suite / 时间 / PASS-FAIL / 步骤数 / 耗时 / 自愈次数 / token 用量</td></tr>
+  <tr><td>步骤时间线</td><td>工具 + 参数 + 耗时 + reasoning（可展开）+ intent + 自愈标记 + 断言结果</td></tr>
+  <tr><td>截图序列</td><td>按步骤顺序，失败截图置顶，可放大</td></tr>
+  <tr><td>生成代码</td><td>feature + step_defs.py，在线预览/编辑/下载，步骤与代码双向关联</td></tr>
+</table>
+
+<!-- ═══ 9. 技术选型 ═══ -->
+<h2 id="tech">9. 技术选型</h2>
+<table>
+  <tr><th style="width:16%">层次/模块</th><th style="width:22%">选型</th><th>理由 + 约束</th></tr>
+  <tr><td>LLM 主模型</td><td>Qwen3 397B (Ollama)</td><td>已部署。tool_call 能力强；模型部署细节不感知</td></tr>
+  <tr><td>LLM 接入层</td><td>LiteLLM</td><td>统一代理多模型，单行切换；内置重试/fallback/token 统计；快速失败核心</td></tr>
+  <tr><td>Subagent 调度</td><td>Python asyncio</td><td>独立协程 + 各自 messages list 实现 context 隔离，无额外框架</td></tr>
+  <tr><td>浏览器自动化</td><td>playwright-mcp (stdio)</td><td>绕过内网代理；A11y Tree 映射 get_by_role；官方维护；截图工具支持自愈双通道</td></tr>
+  <tr><td>MCP 客户端</td><td>官方 mcp Python SDK</td><td>StdioServerParameters 封装规范，处理 JSON-RPC 细节，锁定版本</td></tr>
+  <tr><td>后端框架</td><td>FastAPI</td><td>原生 async；SSE 推送；Pydantic 与 TestCase 契合</td></tr>
+  <tr><td>任务队列</td><td>asyncio.Queue</td><td>单人工具，无需 Celery。用例串行执行</td></tr>
+  <tr><td>数据持久化</td><td>SQLite + SQLModel</td><td>零运维；SQLModel = SQLAlchemy + Pydantic；多人时换连接串</td></tr>
+  <tr><td>前端框架</td><td>React + Vite</td><td>复杂交互需求；shadcn/ui 组件</td></tr>
+  <tr><td>实时通信</td><td>SSE</td><td>单向推送，比 WebSocket 简单；浏览器自动重连</td></tr>
+  <tr><td>代码编辑器</td><td>Monaco Editor</td><td>生成代码需在线编辑保存（资产维护），VS Code 级体验</td></tr>
+  <tr><td>BDD 框架</td><td>pytest-bdd</td><td>与 pytest 生态集成；Gherkin；团队已有基础</td></tr>
+  <tr><td>代码格式化</td><td>black + isort</td><td>资产格式规范，生成后自动运行</td></tr>
+  <tr><td>Excel 解析</td><td>openpyxl</td><td>轻量，处理合并单元格/多行/空行容错</td></tr>
+  <tr><td>部署</td><td>docker-compose</td><td>FastAPI + React(nginx) + Ollama 一键启动</td></tr>
+</table>
+
+<h3>9.1 借鉴 browser-use 的 4 个点</h3>
+<ul>
+  <li><strong>截图辅助自愈：</strong>自愈触发时加入截图（DOM + 截图双通道）</li>
+  <li><strong>A11y Tree 相关度截断：</strong>注入前过滤，降低 token 消耗</li>
+  <li><strong>Behavioral Nudges：</strong>System Prompt 注入防循环指令，对本地 LLM 尤其重要</li>
+  <li><strong>AgentHistory 序列化：</strong>model_output 与 action_result 分离存储</li>
+</ul>
+
+<!-- ═══ 10. 数据结构 ═══ -->
+<h2 id="data">10. 核心数据结构</h2>
+<table>
+  <tr><th style="width:24%">结构体</th><th>核心字段</th></tr>
+  <tr><td>TestCase</td><td>id / name / preconditions[] / steps[] / expected[] / base_url / suite_id</td></tr>
+  <tr><td>TestSpec</td><td>case_id / base_url / given[] / steps[{action, target, data}] / assertions[{type, target, expected}]</td></tr>
+  <tr><td>Assertion</td><td>type（element_visible / text_equals / url_contains / custom_tool / llm_judge）/ target / expected / confidence</td></tr>
+  <tr><td>Suite</td><td>id / name / base_url / session_profile_id / page_intelligence_id / code_generator / custom_prompt / hooks{}</td></tr>
+  <tr><td>SessionProfile</td><td>name / login_aw / cookie_store / valid_until / base_url</td></tr>
+  <tr><td>PageVocabulary</td><td>url_pattern / page_title / login_role / vocabulary{word→{role,name,confidence}} / action_map / stale / scanned_at</td></tr>
+  <tr><td>ActionStep</td><td>step_no / tool_name / tool_input / reasoning / intent / tool_result / screenshot / url / heal_attempts[] / assertion_results[] / is_custom_tool / is_hook_action / duration_ms</td></tr>
+  <tr><td>ExecutionRecord</td><td>exec_id / case_id / suite_id / steps[ActionStep] / passed / final_result / generated_code / token_usage / heal_count / start_time / end_time</td></tr>
+  <tr><td>ToolDef</td><td>name / description / parameters(JsonSchema) / returns / when_to_use / executor / timeout_seconds</td></tr>
+</table>
+
+<!-- ═══ 11. 实施计划 ═══ -->
+<h2 id="plan">11. 实施计划</h2>
+
+<h3>11.1 四阶段 + 里程碑</h3>
+<table>
+  <tr><th style="width:10%">阶段</th><th style="width:20%">里程碑</th><th>目标</th></tr>
+  <tr><td>阶段一</td><td>M1 主干跑通</td><td>命令行跑通一条用例 → TestSpec → 执行 → 断言驱动的可信 PASS/FAIL</td></tr>
+  <tr><td>阶段二</td><td>M2 Harness 完整</td><td>自愈、Hooks、Session、Skill、Subagent、Context Compact、Permission 全部就位</td></tr>
+  <tr><td>阶段三</td><td>M3 代码产出</td><td>执行后自动生成 BDD 代码，ast 验证 + pytest 回放，Page Intelligence 持久化</td></tr>
+  <tr><td>阶段四</td><td>M4 平台上线</td><td>完整 Web 界面，E2E 流程可用</td></tr>
+</table>
+
+<h3>11.2 阶段一详细任务（含 v2 调整）</h3>
+<div class="grid grid-2">
+  <div class="card"><h4>Sprint 1-A：数据 + 连通</h4><ul>
+    <li>T-01 TestCase 结构体 + Excel 解析</li>
+    <li>T-02 MCP 客户端（官方 SDK）</li>
+    <li>T-03 LLM 接入层（LiteLLM）</li>
+  </ul></div>
+  <div class="card"><h4>Sprint 1-B：ReAct + Spec + 断言</h4><ul>
+    <li>T-04 StepPlan（TodoWrite）</li>
+    <li>T-05 ★ TestSpec 生成（暂不依赖词汇表）</li>
+    <li>T-06 ReAct Loop 主体</li>
+    <li>T-07 Prompt 分层组装</li>
+    <li>T-08 ★ 断言机制（DOM/文本/URL 三类）</li>
+    <li>T-09 ActionStep 录制</li>
+    <li>T-10 TestCase Subagent + 命令行入口</li>
+  </ul></div>
+</div>
+<div class="callout c-ok"><span class="label">阶段一验收：</span>输入真实内网用例 Excel → 生成可读 TestSpec → Agent 按 Spec 执行 → <strong>结构化断言验证</strong>（非 LLM 眼判）→ 输出可信 PASS/FAIL。用 1-2 个内网真实用例验证（非"打开百度"）。</div>
+
+<!-- ═══ 12. 风险与约束 ═══ -->
+<h2 id="risk">12. 风险与约束</h2>
+<table>
+  <tr><th style="width:24%">风险</th><th style="width:34%">描述</th><th>缓解措施</th></tr>
+  <tr><td>本地 LLM tool_call 稳定性</td><td>Qwen3 tool_call 格式可能偶发错误</td><td>Harness 层格式容错 + 重解析；快速失败提示切换模型（LiteLLM 零成本）</td></tr>
+  <tr><td>词汇表冷启动</td><td>首次无词汇表，TestSpec/断言翻译无依据</td><td>A+C 策略：首次提示先扫描 base_url 建立基础词汇表</td></tr>
+  <tr><td>断言翻译准确率</td><td>LLM 翻译预期为断言可能出错</td><td>翻译结果在 TestSpec 审查界面可见可改；降级策略；用户修正后记忆</td></tr>
+  <tr><td>预置条件分类准确率</td><td>LLM 分类模糊预置条件可能出错</td><td>置信度阈值 + 标黄 + 用户确认兜底；结果记忆</td></tr>
+  <tr><td>生成代码可执行性</td><td>ast 语法对 ≠ 能跑通</td><td>生成后自动 pytest 回放验证，通过才标"可信代码"</td></tr>
+  <tr><td>并发与资源</td><td>多 Subagent 打同一 Ollama 实例</td><td>阶段一/二明确串行执行用例，并发作为后期优化</td></tr>
+</table>
+
+<div style="margin-top:48px; padding-top:20px; border-top:1px solid var(--border); color:var(--dim); font-size:13px; text-align:center;">
+  AI 自动化测试平台 · 产品设计文档 v2.0 · 内部使用
+</div>
+
+</main>
+</body>
+</html>

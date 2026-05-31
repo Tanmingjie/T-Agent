@@ -1,0 +1,22 @@
+[project]
+name = "ai-test-platform"
+version = "0.1.0"
+description = "内网 Web 自动化测试平台:Excel 用例 → TestSpec → Agent 执行 → 断言验证 → BDD 代码"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+# 领域模型 TestCase / TestSpec 以 "Test" 开头,但不是测试类;
+# 已在模型上标记 __test__ = False,这里仅保留默认函数前缀。
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.black]
+line-length = 100
+target-version = ["py311"]
+
+[tool.isort]
+profile = "black"
+line_length = 100

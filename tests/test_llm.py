@@ -1,0 +1,229 @@
+"""T-03 单元测试:LLM 封装 + tool_call 容错。
+
+全部 mock litellm,不连真实 LLM。覆盖:
+- 宽松 JSON 修复 / 从 content 提取工具调用(纯函数)
+- 标准 tool_calls 解析、坏参数宽松修复
+- 格式坏 → 重试 1 次 → 成功 / 仍失败抛错
+- token 用量累计、env 配置
+"""
+
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+
+import harness.llm as llm_mod
+from harness.llm import (
+    LiteLLMClient,
+    LLMToolCallError,
+    extract_tool_calls_from_content,
+    loads_lenient,
+)
+
+# ── 纯函数:宽松 JSON ──────────────────────────────────────────
+
+
+def test_loads_lenient_strict():
+    assert loads_lenient('{"url": "http://x"}') == {"url": "http://x"}
+
+
+def test_loads_lenient_fence():
+    assert loads_lenient('```json\n{"a": 1}\n```') == {"a": 1}
+
+
+def test_loads_lenient_trailing_comma():
+    assert loads_lenient('{"a": 1, "b": 2,}') == {"a": 1, "b": 2}
+
+
+def test_loads_lenient_single_quotes():
+    assert loads_lenient("{'a': 'b'}") == {"a": "b"}
+
+
+def test_loads_lenient_embedded():
+    assert loads_lenient('随便说点 {"x": 1} 后面还有') == {"x": 1}
+
+
+def test_loads_lenient_fails():
+    with pytest.raises(ValueError):
+        loads_lenient("完全不是 json")
+    with pytest.raises(ValueError):
+        loads_lenient("")
+
+
+# ── 纯函数:从 content 提取工具调用 ───────────────────────────
+
+
+def test_extract_tool_call_tag():
+    content = '思考中\n<tool_call>\n{"name": "browser_navigate", "arguments": {"url": "http://x"}}\n</tool_call>'
+    calls = extract_tool_calls_from_content(content)
+    assert calls == [{"name": "browser_navigate", "arguments": {"url": "http://x"}}]
+
+
+def test_extract_json_fence():
+    content = '```json\n{"name": "click", "arguments": {"ref": "btn1"}}\n```'
+    calls = extract_tool_calls_from_content(content)
+    assert calls == [{"name": "click", "arguments": {"ref": "btn1"}}]
+
+
+def test_extract_bare_json():
+    content = '{"name": "wait", "arguments": {"seconds": 2}}'
+    assert extract_tool_calls_from_content(content) == [
+        {"name": "wait", "arguments": {"seconds": 2}}
+    ]
+
+
+def test_extract_nested_function_shape():
+    content = '{"function": {"name": "fill", "arguments": {"text": "abc"}}}'
+    assert extract_tool_calls_from_content(content) == [
+        {"name": "fill", "arguments": {"text": "abc"}}
+    ]
+
+
+def test_extract_args_as_string():
+    content = '<tool_call>{"name": "fill", "arguments": "{\\"text\\": \\"abc\\"}"}</tool_call>'
+    assert extract_tool_calls_from_content(content) == [
+        {"name": "fill", "arguments": {"text": "abc"}}
+    ]
+
+
+def test_extract_none_and_plain():
+    assert extract_tool_calls_from_content(None) == []
+    assert extract_tool_calls_from_content("纯文本没有调用") == []
+
+
+# ── 构造 litellm 假响应 ───────────────────────────────────────
+
+
+def _msg(content=None, tool_calls=None):
+    return SimpleNamespace(content=content, tool_calls=tool_calls)
+
+
+def _tc(name, arguments, id="call_1"):
+    return SimpleNamespace(id=id, function=SimpleNamespace(name=name, arguments=arguments))
+
+
+def _resp(message, usage=None):
+    usage = usage or {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=message)],
+        usage=SimpleNamespace(**usage),
+    )
+
+
+def _patch_completion(monkeypatch, responses):
+    """responses: list 依次返回;记录每次调用的 messages。"""
+    calls = {"count": 0, "messages": []}
+
+    async def fake_acompletion(**kwargs):
+        calls["messages"].append(kwargs.get("messages"))
+        idx = min(calls["count"], len(responses) - 1)
+        calls["count"] += 1
+        return responses[idx]
+
+    monkeypatch.setattr(llm_mod.litellm, "acompletion", fake_acompletion)
+    return calls
+
+
+# ── chat:标准路径 ─────────────────────────────────────────────
+
+
+async def test_chat_standard_tool_call(monkeypatch):
+    resp = _resp(_msg(content="", tool_calls=[_tc("browser_navigate", '{"url": "http://x"}')]))
+    _patch_completion(monkeypatch, [resp])
+
+    client = LiteLLMClient(model="test/model")
+    out = await client.chat([{"role": "user", "content": "去 x"}], tools=[{"x": 1}])
+    assert out.has_tool_calls
+    assert out.tool_calls[0].name == "browser_navigate"
+    assert out.tool_calls[0].arguments == {"url": "http://x"}
+    assert out.usage.total_tokens == 15
+
+
+async def test_chat_plain_content_no_tools(monkeypatch):
+    resp = _resp(_msg(content="TEST_RESULT: PASS"))
+    _patch_completion(monkeypatch, [resp])
+    client = LiteLLMClient(model="test/model")
+    out = await client.chat([{"role": "user", "content": "hi"}])
+    assert out.content == "TEST_RESULT: PASS"
+    assert not out.has_tool_calls
+
+
+async def test_chat_lenient_repair_bad_args(monkeypatch):
+    # tool_calls 字段在,但 arguments 是带尾逗号的坏 JSON → 宽松修复,不重试
+    resp = _resp(_msg(content="", tool_calls=[_tc("click", "{'ref': 'btn1',}")]))
+    calls = _patch_completion(monkeypatch, [resp])
+    client = LiteLLMClient(model="test/model")
+    out = await client.chat([{"role": "user", "content": "点"}], tools=[{"x": 1}])
+    assert out.tool_calls[0].arguments == {"ref": "btn1"}
+    assert calls["count"] == 1  # 未触发重试
+
+
+async def test_chat_extract_from_content(monkeypatch):
+    # 模型把工具调用写进 content(Qwen 风格),走兜底提取
+    resp = _resp(_msg(content='<tool_call>{"name": "wait", "arguments": {"s": 1}}</tool_call>'))
+    calls = _patch_completion(monkeypatch, [resp])
+    client = LiteLLMClient(model="test/model")
+    out = await client.chat([{"role": "user", "content": "等"}], tools=[{"x": 1}])
+    assert out.tool_calls[0].name == "wait"
+    assert calls["count"] == 1
+
+
+async def test_chat_retry_then_success(monkeypatch):
+    # 第一次:content 像工具调用但坏到提取不出 → 触发重试;第二次:标准成功
+    bad = _resp(_msg(content="<tool_call> name: click 没有合法json </tool_call>"))
+    good = _resp(_msg(content="", tool_calls=[_tc("click", '{"ref": "ok"}')]))
+    calls = _patch_completion(monkeypatch, [bad, good])
+    client = LiteLLMClient(model="test/model", max_tool_retries=1)
+    out = await client.chat([{"role": "user", "content": "点"}], tools=[{"x": 1}])
+    assert out.tool_calls[0].arguments == {"ref": "ok"}
+    assert calls["count"] == 2  # 重试了一次
+    # 重试时追加了纠偏提示
+    assert any("严格" in (m[-1]["content"]) for m in calls["messages"] if m)
+
+
+async def test_chat_retry_exhausted_raises(monkeypatch):
+    bad = _resp(_msg(content="<tool_call> 全是坏的 name 没json </tool_call>"))
+    calls = _patch_completion(monkeypatch, [bad, bad])
+    client = LiteLLMClient(model="test/model", max_tool_retries=1)
+    with pytest.raises(LLMToolCallError):
+        await client.chat([{"role": "user", "content": "点"}], tools=[{"x": 1}])
+    assert calls["count"] == 2  # 初次 + 重试 1 次
+
+
+async def test_usage_accumulates(monkeypatch):
+    resp = _resp(_msg(content="ok"))
+    _patch_completion(monkeypatch, [resp])
+    client = LiteLLMClient(model="test/model")
+    await client.chat([{"role": "user", "content": "a"}])
+    await client.chat([{"role": "user", "content": "b"}])
+    assert client.usage_summary().total_tokens == 30
+    client.reset_usage()
+    assert client.usage_summary().total_tokens == 0
+
+
+def test_env_config(monkeypatch):
+    monkeypatch.setenv("LLM_MODEL", "ollama/qwen3:32b")
+    monkeypatch.setenv("LLM_API_BASE", "http://localhost:11434")
+    monkeypatch.setenv("LLM_API_KEY", "secret")
+    client = LiteLLMClient()
+    assert client.model == "ollama/qwen3:32b"
+    assert client.api_base == "http://localhost:11434"
+    assert client.api_key == "secret"
+
+
+async def test_api_base_key_passed_through(monkeypatch):
+    resp = _resp(_msg(content="ok"))
+    captured = {}
+
+    async def fake_acompletion(**kwargs):
+        captured.update(kwargs)
+        return resp
+
+    monkeypatch.setattr(llm_mod.litellm, "acompletion", fake_acompletion)
+    client = LiteLLMClient(model="m", api_base="http://h", api_key="k")
+    await client.chat([{"role": "user", "content": "a"}], tools=[{"t": 1}])
+    assert captured["model"] == "m"
+    assert captured["api_base"] == "http://h"
+    assert captured["api_key"] == "k"
+    assert captured["tools"] == [{"t": 1}]
