@@ -109,6 +109,7 @@ class PageVocabularyRow(SQLModel, table=True):
 
 class RunRecordRow(SQLModel, table=True):
     """每次 Suite 执行产生的 run 记录(规格 §6 T-23)。"""
+
     __tablename__ = "run_record"
     id: str = Field(primary_key=True)  # UUID
     suite_id: str = Field(default="", index=True)
@@ -123,6 +124,7 @@ class RunRecordRow(SQLModel, table=True):
 
 class SuiteSettingsRow(SQLModel, table=True):
     """Suite 级执行配置(phase 4)。"""
+
     __tablename__ = "suite_settings"
     suite_id: str = Field(primary_key=True)
     permission_mode: str = "trust"  # trust | approve

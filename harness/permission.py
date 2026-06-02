@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import logging
 from dataclasses import dataclass
@@ -95,3 +96,31 @@ class PermissionChecker:
         if inspect.isawaitable(result):
             result = await result
         return bool(result)
+
+
+def async_event_approver(event: asyncio.Event, result_holder: dict) -> Approver:
+    """创建基于 asyncio.Event 的 approver。
+
+    用于 Web 控制台 Permission 暂停交互:
+    - 返回的 approver 等待 event.set()
+    - 调用方在收到用户选择后 set event,并将结果放入 result_holder
+    - 超时 30s 后自动拒绝
+
+    Example:
+        event = asyncio.Event()
+        result = {"approved": False}
+        checker = PermissionChecker(approver=async_event_approver(event, result))
+        # ... later, in the API handler:
+        result["approved"] = True
+        event.set()
+    """
+
+    async def _wait_for_approval(req: PermissionRequest) -> bool:
+        try:
+            await asyncio.wait_for(event.wait(), timeout=30.0)
+        except asyncio.TimeoutError:
+            logger.warning("Permission 超时 30s, 自动拒绝: %s", req.reason)
+            return False
+        return result_holder.get("approved", False)
+
+    return _wait_for_approval
