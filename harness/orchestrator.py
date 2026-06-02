@@ -15,14 +15,18 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
+from typing import Any, Callable, Coroutine
 
 from harness.hooks import AFTER_SUITE, BEFORE_SUITE, ExecutionContext, HookManager
 from input.models import ExecutionRecord, Suite, TestCase
 
 logger = logging.getLogger(__name__)
+
+SSECallback = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]] | None
 
 
 @dataclass
@@ -52,7 +56,12 @@ class Orchestrator:
         self.agent = agent
         self.hooks = hooks
 
-    async def run_suite(self, cases: list[TestCase], suite: Suite | None = None) -> SuiteResult:
+    async def run_suite(
+        self,
+        cases: list[TestCase],
+        suite: Suite | None = None,
+        sse_callback: SSECallback = None,
+    ) -> SuiteResult:
         suite_id = suite.id if suite else None
         result = SuiteResult(suite_id=suite_id)
         suite_ctx = ExecutionContext(suite=suite)
@@ -64,21 +73,60 @@ class Orchestrator:
                 result.aborted = True
                 result.error = f"before_suite 失败:{bs.error}(hook={bs.failed_hook})"
                 logger.warning(result.error)
+                if sse_callback:
+                    await sse_callback("error", {"message": result.error})
                 return result
 
+        # Push suite_start
+        if sse_callback:
+            await sse_callback("suite_start", {"run_id": "pending", "total_cases": len(cases)})
+
         # 串行执行用例,逐个隔离
+        case_idx = 0
         for case in cases:
+            case_idx += 1
+            if sse_callback:
+                await sse_callback(
+                    "case_start",
+                    {"case_id": case.id, "title": case.name, "index": case_idx},
+                )
+
             record = await self._run_one(case, suite)
+
+            if sse_callback:
+                await sse_callback(
+                    "case_result",
+                    {
+                        "case_id": case.id,
+                        "verdict": "PASS" if record.passed else "FAIL",
+                        "index": case_idx,
+                    },
+                )
+
+            record.suite_id = suite_id
             result.records.append(record)
 
         if self.hooks is not None:
             await self.hooks.run(AFTER_SUITE, suite_ctx)
 
+        passed = result.passed_count
+        failed = result.failed_count
+        if sse_callback:
+            await sse_callback(
+                "suite_done",
+                {
+                    "run_id": "pending",
+                    "passed": passed,
+                    "failed": failed,
+                    "total": result.total,
+                },
+            )
+
         logger.info(
             "Suite %s 完成:%d 通过 / %d 失败 / 共 %d",
             suite_id,
-            result.passed_count,
-            result.failed_count,
+            passed,
+            failed,
             result.total,
         )
         return result

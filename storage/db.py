@@ -79,6 +79,7 @@ class ExecutionRecordRow(SQLModel, table=True):
     exec_id: str = Field(primary_key=True)
     case_id: str = Field(default="", index=True)
     suite_id: str | None = None
+    run_id: str | None = Field(default=None, index=True)  # 关联 RunRecord(Phase 4)
     steps: list = Field(default_factory=list, sa_column=Column(JSON))
     passed: bool = False
     case_assertions: list = Field(default_factory=list, sa_column=Column(JSON))
@@ -103,6 +104,30 @@ class PageVocabularyRow(SQLModel, table=True):
     action_map: list = Field(default_factory=list, sa_column=Column(JSON))
     stale: bool = False
     scanned_at: float = 0.0
+    updated_at: float = 0.0
+
+
+class RunRecordRow(SQLModel, table=True):
+    """每次 Suite 执行产生的 run 记录(规格 §6 T-23)。"""
+
+    __tablename__ = "run_record"
+    id: str = Field(primary_key=True)  # UUID
+    suite_id: str = Field(default="", index=True)
+    status: str = "running"  # running | completed | aborted | failed
+    total_cases: int = 0
+    passed_cases: int = 0
+    failed_cases: int = 0
+    started_at: float = 0.0
+    finished_at: float | None = None
+    updated_at: float = 0.0
+
+
+class SuiteSettingsRow(SQLModel, table=True):
+    """Suite 级执行配置(phase 4)。"""
+
+    __tablename__ = "suite_settings"
+    suite_id: str = Field(primary_key=True)
+    permission_mode: str = "trust"  # trust | approve
     updated_at: float = 0.0
 
 

@@ -29,10 +29,13 @@ class Recorder:
         case_id: str,
         *,
         suite_id: str | None = None,
+        run_id: str | None = None,
         exec_id: str | None = None,
         screenshot_root: str | Path = DEFAULT_SCREENSHOT_ROOT,
     ) -> None:
         self.exec_id = exec_id or uuid.uuid4().hex[:12]
+        self.run_id = run_id or "norun"
+        self.case_id = case_id
         self.screenshot_root = Path(screenshot_root)
         self.record = ExecutionRecord(
             exec_id=self.exec_id,
@@ -72,7 +75,7 @@ class Recorder:
 
     @property
     def screenshot_dir(self) -> Path:
-        return self.screenshot_root / self.exec_id
+        return self.screenshot_root / self.run_id / self.case_id
 
     def screenshot_path(self, step_no: int, ext: str = "png") -> str:
         """返回该步截图应保存的路径(并确保目录存在)。"""
