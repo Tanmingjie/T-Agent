@@ -111,6 +111,7 @@ class ExecutionRecord(BaseModel):
     exec_id: str
     case_id: str
     suite_id: str | None = None
+    run_id: str | None = None  # 关联 RunRecord(Phase 4)
     steps: list[ActionStep] = []
     passed: bool = False
     # 用例级最终断言裁决结果(AssertionResult.to_dict),可信 PASS/FAIL 的依据
