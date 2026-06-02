@@ -121,6 +121,33 @@ class SuiteSettingsRow(SQLModel, table=True):
     updated_at: float = 0.0
 ```
 
+- [ ] **Step 2b: Also add `run_id` column to `ExecutionRecordRow`**
+
+In `storage/db.py`, modify the existing `ExecutionRecordRow` class to add `run_id`:
+
+```python
+class ExecutionRecordRow(SQLModel, table=True):
+    __tablename__ = "execution_record"
+    exec_id: str = Field(primary_key=True)
+    case_id: str = Field(default="", index=True)
+    suite_id: str | None = None
+    run_id: str | None = Field(default=None, index=True)  # ← 新增:关联 RunRecord
+    steps: list = Field(default_factory=list, sa_column=Column(JSON))
+    passed: bool = False
+    case_assertions: list = Field(default_factory=list, sa_column=Column(JSON))
+    final_result: str = ""
+    generated_code: str = ""
+    token_usage: int = 0
+    heal_count: int = 0
+    start_time: float = 0.0
+    end_time: float | None = None
+    external_id: str | None = None
+    owner: str | None = None
+    updated_at: float = 0.0
+```
+
+This is required for `list_records_by_run()` to work — without the DB column, the query filters on a nonexistent column and fails.
+
 - [ ] **Step 3: Run existing tests, verify no breakage**
 
 ```bash
@@ -3107,6 +3134,117 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 
 ---
 
+### Task 12.5: Wire real Orchestrator into /run endpoint
+
+**Files:**
+- Modify: `api/routers/execution.py` (replace fake `_run()` with real Orchestrator call)
+
+**Context:** Task 6 used a fake execution loop (`for case in cases: for step in case.steps: await _sse_event(...)`) to validate the SSE pipeline without a real Agent. This task replaces it with a real `Orchestrator.run_suite()` call. **Without this task, the "执行" button animates progress but doesn't actually drive a browser.**
+
+- [ ] **Step 1: Replace the fake `_run()` inner function in `trigger_run`**
+
+In `api/routers/execution.py`, replace the `async def _run():` body with:
+
+```python
+    async def _run():
+        try:
+            from harness.agent import TestCaseAgent
+            from harness.orchestrator import Orchestrator
+            from harness.llm import LLM
+
+            async def sse_cb(event: str, data: dict) -> None:
+                await _sse_event(event, data, queue)
+
+            # Push suite_start before orchestrator runs
+            await _sse_event("suite_start", {"run_id": run_id, "total_cases": len(cases)}, queue)
+
+            llm = LLM()  # reads LLM_MODEL/LLM_API_BASE/LLM_API_KEY from env
+            agent = TestCaseAgent(llm=llm)
+            orch = Orchestrator(agent=agent)
+
+            # Check permission mode
+            settings = await get_suite_settings(store, suite_id)
+            if settings["permission_mode"] == "approve":
+                import uuid as _uuid
+                from harness.permission import async_event_approver
+                # Set up per-call permission hook on the agent
+                async def _perm_approver(req):
+                    event_id = _uuid.uuid4().hex[:8]
+                    ev = _asyncio.Event()
+                    _permission_events[event_id] = ev
+                    _permission_results[event_id] = {"approved": False}
+                    await _sse_event("permission", {
+                        "event_id": event_id,
+                        "case_id": "current",
+                        "action": req.tool_name,
+                        "reason": req.reason,
+                    }, queue)
+                    return await async_event_approver(ev, _permission_results[event_id])(req)
+                agent.permission_approver = _perm_approver
+
+            result = await orch.run_suite(cases, suite=suite, sse_callback=sse_cb)
+
+            # Save ExecutionRecords to DB with run_id for history
+            for record in result.records:
+                record.run_id = run_id
+                await repo.save_record(record)
+
+            await repo.update_run(
+                run_id, status="completed",
+                passed_cases=result.passed_count,
+                failed_cases=result.failed_count,
+                finished_at=time.time(),
+            )
+        except Exception as e:
+            logger.exception("Run %s failed", run_id)
+            await _sse_event("error", {"message": str(e)}, queue)
+            await repo.update_run(run_id, status="failed", finished_at=time.time())
+        finally:
+            _sse_queues.pop(run_id, None)
+```
+
+Note: Add `import asyncio as _asyncio` and `import logging; logger = logging.getLogger(__name__)` to the top of the file.
+
+**Integration contracts:**
+- `agent.permission_approver` — set by execution route when mode is `"approve"`; consulted by `react_loop.py` before each tool call
+- `_permission_events[event_id] = asyncio.Event()` — created when permission is needed; resolved by `POST /api/suites/:id/permission/:event_id`
+- `record.run_id = run_id` — set before saving to DB so `list_records_by_run()` can query by run
+
+- [ ] **Step 2: Run execution tests**
+
+```bash
+source .venv/bin/activate && python -m pytest tests/test_api_execution.py -v
+```
+
+Expected: Tests pass.
+
+- [ ] **Step 3: Add execution router to server.py**
+
+Verify `api/server.py` now includes all router imports:
+```python
+from api.routers import suites, execution, permission, results, vocabulary  # noqa: E402
+app.include_router(suites.router, prefix="/api")
+app.include_router(execution.router, prefix="/api")
+app.include_router(permission.router, prefix="/api")
+app.include_router(results.router, prefix="/api")
+app.include_router(vocabulary.router, prefix="/api")
+```
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add api/routers/execution.py api/server.py
+git commit -m "feat: wire real Orchestrator into /run SSE endpoint
+
+Replace fake execution loop with real TestCaseAgent + Orchestrator.
+Permission events wired through asyncio.Event + SSE.
+ExecutionRecords saved with run_id for history querying.
+
+Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
+```
+
+---
+
 ### Task 13: Integration verification
 
 - [ ] **Step 1: Run full test suite**
@@ -3163,4 +3301,5 @@ Co-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>"
 | 2 | T5 (Orch SSE), T6 (Execution routes), T7 (Permission route) | T8 (RunConsole + Permission) | test_api_execution.py, test_api_permission.py |
 | 3 | T9 (Screenshots + Results routes) | T10 (CaseResult + CodeViewer) | test_api_results.py |
 | 4 | T11 (Vocabulary routes) | T12 (Vocabulary page + codegen) | test_api_vocabulary.py |
+| Integrate | T12.5 (Wire Orchestrator to /run) | — | test_api_execution.py (updated) |
 | Verify | T13 (Integration check) | — | All |
