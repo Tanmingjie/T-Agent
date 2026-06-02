@@ -151,7 +151,7 @@ class BDDGenerator(CodeGenerator):
         seen: set[str] = set()
         idx = 0
 
-        def emit(decorator: str, text: str, body: str) -> None:
+        def emit(decorator: str, text: str, body: str, step_no: int = 0) -> None:
             nonlocal idx
             if text in seen:
                 return  # 同名 step 复用一个定义(pytest-bdd 按文本匹配)
@@ -159,19 +159,22 @@ class BDDGenerator(CodeGenerator):
             blocks.append("")
             blocks.append(f"@{decorator}({_q(text)})")
             blocks.append(f"def {decorator}_{idx}(page: Page):")
+            if step_no:
+                blocks.append(f"    # step_{step_no}")
             blocks.append(body)
             idx += 1
 
-        for g in spec.given:
+        for i, g in enumerate(spec.given, start=1):
             emit(
                 "given",
                 g.target,
                 f"    # 业务前置({g.action}):{g.target} —— 请按实际补充\n    pass",
+                i,
             )
-        for s in spec.steps:
-            emit("when", _step_text(s), _step_body(s, spec.base_url))
-        for a in spec.assertions:
-            emit("then", _assertion_text(a), _assertion_body(a))
+        for i, s in enumerate(spec.steps, start=1):
+            emit("when", _step_text(s), _step_body(s, spec.base_url), i)
+        for i, a in enumerate(spec.assertions, start=1):
+            emit("then", _assertion_text(a), _assertion_body(a), i)
 
         code = "\n".join(blocks) + "\n"
         ast.parse(code)  # 语法校验,失败即抛
