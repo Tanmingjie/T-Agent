@@ -32,3 +32,6 @@ frontend/dist/
 
 # Claude Code 本地设置
 .claude/settings.local.json
+
+# brainstorming 可视化伴侣产物
+.superpowers/
