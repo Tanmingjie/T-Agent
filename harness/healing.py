@@ -96,7 +96,7 @@ class HealingSubagent:
 
     def __init__(self, llm: LLMClient, *, max_attempts: int = 3) -> None:
         self.llm = llm
-        self.max_attempts = max_attempts
+        # max_attempts reserved for future retry logic
 
     async def relocate(
         self,

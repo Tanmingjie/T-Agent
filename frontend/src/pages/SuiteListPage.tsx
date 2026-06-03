@@ -13,24 +13,39 @@ export default function SuiteListPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
   const [baseUrl, setBaseUrl] = useState("");
+  const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
 
   async function load() {
-    setSuites(await apiGet<Suite[]>("/suites"));
+    try {
+      setSuites(await apiGet<Suite[]>("/suites"));
+      setError(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
   useEffect(() => { load(); }, []);
 
   async function create() {
-    await apiPost("/suites", { name, base_url: baseUrl });
-    setShowCreate(false);
-    setName("");
-    setBaseUrl("");
-    load();
+    try {
+      await apiPost("/suites", { name, base_url: baseUrl });
+      setShowCreate(false);
+      setName("");
+      setBaseUrl("");
+      load();
+    } catch (e) {
+      alert("创建失败: " + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   async function remove(id: string) {
-    await apiDelete(`/suites/${id}`);
-    load();
+    if (!window.confirm("确认删除此 Suite？此操作不可恢复。")) return;
+    try {
+      await apiDelete(`/suites/${id}`);
+      load();
+    } catch (e) {
+      alert("删除失败: " + (e instanceof Error ? e.message : String(e)));
+    }
   }
 
   return (
@@ -44,6 +59,8 @@ export default function SuiteListPage() {
           + 新建
         </button>
       </div>
+
+      {error && <p className="text-red-600 text-sm mb-4">{error}</p>}
 
       {showCreate && (
         <div className="mb-6 p-4 border rounded bg-white">

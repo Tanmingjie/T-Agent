@@ -52,13 +52,14 @@ def _step_text(step: SpecStep) -> str:
 def _step_body(step: SpecStep, base_url: str) -> str:
     a, t, d = step.action, step.target, step.data
     if a == "navigate":
-        return f"    page.goto({_q(base_url)})  # 导航到「{t}」"
+        url = f"{base_url.rstrip('/')}/{t.lstrip('/')}" if t.startswith("/") else t
+        return f"    page.goto({_q(url)})  # 导航到「{t}」"
     if a == "fill":
         return f"    page.get_by_label({_q(t)}).fill({_q(d or '')})"
     if a == "select":
         return f"    page.get_by_label({_q(t)}).select_option({_q(d or '')})"
     if a == "click":
-        return f'    page.get_by_role("button", name={_q(t)}).click()'
+        return f"    page.get_by_text({_q(t)}).first.click()"
     if a == "hover":
         return f"    page.get_by_text({_q(t)}).first.hover()"
     if a == "wait":

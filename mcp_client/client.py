@@ -13,6 +13,7 @@ playwright-mcp 服务端默认就以 stdio 暴露 MCP 协议,并在本机用 Pla
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -149,11 +150,14 @@ class MCPClient:
         return mcp_tools_to_litellm(self._tools)
 
     async def call_tool(
-        self, name: str, arguments: dict[str, Any] | None = None
+        self, name: str, arguments: dict[str, Any] | None = None, *, timeout: float = 120.0
     ) -> types.CallToolResult:
-        """调用一个 MCP 工具,返回原始 CallToolResult。"""
+        """调用一个 MCP 工具,返回原始 CallToolResult。超时则抛 asyncio.TimeoutError。"""
         self._require_session()
-        return await self.session.call_tool(name, arguments or {})  # type: ignore[union-attr]
+        return await asyncio.wait_for(
+            self.session.call_tool(name, arguments or {}),  # type: ignore[union-attr]
+            timeout=timeout,
+        )
 
     @staticmethod
     def result_to_text(result: types.CallToolResult) -> str:

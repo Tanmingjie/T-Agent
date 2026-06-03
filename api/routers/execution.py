@@ -26,7 +26,7 @@ logger = logging.getLogger(__name__)
 
 
 async def _sse_event(event: str, data: dict, queue: asyncio.Queue) -> None:
-    payload = json.dumps(data, ensure_ascii=False)
+    payload = json.dumps(data, ensure_ascii=False).replace("\n", "\\n")
     await queue.put(f"event: {event}\ndata: {payload}\n\n")
 
 
@@ -60,9 +60,6 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
 
             async def sse_cb(event: str, data: dict) -> None:
                 await _sse_event(event, data, queue)
-
-            # Push suite_start
-            await _sse_event("suite_start", {"run_id": run_id, "total_cases": len(cases)}, queue)
 
             # Create agent with LLM from env + MCP for browser control
             from harness.llm import LiteLLMClient
@@ -99,7 +96,9 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
 
                     agent.permission_approver = _perm_approver
 
-                result = await orch.run_suite(cases, suite=suite, sse_callback=sse_cb)
+                result = await orch.run_suite(
+                    cases, suite=suite, sse_callback=sse_cb, run_id=run_id
+                )
 
                 # Save ExecutionRecords with run_id
                 for record in result.records:
@@ -118,6 +117,9 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
             await _sse_event("error", {"message": str(e)}, queue)
             await repo.update_run(run_id, status="failed", finished_at=time.time())
         finally:
+            # Push sentinel to terminate SSE stream, then remove queue
+            await _sse_event("suite_done", {"run_id": run_id, "sentinel": True}, queue)
+            await asyncio.sleep(0.5)
             _sse_queues.pop(run_id, None)
 
     asyncio.create_task(_run())
@@ -136,6 +138,9 @@ async def stream_events(suite_id: str, run_id: str):
             try:
                 msg = await asyncio.wait_for(queue.get(), timeout=15.0)
                 yield msg
+                # Terminate stream on suite_done or error events
+                if msg.startswith("event: suite_done") or msg.startswith("event: error"):
+                    break
             except asyncio.TimeoutError:
                 yield ": keepalive\n\n"
 

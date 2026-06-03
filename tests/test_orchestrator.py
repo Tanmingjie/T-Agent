@@ -24,7 +24,7 @@ class _FakeAgent:
         self.fail_ids = set(fail_ids or [])
         self.raise_ids = set(raise_ids or [])
 
-    async def run(self, case, spec=None, ctx=None):
+    async def run(self, case, spec=None, ctx=None, step_callback=None):
         self.calls.append(case.id)
         self.contexts.append(ctx)
         if case.id in self.raise_ids:

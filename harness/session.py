@@ -66,7 +66,9 @@ class SessionManager:
 
     def load_cookies(self, profile: SessionProfile) -> CookieList:
         store = self._read_store(profile)
-        return list(store.get("cookies", [])) if store else []
+        if store is None:
+            return []
+        return list(store.get("cookies", []))
 
     def save_cookies(
         self, profile: SessionProfile, cookies: CookieList, ttl_seconds: int = DEFAULT_TTL_SECONDS

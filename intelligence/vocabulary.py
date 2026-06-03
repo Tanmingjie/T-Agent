@@ -30,12 +30,13 @@ def route_match(url_pattern: str, url: str) -> bool:
 
 
 def _term_lookup(vocab: dict, term: str) -> dict | None:
-    """在一页词汇表里查业务词:先精确,再双向包含。"""
+    """在一页词汇表里查业务词:先精确,再子串(优先长 key)。"""
     if term in vocab:
         return vocab[term]
-    for key, val in vocab.items():
+    # 按长度降序匹配,优先长 key(避免短 key 吞掉长 key)
+    for key in sorted(vocab, key=len, reverse=True):
         if term and (term in key or key in term):
-            return val
+            return vocab[key]
     return None
 
 

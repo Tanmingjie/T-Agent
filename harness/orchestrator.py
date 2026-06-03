@@ -61,6 +61,7 @@ class Orchestrator:
         cases: list[TestCase],
         suite: Suite | None = None,
         sse_callback: SSECallback = None,
+        run_id: str | None = None,
     ) -> SuiteResult:
         suite_id = suite.id if suite else None
         result = SuiteResult(suite_id=suite_id)
@@ -79,7 +80,9 @@ class Orchestrator:
 
         # Push suite_start
         if sse_callback:
-            await sse_callback("suite_start", {"run_id": "pending", "total_cases": len(cases)})
+            await sse_callback(
+                "suite_start", {"run_id": run_id or "pending", "total_cases": len(cases)}
+            )
 
         # 串行执行用例,逐个隔离
         case_idx = 0
@@ -91,7 +94,7 @@ class Orchestrator:
                     {"case_id": case.id, "title": case.name, "index": case_idx},
                 )
 
-            record = await self._run_one(case, suite)
+            record = await self._run_one(case, suite, sse_callback=sse_callback)
 
             if sse_callback:
                 await sse_callback(
@@ -115,7 +118,7 @@ class Orchestrator:
             await sse_callback(
                 "suite_done",
                 {
-                    "run_id": "pending",
+                    "run_id": run_id or "pending",
                     "passed": passed,
                     "failed": failed,
                     "total": result.total,
@@ -131,11 +134,20 @@ class Orchestrator:
         )
         return result
 
-    async def _run_one(self, case: TestCase, suite: Suite | None) -> ExecutionRecord:
+    async def _run_one(
+        self, case: TestCase, suite: Suite | None, sse_callback: SSECallback = None
+    ) -> ExecutionRecord:
         """执行单条用例;异常被隔离为 FAIL 记录,不冒泡影响其它用例。"""
         ctx = ExecutionContext(case=case, suite=suite)
+
+        async def _step_cb(event: str, data: dict) -> None:
+            if sse_callback is not None:
+                await sse_callback(event, data)
+
         try:
-            return await self.agent.run(case, ctx=ctx)
+            return await self.agent.run(
+                case, ctx=ctx, step_callback=_step_cb if sse_callback else None
+            )
         except Exception as e:  # noqa: BLE001 — 用例间隔离:A 的异常不拖垮 B
             logger.warning("用例 %s 执行异常,记为 FAIL:%s", case.id, e)
             return ExecutionRecord(

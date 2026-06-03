@@ -28,6 +28,7 @@ class TestCase(BaseModel):
     id: str
     name: str
     preconditions: list[str] = []  # 已拆分的预置条件
+    precondition_confirmed: list[bool] = []  # 每个前置条件是否已确认
     steps: list[str] = []  # 已拆分的测试步骤(数据写死在文本里)
     expected: list[str] = []  # 预期结果
     base_url: str = ""
@@ -117,7 +118,7 @@ class ExecutionRecord(BaseModel):
     # 用例级最终断言裁决结果(AssertionResult.to_dict),可信 PASS/FAIL 的依据
     case_assertions: list[dict] = []
     final_result: str = ""
-    generated_code: str = ""
+    generated_code: str = ""  # TODO: Phase 5
     token_usage: int = 0
     heal_count: int = 0
     start_time: float = Field(default_factory=time.time)

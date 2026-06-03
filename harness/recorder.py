@@ -61,7 +61,6 @@ class Recorder:
         for s in self.record.steps:
             if s.step_no == step_no:
                 s.assertion_results.extend(results)
-                return
 
     def set_case_assertions(self, results: list[dict]) -> None:
         """设置用例级最终断言结果(来自 AssertionEngine,已 to_dict)。"""

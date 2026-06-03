@@ -1,6 +1,6 @@
 import { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { sseUrl, apiPost } from "../api/client";
+import { sseUrl, apiPost, safeParse } from "../api/client";
 import ProgressBar from "../components/ProgressBar";
 import PermissionDialog from "../components/PermissionDialog";
 
@@ -32,92 +32,105 @@ export default function RunConsolePage() {
   const [done, setDone] = useState(false);
   const [result, setResult] = useState<{ passed: number; failed: number; total: number } | null>(null);
   const [permission, setPermission] = useState<PermReq | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
 
   async function start() {
-    const { run_id } = await apiPost<{ run_id: string }>(`/suites/${id}/run`);
-    setRunId(run_id);
+    try {
+      const { run_id } = await apiPost<{ run_id: string }>(`/suites/${id}/run`);
+      setRunId(run_id);
+      setError(null);
 
-    const url = sseUrl(`/suites/${id}/stream?run_id=${run_id}`);
-    const es = new EventSource(url);
-    esRef.current = es;
+      const url = sseUrl(`/suites/${id}/stream?run_id=${run_id}`);
+      const es = new EventSource(url);
+      esRef.current = es;
 
-    es.addEventListener("suite_start", (e) => {
-      const d = JSON.parse(e.data);
-      setStatuses([]);
-      setDone(false);
-      setResult(null);
-    });
+      es.addEventListener("suite_start", (e) => {
+        const d = safeParse(e.data);
+        if (!d) return;
+        setStatuses([]);
+        setDone(false);
+        setResult(null);
+      });
 
-    es.addEventListener("case_start", (e) => {
-      const d = JSON.parse(e.data);
-      setStatuses((prev) => [
-        ...prev,
-        { case_id: d.case_id, title: d.title, status: "running", steps: [] },
-      ]);
-      setCurrentCase(d.case_id);
-    });
+      es.addEventListener("case_start", (e) => {
+        const d = safeParse(e.data);
+        if (!d) return;
+        setStatuses((prev) => [
+          ...prev,
+          { case_id: d.case_id as string, title: d.title as string, status: "running", steps: [] },
+        ]);
+        setCurrentCase(d.case_id as string);
+      });
 
-    es.addEventListener("step_change", (e) => {
-      const d = JSON.parse(e.data);
-      setStatuses((prev) =>
-        prev.map((c) =>
-          c.case_id === d.case_id
-            ? {
-                ...c,
-                steps: [
-                  ...c.steps.filter((s) => s.index !== d.step_index),
-                  { index: d.step_index, status: d.status, description: d.description },
-                ],
-              }
-            : c
-        )
-      );
-    });
+      es.addEventListener("step_change", (e) => {
+        const d = safeParse(e.data);
+        if (!d) return;
+        setStatuses((prev) =>
+          prev.map((c) =>
+            c.case_id === d.case_id
+              ? {
+                  ...c,
+                  steps: [
+                    ...c.steps.filter((s) => s.index !== d.step_index),
+                    { index: d.step_index as number, status: d.status as string, description: d.description as string },
+                  ],
+                }
+              : c
+          )
+        );
+      });
 
-    es.addEventListener("step_done", (e) => {
-      const d = JSON.parse(e.data);
-      setStatuses((prev) =>
-        prev.map((c) =>
-          c.case_id === d.case_id
-            ? {
-                ...c,
-                steps: c.steps.map((s) =>
-                  s.index === d.step_index ? { ...s, status: "done" } : s
-                ),
-              }
-            : c
-        )
-      );
-    });
+      es.addEventListener("step_done", (e) => {
+        const d = safeParse(e.data);
+        if (!d) return;
+        setStatuses((prev) =>
+          prev.map((c) =>
+            c.case_id === d.case_id
+              ? {
+                  ...c,
+                  steps: c.steps.map((s) =>
+                    s.index === d.step_index ? { ...s, status: "done" } : s
+                  ),
+                }
+              : c
+          )
+        );
+      });
 
-    es.addEventListener("case_result", (e) => {
-      const d = JSON.parse(e.data);
-      setStatuses((prev) =>
-        prev.map((c) =>
-          c.case_id === d.case_id
-            ? { ...c, status: d.verdict === "PASS" ? "passed" : "failed" }
-            : c
-        )
-      );
-    });
+      es.addEventListener("case_result", (e) => {
+        const d = safeParse(e.data);
+        if (!d) return;
+        setStatuses((prev) =>
+          prev.map((c) =>
+            c.case_id === d.case_id
+              ? { ...c, status: d.verdict === "PASS" ? "passed" : "failed" }
+              : c
+          )
+        );
+      });
 
-    es.addEventListener("permission", (e) => {
-      const d = JSON.parse(e.data);
-      setPermission(d);
-    });
+      es.addEventListener("permission", (e) => {
+        const d = safeParse(e.data);
+        if (d) setPermission(d as unknown as PermReq);
+      });
 
-    es.addEventListener("suite_done", (e) => {
-      const d = JSON.parse(e.data);
-      setDone(true);
-      setResult({ passed: d.passed, failed: d.failed, total: d.total });
-      es.close();
-    });
+      es.addEventListener("suite_done", (e) => {
+        const d = safeParse(e.data);
+        if (d) {
+          setDone(true);
+          setResult({ passed: d.passed as number, failed: d.failed as number, total: d.total as number });
+        }
+        es.close();
+      });
 
-    es.addEventListener("error", () => {
-      // EventSource auto-reconnects; we just note it
-    });
+      es.addEventListener("error", () => {
+        // EventSource auto-reconnects; we just note it
+      });
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
   }
 
   useEffect(() => {
@@ -133,6 +146,8 @@ export default function RunConsolePage() {
       <button onClick={() => navigate(`/suites/${id}`)} className="text-sm text-gray-500 hover:underline mb-2">
         ← 返回 Suite
       </button>
+
+      {error && <p className="text-red-600 text-sm mb-4">{error}</p>}
 
       <h2 className="text-xl font-bold mb-1">执行控制台</h2>
       <p className="text-sm text-gray-500 mb-4">

@@ -54,6 +54,7 @@ class TestCaseRow(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str = ""
     preconditions: list = Field(default_factory=list, sa_column=Column(JSON))
+    precondition_confirmed: list = Field(default_factory=list, sa_column=Column(JSON))
     steps: list = Field(default_factory=list, sa_column=Column(JSON))
     expected: list = Field(default_factory=list, sa_column=Column(JSON))
     base_url: str = ""
@@ -101,7 +102,7 @@ class PageVocabularyRow(SQLModel, table=True):
     page_title: str = ""
     login_role: str = ""
     vocabulary: dict = Field(default_factory=dict, sa_column=Column(JSON))
-    action_map: list = Field(default_factory=list, sa_column=Column(JSON))
+    action_map: list = Field(default_factory=list, sa_column=Column(JSON))  # TODO: Phase 5
     stale: bool = False
     scanned_at: float = 0.0
     updated_at: float = 0.0
@@ -185,10 +186,14 @@ class Store:
             row = await s.get(ExecutionRecordRow, exec_id)
             return ExecutionRecord(**row.model_dump()) if row else None
 
-    async def list_records(self, case_id: str | None = None) -> list[ExecutionRecord]:
+    async def list_records(
+        self, case_id: str | None = None, suite_id: str | None = None
+    ) -> list[ExecutionRecord]:
         stmt = select(ExecutionRecordRow)
         if case_id is not None:
             stmt = stmt.where(ExecutionRecordRow.case_id == case_id)
+        if suite_id is not None:
+            stmt = stmt.where(ExecutionRecordRow.suite_id == suite_id)
         async with self._sf() as s:
             rows = (await s.exec(stmt)).all()
             return [ExecutionRecord(**r.model_dump()) for r in rows]

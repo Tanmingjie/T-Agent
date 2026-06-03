@@ -69,9 +69,9 @@ def test_step_defs_binds_feature_via_scenarios():
     assert 'scenarios("TC001.feature")' in _gen().step_defs
 
 
-def test_click_maps_to_get_by_role():
+def test_click_maps_to_get_by_text():
     code = _gen().step_defs
-    assert 'get_by_role("button", name="提交")' in code
+    assert 'get_by_text("提交").first' in code
     assert ".click()" in code
 
 

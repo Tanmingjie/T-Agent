@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import re
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable
 
@@ -68,7 +69,19 @@ class PermissionChecker:
         haystack = f"{tool_name} " + " ".join(
             str(v) for v in (arguments or {}).values() if isinstance(v, (str, int, float))
         )
-        hit = [w for w in self.dangerous_words if w and w.lower() in haystack.lower()]
+        hit = []
+        for w in self.dangerous_words:
+            if not w:
+                continue
+            # CJK words: substring match (no word boundaries in Chinese)
+            if any(ord(c) > 0x4E00 for c in w):
+                if w.lower() in haystack.lower():
+                    hit.append(w)
+            else:
+                # ASCII words: match as whole word or as underscore/hyphen-separated segment
+                pattern = rf"(?:^|[\s_\-]){re.escape(w)}(?:$|[\s_\-])"
+                if re.search(pattern, haystack, re.IGNORECASE):
+                    hit.append(w)
         if hit:
             reasons.append(f"高危词: {', '.join(hit)}")
 

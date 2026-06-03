@@ -129,6 +129,7 @@ class StepPlan:
         st = self._require(step_no)
         st.status = StepStatus.FAILED
         st.note = reason
+        self._activate_next()
         return st
 
     def mark_skipped(self, step_no: int, reason: str = "") -> PlanStep:

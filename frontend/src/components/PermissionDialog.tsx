@@ -15,7 +15,12 @@ export default function PermissionDialog({ eventId, caseId, action, reason, suit
   const [resolved, setResolved] = useState(false);
 
   useEffect(() => {
-    if (countdown <= 0 || resolved) return;
+    if (resolved) return;
+    if (countdown <= 0) {
+      // Auto-reject when countdown reaches zero
+      respond("reject");
+      return;
+    }
     const t = setInterval(() => setCountdown((c) => c - 1), 1000);
     return () => clearInterval(t);
   }, [countdown, resolved]);
@@ -24,7 +29,9 @@ export default function PermissionDialog({ eventId, caseId, action, reason, suit
     setResolved(true);
     try {
       await apiPost(`/suites/${suiteId}/permission/${eventId}`, { choice });
-    } catch { /* ignore */ }
+    } catch (e) {
+      console.error("Permission response failed:", e);
+    }
     onResolved();
   }
 
@@ -41,13 +48,15 @@ export default function PermissionDialog({ eventId, caseId, action, reason, suit
         <div className="flex gap-3">
           <button
             onClick={() => respond("approve")}
-            className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700"
+            disabled={resolved}
+            className="bg-green-600 text-white px-4 py-2 rounded hover:bg-green-700 disabled:opacity-50"
           >
             ✓ 批准本次
           </button>
           <button
             onClick={() => respond("reject")}
-            className="border border-red-500 text-red-600 px-4 py-2 rounded hover:bg-red-50"
+            disabled={resolved}
+            className="border border-red-500 text-red-600 px-4 py-2 rounded hover:bg-red-50 disabled:opacity-50"
           >
             ✕ 拒绝本次
           </button>

@@ -280,6 +280,7 @@ class LiteLLMClient(LLMClient):
             call_kwargs["api_key"] = self.api_key
         if tools:
             call_kwargs["tools"] = tools
+        call_kwargs["timeout"] = 120
         return await litellm.acompletion(**call_kwargs)
 
     def _parse(self, resp: Any) -> "_Parsed":
@@ -328,6 +329,10 @@ class LiteLLMClient(LLMClient):
                 had_error = True
 
         # 拿到任何可用调用就不算失败(部分容错优于全盘失败)
+        if had_error and calls:
+            logger.warning(
+                "部分 tool_call 解析失败,已丢弃%d个无效调用", len(raw_calls) - len(calls)
+            )
         error = "" if calls or not had_error else "tool_call 格式无法解析"
         return _Parsed(
             content=content, tool_calls=calls, usage=usage, error=error, raw_content=content

@@ -131,8 +131,20 @@ class SQLModelRepository(
         if suite is None:
             return False
         async with self._store._sf() as s:
-            from storage.db import SuiteRow
+            from storage.db import (
+                ExecutionRecordRow,
+                RunRecordRow,
+                SuiteRow,
+                SuiteSettingsRow,
+                TestCaseRow,
+            )
 
+            await s.exec(
+                sql_delete(ExecutionRecordRow).where(ExecutionRecordRow.suite_id == suite_id)
+            )
+            await s.exec(sql_delete(RunRecordRow).where(RunRecordRow.suite_id == suite_id))
+            await s.exec(sql_delete(TestCaseRow).where(TestCaseRow.suite_id == suite_id))
+            await s.exec(sql_delete(SuiteSettingsRow).where(SuiteSettingsRow.suite_id == suite_id))
             await s.exec(sql_delete(SuiteRow).where(SuiteRow.id == suite_id))
             await s.commit()
         return True
@@ -156,8 +168,7 @@ class SQLModelRepository(
         tc = await self._store.get_case(case_id)
         if tc is None:
             return False
-        # Toggle confirmed_by_user on the precondition item
-        confirmed_list: list[bool] = getattr(tc, "precondition_confirmed", [])
+        confirmed_list = list(tc.precondition_confirmed)
         while len(confirmed_list) < len(tc.preconditions):
             confirmed_list.append(False)
         if 0 <= precondition_index < len(confirmed_list):
@@ -246,7 +257,7 @@ class SQLModelRepository(
             return [ExecutionRecord(**r.model_dump()) for r in rows]
 
     async def list_records_by_suite(self, suite_id: str) -> list[ExecutionRecord]:
-        return await self._store.list_records(case_id=None)
+        return await self._store.list_records(suite_id=suite_id)
 
     # ── Vocabulary ──
 

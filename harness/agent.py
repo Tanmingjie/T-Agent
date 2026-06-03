@@ -109,6 +109,7 @@ class TestCaseAgent:
         skills: SkillManager | None = None,
         permission: PermissionChecker | None = None,
         tools_registry: ToolRegistry | None = None,
+        step_callback: Callable[[str, dict], Coroutine] | None = None,
     ) -> None:
         self.llm = llm
         self.mcp = mcp
@@ -119,6 +120,7 @@ class TestCaseAgent:
         self.skills = skills
         self.permission = permission
         self.tools_registry = tools_registry
+        self.step_callback = step_callback
 
     async def generate_spec(self, case: TestCase) -> TestSpec:
         """仅生成 TestSpec(供 CLI 先打印给用户审查)。"""
@@ -129,6 +131,7 @@ class TestCaseAgent:
         case: TestCase,
         spec: TestSpec | None = None,
         ctx: ExecutionContext | None = None,
+        step_callback=None,
     ) -> ExecutionRecord:
         """执行一条用例,返回 ExecutionRecord(PASS/FAIL 由断言裁决)。"""
         ctx = ctx or ExecutionContext(case=case)
@@ -209,6 +212,25 @@ class TestCaseAgent:
         )
         result = await loop.run()
         recorder.extend_steps(result.action_steps)
+        cb = step_callback or self.step_callback
+        if cb is not None:
+            for step in result.action_steps:
+                try:
+                    await cb(
+                        "step_change",
+                        {
+                            "case_id": case.id,
+                            "step_index": step.step_no,
+                            "status": "done",
+                            "description": (
+                                f"{step.tool_name}({', '.join(f'{k}={v}' for k, v in step.tool_input.items())})"
+                                if step.tool_input
+                                else step.tool_name
+                            ),
+                        },
+                    )
+                except Exception:  # noqa: BLE001
+                    pass  # step_callback 失败不影响执行
         recorder.set_token_usage(self._token_usage())
 
         # —— 断言裁决(确定性,非 LLM 眼判;目标找不到时自愈重定位) ——

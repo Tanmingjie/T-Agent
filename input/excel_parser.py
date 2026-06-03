@@ -118,66 +118,66 @@ def parse_excel(
         sheet_name: 可选,指定 sheet;默认取活动 sheet。
     """
     wb = load_workbook(filename=str(path), data_only=True, read_only=False)
-    ws = wb[sheet_name] if sheet_name else wb.active
-
-    merged = _build_merged_resolver(ws)
-
-    def cell_value(row: int, col: int) -> object:
-        """col 为 0-based 字段列索引;返回合并锚点解析后的值。"""
-        real_col = col + 1  # openpyxl 1-based
-        if (row, real_col) in merged:
-            return merged[(row, real_col)]
-        return ws.cell(row=row, column=real_col).value
-
-    rows_iter = ws.iter_rows(values_only=True)
     try:
-        header_row = next(rows_iter)
-    except StopIteration:
-        wb.close()
-        return []
+        ws = wb[sheet_name] if sheet_name else wb.active
 
-    headers = _resolve_headers(list(header_row))
-    missing = [f for f in ("name", "steps") if f not in headers]
-    if missing:
-        wb.close()
-        raise ValueError(
-            f"Excel 表头缺少必需列 {missing};识别到的表头={list(header_row)}。"
-            f"支持的别名见 _HEADER_ALIASES。"
-        )
+        merged = _build_merged_resolver(ws)
 
-    cases: list[TestCase] = []
-    auto_seq = 0
-    # 数据行从第 2 行开始(1-based,表头是第 1 行)
-    for r in range(2, ws.max_row + 1):
+        def cell_value(row: int, col: int) -> object:
+            """col 为 0-based 字段列索引;返回合并锚点解析后的值。"""
+            real_col = col + 1  # openpyxl 1-based
+            if (row, real_col) in merged:
+                return merged[(row, real_col)]
+            return ws.cell(row=row, column=real_col).value
 
-        def get(field: str) -> object:
-            col = headers.get(field)
-            return cell_value(r, col) if col is not None else None
+        rows_iter = ws.iter_rows(values_only=True)
+        try:
+            header_row = next(rows_iter)
+        except StopIteration:
+            return []
 
-        name_raw = get("name")
-        steps_raw = get("steps")
-
-        # 空行跳过:名称与步骤都为空视为空行
-        if not str(name_raw or "").strip() and not str(steps_raw or "").strip():
-            continue
-
-        auto_seq += 1
-        case_id = str(get("id") or "").strip()
-        if not case_id:
-            case_id = f"TC{auto_seq:03d}"
-            logger.warning("第 %d 行缺少用例 ID,自动生成 %s", r, case_id)
-
-        cases.append(
-            TestCase(
-                id=case_id,
-                name=str(name_raw or "").strip(),
-                preconditions=_split_items(get("preconditions")),
-                steps=_split_items(steps_raw),
-                expected=_split_items(get("expected")),
-                base_url=base_url,
-                suite_id=suite_id,
+        headers = _resolve_headers(list(header_row))
+        missing = [f for f in ("name", "steps") if f not in headers]
+        if missing:
+            raise ValueError(
+                f"Excel 表头缺少必需列 {missing};识别到的表头={list(header_row)}。"
+                f"支持的别名见 _HEADER_ALIASES。"
             )
-        )
 
-    wb.close()
-    return cases
+        cases: list[TestCase] = []
+        auto_seq = 0
+        # 数据行从第 2 行开始(1-based,表头是第 1 行)
+        for r in range(2, ws.max_row + 1):
+
+            def get(field: str) -> object:
+                col = headers.get(field)
+                return cell_value(r, col) if col is not None else None
+
+            name_raw = get("name")
+            steps_raw = get("steps")
+
+            # 空行跳过:名称与步骤都为空视为空行
+            if not str(name_raw or "").strip() and not str(steps_raw or "").strip():
+                continue
+
+            auto_seq += 1
+            case_id = str(get("id") or "").strip()
+            if not case_id:
+                case_id = f"TC{auto_seq:03d}"
+                logger.warning("第 %d 行缺少用例 ID,自动生成 %s", r, case_id)
+
+            cases.append(
+                TestCase(
+                    id=case_id,
+                    name=str(name_raw or "").strip(),
+                    preconditions=_split_items(get("preconditions")),
+                    steps=_split_items(steps_raw),
+                    expected=_split_items(get("expected")),
+                    base_url=base_url,
+                    suite_id=suite_id,
+                )
+            )
+
+        return cases
+    finally:
+        wb.close()

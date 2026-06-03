@@ -145,9 +145,11 @@ class ToolRegistry:
         return str(result)
 
     async def _call_command(self, tool: _Tool, args: dict) -> str:
+        import shlex
+
         cmd = tool.command or ""
         for k, v in args.items():
-            cmd = cmd.replace(f"{{{k}}}", str(v))
+            cmd = cmd.replace(f"{{{k}}}", shlex.quote(str(v)))
         proc = await asyncio.create_subprocess_shell(
             cmd, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE
         )
