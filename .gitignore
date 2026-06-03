@@ -33,5 +33,8 @@ frontend/dist/
 # Claude Code 本地设置
 .claude/settings.local.json
 
+# Claude Code skills (通过 npx skills add 安装，各环境自行拉取)
+.agents/
+
 # brainstorming 可视化伴侣产物
 .superpowers/
