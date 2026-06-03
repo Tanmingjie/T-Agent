@@ -56,6 +56,7 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
         try:
             from harness.agent import TestCaseAgent
             from harness.orchestrator import Orchestrator
+            from mcp_client.client import MCPClient
 
             async def sse_cb(event: str, data: dict) -> None:
                 await _sse_event(event, data, queue)
@@ -63,54 +64,55 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
             # Push suite_start
             await _sse_event("suite_start", {"run_id": run_id, "total_cases": len(cases)}, queue)
 
-            # Create agent with LLM from env
-            from harness.llm import LLM
+            # Create agent with LLM from env + MCP for browser control
+            from harness.llm import LiteLLMClient
 
-            llm = LLM()
-            agent = TestCaseAgent(llm=llm)
+            llm = LiteLLMClient()
+            async with MCPClient() as mcp:
+                agent = TestCaseAgent(llm=llm, mcp=mcp)
 
-            orch = Orchestrator(agent=agent)
+                orch = Orchestrator(agent=agent)
 
-            # Check permission mode
-            settings = await get_suite_settings(store, suite_id)
-            if settings["permission_mode"] == "approve":
-                import uuid as _uuid
+                # Check permission mode
+                settings = await get_suite_settings(store, suite_id)
+                if settings["permission_mode"] == "approve":
+                    import uuid as _uuid
 
-                from harness.permission import async_event_approver
+                    from harness.permission import async_event_approver
 
-                async def _perm_approver(req):
-                    event_id = _uuid.uuid4().hex[:8]
-                    ev = asyncio.Event()
-                    _permission_events[event_id] = ev
-                    _permission_results[event_id] = {"approved": False}
-                    await _sse_event(
-                        "permission",
-                        {
-                            "event_id": event_id,
-                            "case_id": "current",
-                            "action": req.tool_name,
-                            "reason": req.reason,
-                        },
-                        queue,
-                    )
-                    return await async_event_approver(ev, _permission_results[event_id])(req)
+                    async def _perm_approver(req):
+                        event_id = _uuid.uuid4().hex[:8]
+                        ev = asyncio.Event()
+                        _permission_events[event_id] = ev
+                        _permission_results[event_id] = {"approved": False}
+                        await _sse_event(
+                            "permission",
+                            {
+                                "event_id": event_id,
+                                "case_id": "current",
+                                "action": req.tool_name,
+                                "reason": req.reason,
+                            },
+                            queue,
+                        )
+                        return await async_event_approver(ev, _permission_results[event_id])(req)
 
-                agent.permission_approver = _perm_approver
+                    agent.permission_approver = _perm_approver
 
-            result = await orch.run_suite(cases, suite=suite, sse_callback=sse_cb)
+                result = await orch.run_suite(cases, suite=suite, sse_callback=sse_cb)
 
-            # Save ExecutionRecords with run_id
-            for record in result.records:
-                record.run_id = run_id
-                await repo.save_record(record)
+                # Save ExecutionRecords with run_id
+                for record in result.records:
+                    record.run_id = run_id
+                    await repo.save_record(record)
 
-            await repo.update_run(
-                run_id,
-                status="completed",
-                passed_cases=result.passed_count,
-                failed_cases=result.failed_count,
-                finished_at=time.time(),
-            )
+                await repo.update_run(
+                    run_id,
+                    status="completed",
+                    passed_cases=result.passed_count,
+                    failed_cases=result.failed_count,
+                    finished_at=time.time(),
+                )
         except Exception as e:
             logger.exception("Run %s failed", run_id)
             await _sse_event("error", {"message": str(e)}, queue)

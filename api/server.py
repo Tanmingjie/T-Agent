@@ -6,6 +6,11 @@ import os
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+# Load .env before anything else (LLM_MODEL / LLM_API_BASE / LLM_API_KEY)
+from cli.run_case import _load_dotenv
+
+_load_dotenv(Path(__file__).resolve().parent.parent / ".env")
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
