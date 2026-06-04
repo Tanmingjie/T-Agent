@@ -71,6 +71,35 @@ def _build_system(plan: StepPlan) -> str:
 # ── TEST_RESULT 解析 ──────────────────────────────────────────
 
 
+async def test_capture_screenshot_attached_to_step():
+    """ReActLoop 每步执行后调 capture_screenshot,返回的文件名落到 ActionStep.screenshot。"""
+    plan = _plan(1)
+    shots: list[tuple[int, str]] = []
+
+    async def capture(step_no, tool_name):
+        shots.append((step_no, tool_name))
+        return f"step_{step_no:03d}.png"
+
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e1"})]),
+            _resp(calls=[("mark_step_done", {"step": 1})]),
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+        capture_screenshot=capture,
+    )
+    result = await loop.run()
+    click_step = next(s for s in result.action_steps if s.tool_name == "browser_click")
+    assert click_step.screenshot == "step_001.png"
+    assert "browser_click" in [t for _, t in shots]
+
+
 def test_parse_test_result_variants():
     assert parse_test_result("结论 TEST_RESULT: PASS") == "PASS"
     assert parse_test_result("TEST_RESULT：fail") == "FAIL"  # 全角冒号 + 小写

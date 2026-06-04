@@ -204,7 +204,18 @@ function InfoView({
 }) {
   const given = spec?.given ?? [];
   const steps = spec?.steps ?? [];
-  const assertions = spec?.assertions ?? [];
+  // 断言聚合:用例级 + 各步 expect(与后端 collect_assertions 一致;LLM 常把断言
+  // 放进 step.expect 而非用例级,只渲染用例级会显示为空)。按语义键去重。
+  const seen = new Set<string>();
+  const assertions = [
+    ...(spec?.assertions ?? []),
+    ...[...given, ...steps].flatMap((s) => s.expect ?? []),
+  ].filter((a) => {
+    const k = `${a.type}|${a.target}|${a.expected ?? ""}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
   return (
     <div className="p-6 space-y-6 max-w-3xl">
       <ListBlock title="预置条件" items={caseInfo.preconditions} />

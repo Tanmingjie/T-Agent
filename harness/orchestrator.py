@@ -94,7 +94,7 @@ class Orchestrator:
                     {"case_id": case.id, "title": case.name, "index": case_idx},
                 )
 
-            record = await self._run_one(case, suite, sse_callback=sse_callback)
+            record = await self._run_one(case, suite, sse_callback=sse_callback, run_id=run_id)
 
             if sse_callback:
                 await sse_callback(
@@ -135,7 +135,11 @@ class Orchestrator:
         return result
 
     async def _run_one(
-        self, case: TestCase, suite: Suite | None, sse_callback: SSECallback = None
+        self,
+        case: TestCase,
+        suite: Suite | None,
+        sse_callback: SSECallback = None,
+        run_id: str | None = None,
     ) -> ExecutionRecord:
         """执行单条用例;异常被隔离为 FAIL 记录,不冒泡影响其它用例。"""
         ctx = ExecutionContext(case=case, suite=suite)
@@ -146,7 +150,10 @@ class Orchestrator:
 
         try:
             return await self.agent.run(
-                case, ctx=ctx, step_callback=_step_cb if sse_callback else None
+                case,
+                ctx=ctx,
+                step_callback=_step_cb if sse_callback else None,
+                run_id=run_id,
             )
         except Exception as e:  # noqa: BLE001 — 用例间隔离:A 的异常不拖垮 B
             logger.warning("用例 %s 执行异常,记为 FAIL:%s", case.id, e)

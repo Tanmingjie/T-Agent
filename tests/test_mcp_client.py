@@ -14,6 +14,7 @@ from mcp import types
 
 from mcp_client.client import (
     MCPClient,
+    call_result_to_image_bytes,
     call_result_to_text,
     mcp_tool_to_litellm,
     mcp_tools_to_litellm,
@@ -91,6 +92,26 @@ def test_result_to_text_structured_content():
 
 def test_result_to_text_empty():
     assert call_result_to_text(types.CallToolResult(content=[])) == ""
+
+
+def test_result_to_image_bytes_decodes_base64():
+    import base64
+
+    raw = b"\x89PNG\r\n fake image bytes"
+    result = types.CallToolResult(
+        content=[
+            types.TextContent(type="text", text="忽略"),
+            types.ImageContent(
+                type="image", data=base64.b64encode(raw).decode(), mimeType="image/png"
+            ),
+        ]
+    )
+    assert call_result_to_image_bytes(result) == raw
+
+
+def test_result_to_image_bytes_none_when_no_image():
+    result = types.CallToolResult(content=[types.TextContent(type="text", text="纯文本")])
+    assert call_result_to_image_bytes(result) is None
 
 
 # ── MCPClient 生命周期 / 调用(fake session) ──────────────────

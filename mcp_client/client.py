@@ -77,6 +77,26 @@ def call_result_to_text(result: types.CallToolResult) -> str:
     return "\n".join(parts).strip()
 
 
+def call_result_to_image_bytes(result: types.CallToolResult) -> bytes | None:
+    """从 CallToolResult 里取第一块 ImageContent 的原始字节(base64 解码)。
+
+    browser_take_screenshot 返回的是 ImageContent(base64 PNG/JPEG)。供 recorder
+    落盘成 step_NNN.png,前端按 run_id/case_id/step 路径读取。无图块返回 None。
+    """
+    import base64
+
+    for block in result.content or []:
+        if getattr(block, "type", None) == "image":
+            data = getattr(block, "data", None)
+            if not data:
+                return None
+            try:
+                return base64.b64decode(data)
+            except (ValueError, TypeError):
+                return None
+    return None
+
+
 # ── MCP 客户端 ─────────────────────────────────────────────────────
 
 
@@ -163,6 +183,11 @@ class MCPClient:
     def result_to_text(result: types.CallToolResult) -> str:
         """CallToolResult → 文本(供 Observe 喂回 LLM)。"""
         return call_result_to_text(result)
+
+    @staticmethod
+    def result_to_image_bytes(result: types.CallToolResult) -> bytes | None:
+        """CallToolResult → 截图字节(无图返回 None)。"""
+        return call_result_to_image_bytes(result)
 
     def _require_session(self) -> None:
         if self.session is None:

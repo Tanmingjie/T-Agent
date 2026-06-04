@@ -138,6 +138,7 @@ class ReActLoop:
         healer=None,
         get_snapshot=None,
         compactor=None,
+        capture_screenshot=None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -146,6 +147,8 @@ class ReActLoop:
         self.healer = healer
         self.get_snapshot = get_snapshot  # async () -> str,返回当前页面快照文本
         self.compactor = compactor  # Context Compact(可选),发 LLM 前压缩历史
+        # 截图回调:async (step_no, tool_name) -> filename|None;每步执行后落盘截图
+        self.capture_screenshot = capture_screenshot
         self.execute = execute
         self.step_plan = step_plan
         self.build_system = build_system
@@ -247,6 +250,14 @@ class ReActLoop:
                 if self.healer is not None and _is_tool_failure(outcome.text):
                     heal_attempts, obs_suffix = await self._heal_action(tc, intent)
 
+                # 截图落盘(可选):每步执行后抓当前页面,回调决定是否截(非浏览器工具跳过)
+                shot = outcome.screenshot
+                if self.capture_screenshot is not None and not _is_tool_failure(outcome.text):
+                    try:
+                        shot = await self.capture_screenshot(step_no, tc.name) or shot
+                    except Exception as e:  # noqa: BLE001 — 截图失败不影响执行
+                        logger.warning("步骤 %d 截图失败:%s", step_no, e)
+
                 result.action_steps.append(
                     ActionStep(
                         step_no=step_no,
@@ -255,7 +266,7 @@ class ReActLoop:
                         reasoning=reasoning,
                         intent=intent,
                         tool_result=outcome.text,
-                        screenshot=outcome.screenshot,
+                        screenshot=shot,
                         url=outcome.url,
                         is_custom_tool=outcome.is_custom_tool,
                         is_hook_action=outcome.is_hook_action,

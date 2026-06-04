@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import logging
+import os
+from pathlib import Path
 
 from harness.assertion import AssertionEngine
 from harness.context import ContextCompactor
@@ -49,6 +51,11 @@ PLAYWRIGHT_MCP_HINT = """\
 
 # StepPlan 控制工具的名字(执行器据此路由)
 _CONTROL_TOOLS = {"mark_step_done"}
+
+# 不该被截图的浏览器工具(快照/截图自身)
+_NO_SHOT_TOOLS = {"browser_snapshot", "browser_take_screenshot"}
+# 截图开关:默认开,env MCP_SCREENSHOT=0 关闭
+_CAPTURE_SCREENSHOTS = os.getenv("MCP_SCREENSHOT", "1") != "0"
 
 
 def _step_keywords(step_plan: StepPlan) -> list[str]:
@@ -144,10 +151,11 @@ class TestCaseAgent:
         spec: TestSpec | None = None,
         ctx: ExecutionContext | None = None,
         step_callback=None,
+        run_id: str | None = None,
     ) -> ExecutionRecord:
         """执行一条用例,返回 ExecutionRecord(PASS/FAIL 由断言裁决)。"""
         ctx = ctx or ExecutionContext(case=case)
-        recorder = Recorder(case.id, suite_id=case.suite_id)
+        recorder = Recorder(case.id, suite_id=case.suite_id, run_id=run_id)
 
         # before_case Hooks:失败则用例直接 FAIL,不进 Agent(规格 §5.4)
         if self.hooks is not None:
@@ -212,6 +220,24 @@ class TestCaseAgent:
             result = await self.mcp.call_tool("browser_snapshot", {})
             return self.mcp.result_to_text(result)
 
+        async def capture_screenshot(step_no: int, tool_name: str) -> str | None:
+            """浏览器动作后抓当前页面落盘成 step_NNN.png(控制/自定义/非浏览器工具跳过)。"""
+            if not _CAPTURE_SCREENSHOTS:
+                return None
+            if tool_name in _CONTROL_TOOLS or tool_name in _NO_SHOT_TOOLS:
+                return None
+            if self.tools_registry is not None and self.tools_registry.has(tool_name):
+                return None
+            if not tool_name.startswith("browser_"):
+                return None
+            result = await self.mcp.call_tool("browser_take_screenshot", {})
+            img = self.mcp.result_to_image_bytes(result)
+            if not img:
+                return None
+            path = recorder.screenshot_path(step_no)  # 确保目录存在
+            Path(path).write_bytes(img)
+            return f"step_{step_no:03d}.png"
+
         loop = ReActLoop(
             self.llm,
             tools=tools,
@@ -222,6 +248,7 @@ class TestCaseAgent:
             healer=healer,
             get_snapshot=get_snapshot,
             compactor=ContextCompactor(),
+            capture_screenshot=capture_screenshot,
         )
         result = await loop.run()
         recorder.extend_steps(result.action_steps)

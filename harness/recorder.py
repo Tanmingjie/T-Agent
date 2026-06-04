@@ -41,6 +41,7 @@ class Recorder:
             exec_id=self.exec_id,
             case_id=case_id,
             suite_id=suite_id,
+            run_id=run_id,
             start_time=time.time(),
         )
         # 用例级最终断言结果(dict 形态,见 AssertionResult.to_dict)
