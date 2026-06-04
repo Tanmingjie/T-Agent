@@ -10,6 +10,8 @@ import {
   ImageOff,
   ListChecks,
   FileText,
+  Copy,
+  Check,
 } from "lucide-react";
 import type { CaseRunState, CaseRunStatus } from "../hooks/useSuiteRun";
 
@@ -250,6 +252,57 @@ function InfoView({
           </div>
         )}
       </section>
+    </div>
+  );
+}
+
+/** 浅色代码块:行号 + 限高滚动 + 复制,主题与界面统一(参考 TestSprite)。 */
+function CodeBlock({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+  const lines = code.replace(/\n$/, "").split("\n");
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      /* 剪贴板不可用时静默 */
+    }
+  }
+  return (
+    <div className="max-w-3xl rounded-lg border border-gray-200 bg-white overflow-hidden">
+      {/* 工具条 */}
+      <div className="flex items-center justify-between px-3 py-1.5 border-b border-gray-100 bg-gray-50/60">
+        <span className="text-[11px] font-medium text-gray-400">生成代码</span>
+        <button
+          onClick={copy}
+          className="inline-flex items-center gap-1 text-xs text-gray-500 hover:text-surface-900 transition-colors"
+        >
+          {copied ? (
+            <>
+              <Check size={13} className="text-brand-600" /> 已复制
+            </>
+          ) : (
+            <>
+              <Copy size={13} /> 复制
+            </>
+          )}
+        </button>
+      </div>
+      <div className="overflow-auto max-h-[28rem]">
+        <pre className="text-xs leading-relaxed font-mono">
+          <code className="block">
+            {lines.map((ln, i) => (
+              <div key={i} className="flex hover:bg-gray-50">
+                <span className="sticky left-0 w-10 shrink-0 select-none bg-white text-right pr-3 text-gray-300 border-r border-gray-100">
+                  {i + 1}
+                </span>
+                <span className="pl-3 pr-4 text-gray-700 whitespace-pre">{ln || " "}</span>
+              </div>
+            ))}
+          </code>
+        </pre>
+      </div>
     </div>
   );
 }
@@ -517,9 +570,7 @@ export default function CaseDrawerBody({
                     </p>
                   )
                 ) : code ? (
-                  <pre className="text-xs bg-surface-900 text-gray-100 p-4 rounded-lg overflow-auto leading-relaxed">
-                    <code>{code}</code>
-                  </pre>
+                  <CodeBlock code={code} />
                 ) : (
                   <p className="text-sm text-gray-400">
                     {runId ? "暂无生成代码（执行通过后生成）。" : "执行后可查看生成代码。"}
