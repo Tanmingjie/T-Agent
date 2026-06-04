@@ -84,6 +84,7 @@ class ExecutionRecordRow(SQLModel, table=True):
     steps: list = Field(default_factory=list, sa_column=Column(JSON))
     passed: bool = False
     case_assertions: list = Field(default_factory=list, sa_column=Column(JSON))
+    spec: dict | None = Field(default=None, sa_column=Column(JSON))
     final_result: str = ""
     generated_code: str = ""
     token_usage: int = 0

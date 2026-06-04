@@ -164,6 +164,7 @@ class TestCaseAgent:
         if spec is None:
             spec = await self.generate_spec(case)
 
+        recorder.set_spec(spec)  # 存档翻译产物,供前端可视化
         plan = StepPlan.from_spec(spec)
 
         # 工具集 = MCP 工具 + mark_step_done 控制工具 + 自定义工具(LLM 按需调用)

@@ -30,6 +30,10 @@ interface RunLite {
   started_at: number;
 }
 
+interface RunOverview {
+  cases: { case_id: string; passed: boolean }[];
+}
+
 interface SuiteResp {
   name: string;
   base_url: string;
@@ -68,6 +72,8 @@ export default function SuiteCasesPage() {
   const [uploading, setUploading] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Case | null>(null);
+  // 最近一次历史 run 的逐用例裁决(caseId → passed),供未实时执行时回填状态列
+  const [pastStatus, setPastStatus] = useState<Record<string, CaseRunStatus>>({});
 
   const run = useSuiteRun(id);
 
@@ -77,6 +83,23 @@ export default function SuiteCasesPage() {
   useEffect(() => {
     load();
   }, [id]);
+
+  // 拉最近一次 run 的逐用例结果,使列表状态与抽屉(同一 run)保持一致
+  useEffect(() => {
+    const runs = (suite?.runs ?? []).slice().sort((a, b) => b.started_at - a.started_at);
+    const latest = runs[0]?.id;
+    if (!latest) {
+      setPastStatus({});
+      return;
+    }
+    apiGet<RunOverview>(`/suites/${id}/runs/${latest}`)
+      .then((ov) => {
+        const m: Record<string, CaseRunStatus> = {};
+        for (const c of ov.cases) m[c.case_id] = c.passed ? "passed" : "failed";
+        setPastStatus(m);
+      })
+      .catch(() => setPastStatus({}));
+  }, [id, suite?.runs]);
   useEffect(() => () => run.stop(), []); // cleanup SSE on unmount
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
@@ -106,7 +129,8 @@ export default function SuiteCasesPage() {
   }, [cases, query]);
 
   function statusOf(caseId: string): CaseRunStatus {
-    return run.statuses[caseId]?.status ?? "pending";
+    // 本次会话的实时状态优先;否则回退到最近一次历史 run 的裁决
+    return run.statuses[caseId]?.status ?? pastStatus[caseId] ?? "pending";
   }
 
   // 进度统计

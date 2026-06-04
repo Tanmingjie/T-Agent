@@ -70,6 +70,10 @@ class Recorder:
     def set_token_usage(self, total_tokens: int) -> None:
         self.record.token_usage = total_tokens
 
+    def set_spec(self, spec) -> None:
+        """存档本次执行使用的 TestSpec(供前端可视化翻译结果)。"""
+        self.record.spec = spec
+
     # ── 截图目录 ──────────────────────────────────────────────
 
     @property

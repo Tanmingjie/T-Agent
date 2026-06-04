@@ -117,6 +117,8 @@ class ExecutionRecord(BaseModel):
     passed: bool = False
     # 用例级最终断言裁决结果(AssertionResult.to_dict),可信 PASS/FAIL 的依据
     case_assertions: list[dict] = []
+    # 本次执行使用的 TestSpec(LLM 翻译产物)。存档以便前端可视化 + 发现翻译偏差。
+    spec: TestSpec | None = None
     final_result: str = ""
     generated_code: str = ""  # TODO: Phase 5
     token_usage: int = 0

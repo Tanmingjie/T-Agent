@@ -9,6 +9,7 @@ import {
   Wrench,
   ImageOff,
   ListChecks,
+  FileText,
 } from "lucide-react";
 import type { CaseRunState, CaseRunStatus } from "../hooks/useSuiteRun";
 
@@ -45,6 +46,28 @@ interface StepDetail {
   };
 }
 
+interface SpecAssertion {
+  type: string;
+  target: string;
+  expected?: string | null;
+}
+
+interface SpecStep {
+  action: string;
+  target: string;
+  data?: string | null;
+  expect?: SpecAssertion[];
+}
+
+interface TestSpec {
+  case_id: string;
+  name: string;
+  base_url: string;
+  given?: SpecStep[];
+  steps?: SpecStep[];
+  assertions?: SpecAssertion[];
+}
+
 interface CaseResult {
   passed: boolean;
   final_result: string;
@@ -52,6 +75,7 @@ interface CaseResult {
   heal_count: number;
   case_assertions: AssertionResult[];
   history: StepDetail[];
+  spec?: TestSpec | null;
 }
 
 interface CodeResp {
@@ -135,7 +159,91 @@ function Shot({ src, alt }: { src: string; alt: string }) {
   );
 }
 
-type Selection = { kind: "result" } | { kind: "step"; no: number };
+const ACTION_LABEL: Record<string, string> = {
+  navigate: "打开",
+  fill: "输入",
+  type: "输入",
+  click: "点击",
+  select: "选择",
+  hover: "悬停",
+  wait: "等待",
+};
+
+function specLine(s: SpecStep): string {
+  const verb = ACTION_LABEL[s.action] ?? s.action;
+  const data = s.data ? ` “${s.data}”` : "";
+  return `${verb} ${s.target}${data}`.trim();
+}
+
+/** 列表区块:标题 + 条目,空则不渲染。供右栏「用例信息」用。 */
+function ListBlock({ title, items }: { title: string; items: string[] }) {
+  if (items.length === 0) return null;
+  return (
+    <div>
+      <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
+        {title}
+      </h4>
+      <ul className="space-y-1">
+        {items.map((t, i) => (
+          <li key={i} className="text-sm text-gray-600 leading-snug">
+            • {t}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** 右栏「用例信息」视图:预置条件 + 预期结果 + 完整 TestSpec(翻译产物)。 */
+function InfoView({
+  caseInfo,
+  spec,
+}: {
+  caseInfo: CaseInfo;
+  spec?: TestSpec | null;
+}) {
+  const given = spec?.given ?? [];
+  const steps = spec?.steps ?? [];
+  const assertions = spec?.assertions ?? [];
+  return (
+    <div className="p-6 space-y-6 max-w-3xl">
+      <ListBlock title="预置条件" items={caseInfo.preconditions} />
+      <ListBlock title="预期结果" items={caseInfo.expected} />
+
+      <section className="border-t border-gray-200 pt-5">
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-surface-900 mb-1">
+          <FileText size={15} className="text-brand-600" />
+          执行规格 (TestSpec)
+        </h3>
+        <p className="text-xs text-gray-400 mb-4">
+          AI 把用例翻译成的结构化执行规格,断言在此一次性结构化。可据此核对翻译是否准确。
+        </p>
+        {!spec ? (
+          <p className="text-sm text-gray-400">本次执行无规格记录(历史数据或执行前)。</p>
+        ) : (
+          <div className="space-y-4">
+            <ListBlock title="前置 (given)" items={given.map(specLine)} />
+            <ListBlock title="步骤 (steps)" items={steps.map(specLine)} />
+            <ListBlock
+              title="断言 (assertions)"
+              items={assertions.map(
+                (a) =>
+                  `[${a.type}] ${a.target}${
+                    a.expected != null && a.expected !== "" ? ` == ${a.expected}` : ""
+                  }`,
+              )}
+            />
+            {given.length === 0 && steps.length === 0 && assertions.length === 0 && (
+              <p className="text-sm text-gray-400">规格为空</p>
+            )}
+          </div>
+        )}
+      </section>
+    </div>
+  );
+}
+
+type Selection = { kind: "info" } | { kind: "result" } | { kind: "step"; no: number };
 
 interface DisplayStep {
   no: number; // 用于截图 URL (history 用 step_no);live/spec 用序号
@@ -163,13 +271,13 @@ export default function CaseDrawerBody({
   const [result, setResult] = useState<CaseResult | null>(null);
   const [code, setCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
-  const [sel, setSel] = useState<Selection>({ kind: "result" });
+  const [sel, setSel] = useState<Selection>({ kind: "info" });
   const [rightTab, setRightTab] = useState<"preview" | "code">("preview");
 
   useEffect(() => {
     setResult(null);
     setCode(null);
-    setSel({ kind: "result" });
+    setSel({ kind: "info" });
     setRightTab("preview");
     if (!runId) return;
     setLoading(true);
@@ -182,7 +290,10 @@ export default function CaseDrawerBody({
       ),
     ])
       .then(([r, c]) => {
-        if (r) setResult(r);
+        if (r) {
+          setResult(r);
+          setSel({ kind: "result" }); // 已执行完成,默认定位测试结果
+        }
         if (c) setCode(Object.values(c.files).join("\n\n") || null);
       })
       .finally(() => setLoading(false));
@@ -248,39 +359,23 @@ export default function CaseDrawerBody({
       <div className="flex flex-1 overflow-hidden">
         {/* ── Left pane ── */}
         <aside className="w-80 shrink-0 border-r border-gray-200 overflow-auto p-4 space-y-5">
-          {/* Info */}
-          {(caseInfo.preconditions.length > 0 || caseInfo.expected.length > 0) && (
-            <section className="space-y-3">
-              {caseInfo.preconditions.length > 0 && (
-                <div>
-                  <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
-                    预置条件
-                  </h4>
-                  <ul className="space-y-1">
-                    {caseInfo.preconditions.map((p, i) => (
-                      <li key={i} className="text-sm text-gray-600">
-                        • {p}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {caseInfo.expected.length > 0 && (
-                <div>
-                  <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
-                    预期结果
-                  </h4>
-                  <ul className="space-y-1">
-                    {caseInfo.expected.map((p, i) => (
-                      <li key={i} className="text-sm text-gray-600">
-                        • {p}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </section>
-          )}
+          {/* 用例信息(预置/预期/TestSpec)→ 右栏宽栏展示 */}
+          <button
+            onClick={() => setSel({ kind: "info" })}
+            className={`w-full text-left rounded-lg border p-3 transition-colors ${
+              sel.kind === "info"
+                ? "border-brand-300 bg-brand-50/60"
+                : "border-gray-200 hover:bg-gray-50"
+            }`}
+          >
+            <div className="flex items-center gap-2">
+              <FileText size={16} className="text-brand-600 shrink-0" />
+              <span className="text-sm font-medium text-surface-900">用例信息</span>
+            </div>
+            <p className="mt-1 text-xs text-gray-500 line-clamp-2">
+              预置条件 · 预期结果 · 执行规格 (TestSpec)
+            </p>
+          </button>
 
           {/* Test result card */}
           {result && (
@@ -352,6 +447,8 @@ export default function CaseDrawerBody({
         <section className="flex-1 overflow-auto bg-gray-50/40">
           {loading ? (
             <div className="p-6 text-sm text-gray-400">加载中…</div>
+          ) : sel.kind === "info" ? (
+            <InfoView caseInfo={caseInfo} spec={result?.spec} />
           ) : sel.kind === "step" && selStep ? (
             /* Step view: screenshot + detail */
             <div className="p-6 space-y-4">
