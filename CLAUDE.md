@@ -74,9 +74,12 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 阶段二 ✅ T-11~T-19(自愈 / Context Compact / Hooks / Session+LoginHook / 预置条件分类器 / Skill / Permission / Orchestrator / Custom Tool)。四条验收标准 saucedemo 真实演示通过(见 `examples/acceptance_stage2.py`)。
 - 阶段三 ✅ T-20~T-22(`codegen/`BDDGenerator / `storage/db.py` SQLModel 持久化 / `intelligence/`词汇表+Scanner)。
 - 阶段四 ✅ T-23~T-27(FastAPI 后端 5 路由+SSE / Repository 抽象层 / React 前端控制台(Suite 管理、执行控制台、结果详情、词汇表)/ BDD `step_N` 标记)。
-- **UI Redesign (进行中)** — 基于 TestSprite 产品界面交互设计优化前端。已完成: Tailwind 设计令牌(brand/surface 色阶、阴影)、Sidebar 深色导航、StatusBadge 组件(含 Lucide 图标)、SuiteListPage 仪表盘重设计、App.tsx 侧边栏布局。**待完成:** RunConsolePage 执行控制台、SuiteDetailPage、RunOverviewPage、CaseResultPage、CodeViewerPage、VocabularyPage、ProgressBar/PermissionDialog/StepListPanel 组件 polish。
-- **下一步:阶段五** — 用例管理平台集成(规格明确"现在不做",只预留 `external_id`);或工程化打磨(E2E 测试、部署脚本、文档等)。
-- 全量单测 **293 passed / 1 skipped**。
+- **UI Redesign (进行中)** — 基于 TestSprite 产品界面交互设计优化前端(Tailwind 设计令牌 + Sidebar 深色导航 + StatusBadge + 各页面重设计)。具体页面/组件的完成进度以 git 历史和当前代码为准,不在此处逐项追踪(易腐烂)。
+- **真实环境验证加固(进行中)** — 用 DeepSeek(代 Qwen3)+ 真实浏览器跑 saucedemo TC101,暴露并修复:① `collect_assertions` 断言去重(LLM 常把同一断言既放用例级又放 step.expect);② page_probe 后缀循环剥离 + **精确优先匹配**(短目标 '1' 子串会误中长描述);③ **词汇表接入断言侧(方案A)** — `MCPPageProbe(resolver=...)` 运行时按真实 role+name 解析跨语言/图标类目标,healing 同步接通 vocab,CLI 加 `--vocab` 手动词汇表入口(见 `examples/saucedemo_vocab.json`)。
+  - ④ **selector 型词汇表(已做)** — 词条/`Assertion.selector` 给 CSS 时,`MCPPageProbe.query` 走 `browser_evaluate` DOM 求值(返回 `{found,visible,count,text}`),对计数角标稳健(2 件→text='2',不像 name 型写死)。解析优先级:显式 selector > 词汇表 selector > 词汇表 role+name a11y 精确 > 原始 a11y。saucedemo vocab 已改 selector 型。
+  - **未决发现(均非断言层,实证确认):** (b-1) **密码泄露弹框** — Chrome 原生 UI,**不在 a11y 快照里**,自愈(只读快照)无法识别/关闭;robust 解只能靠启动参数,故 CLI 加了 `--isolated`/`--headless`。(b-2) **ReAct 早停非确定性** — DeepSeek 偶发登录后即终止、不完成后续步骤(实测 13 步 vs 9 步)。(b-3) **saucedemo 加购不生效** — 经 playwright-mcp(headless)点击 add-to-cart 后角标/Remove 均不出现(`.shopping_cart_badge` 求值 found=false),属 mcp/浏览器交互环境问题。**以上三者叠加导致 saucedemo 终态断言始终拿不到 live 绿,但与本轮加固的断言/词汇表层无关**(该层已单测覆盖)。
+- **下一步候选:** 阶段五(用例管理平台集成,规格"现在不做");或继续加固(ReAct 早停护栏 / 换一个加购可靠的被测站点或真实内网用例做 live 验证)。
+- 单测数量以 `python -m pytest -q` 实跑为准(当前约 302;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
 
 T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规格)与 §6(实施计划)。
 
@@ -90,18 +93,20 @@ T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规
 
 ## 常用命令
 
-```bash
+> 本机为 **Windows**(PowerShell)。激活虚拟环境用 `.venv\Scripts\Activate.ps1`,不是 Unix 的 `source .venv/bin/activate`。下面命令按 PowerShell 写。
+
+```powershell
 # 环境(首次)
-uv venv --python 3.11 && source .venv/bin/activate && uv pip install -r requirements.txt
+uv venv --python 3.11; .venv\Scripts\Activate.ps1; uv pip install -r requirements.txt
 
 # 测试
-source .venv/bin/activate
+.venv\Scripts\Activate.ps1
 python -m pytest -q                          # 全量
 python -m pytest tests/test_assertion.py -q  # 单文件
 python -m pytest tests/test_react_loop.py::test_happy_path_completes  # 单用例
 
-# 格式化(提交前)
-isort harness mcp_client input intelligence cli tests && black harness mcp_client input intelligence cli tests
+# 格式化(提交前;目录须覆盖 api/storage/codegen)
+isort harness mcp_client input intelligence codegen cli api storage tests; black harness mcp_client input intelligence codegen cli api storage tests
 
 # 运行一条用例(CLI 入口)
 python cli/run_case.py --excel examples/saucedemo_cases.xlsx --case-id TC101 --base-url https://www.saucedemo.com
@@ -142,7 +147,7 @@ T-agent/
 │       ├── components/ # PermissionDialog/ProgressBar/StepListPanel/FileTree/Sidebar/StatusBadge
 │       └── api/     #   client.ts(API 封装)
 ├── cli/              # 命令行入口(run_case.py)
-├── tests/            # 单元测试(293 passed)
+├── tests/            # 单元测试(fake/mock 驱动,不连真实 LLM/浏览器)
 ├── examples/         # 验收入口 + saucedemo 用例
 ├── 实现规格说明书.md  # 唯一真相源:所有模块详细规格
 └── 产品设计文档_v2.0.md # 产品设计原文

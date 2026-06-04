@@ -96,6 +96,26 @@ class VocabularyManager:
         return True
 
 
+class VocabularyResolver:
+    """把 VocabularyManager 适配成 page_probe 的 VocabResolver(运行时按页面查词)。
+
+    探针只知道 url/title,login_role 由构造时给定(默认空)。命中返回词条
+    ``{role, name, ...}``,供 MCPPageProbe 按真实 role+name 匹配。
+    """
+
+    def __init__(self, manager: VocabularyManager, *, login_role: str = "") -> None:
+        self.manager = manager
+        self.login_role = login_role
+
+    async def resolve(self, target: str, *, url: str = "", title: str = "") -> dict | None:
+        entry = await self.manager.resolve(
+            target, url=url, page_title=title, login_role=self.login_role
+        )
+        if isinstance(entry, dict) and (entry.get("name") or entry.get("role")):
+            return entry
+        return None
+
+
 def enhance_targets(spec: TestSpec, mapping: dict[str, str]) -> TestSpec:
     """用 {业务词: 页面真实词} 改写 TestSpec 的 step/assertion 目标(纯函数)。
 

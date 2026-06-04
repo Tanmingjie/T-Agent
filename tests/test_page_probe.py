@@ -9,6 +9,7 @@ import pytest
 
 from harness.assertion import AssertionEngine, AssertionStatus
 from harness.page_probe import (
+    DictVocabResolver,
     MCPPageProbe,
     parse_snapshot,
     query_nodes,
@@ -136,3 +137,157 @@ async def test_mcp_probe_caches_snapshot():
     assert mcp.calls.count("browser_snapshot") == 1
     await probe.refresh()
     assert mcp.calls.count("browser_snapshot") == 2
+
+
+# ── P0-2:循环剥后缀 ───────────────────────────────────────────
+
+
+def test_normalize_strips_multiple_suffixes():
+    from harness.page_probe import _normalize_target
+
+    # 旧实现只剥一个后缀,"购物车图标数量" 剥不到 "图标";现循环剥到 "购物车"
+    assert _normalize_target("购物车图标数量") == "购物车"
+    assert _normalize_target("用户名输入框") == "用户名"
+
+
+# ── P1 方案A:词汇表接入 Probe 层(跨语言/图标类目标) ──────────
+
+# saucedemo 加购后的终态快照:角标是 name="1" 的元素,无任何中文
+CART_SNAPSHOT = """\
+### Page
+- Page URL: https://www.saucedemo.com/inventory.html
+- Page Title: Swag Labs
+### Snapshot
+```yaml
+- generic [ref=e1]:
+  - link "1" [ref=e2]
+  - button "Add to cart" [ref=e3]
+  - text: A red light isn't ideal but 1 AAA battery is included.
+```
+"""
+
+
+def test_query_exact_avoids_substring_trap():
+    # 子串匹配会把 '1' 命中商品描述("...1 AAA battery...");精确匹配只命中角标
+    snap = parse_snapshot(CART_SNAPSHOT)
+    exact = query_nodes(snap.nodes, "1", exact=True)
+    assert exact.found and exact.text == "1"
+    # 精确模式 count 不应把那段长描述算进去
+    assert exact.count == 1
+
+
+def test_query_default_prefers_exact_over_substring():
+    # 默认(非 exact)模式也应优先精确命中:'1' 取角标而非含 '1' 的长描述
+    # (修复自愈重定位后用裸 '1' 复验误中商品描述的真实 bug)
+    snap = parse_snapshot(CART_SNAPSHOT)
+    q = query_nodes(snap.nodes, "1")
+    assert q.found and q.text == "1"
+
+
+async def test_probe_resolves_chinese_target_via_vocab():
+    """中文断言目标「购物车图标数量」经词汇表解析 → 精确命中角标 '1',不误中商品描述。"""
+    resolver = DictVocabResolver({"购物车图标": {"role": "link", "name": "1"}})
+    probe = MCPPageProbe(_FakeMCP(CART_SNAPSHOT), resolver=resolver)
+    eng = AssertionEngine(probe)
+    results = await eng.verify_all(
+        [Assertion(type="text_equals", target="购物车图标数量", expected="1")]
+    )
+    assert results[0].passed  # 跨语言断言经词汇表解析后通过
+
+
+async def test_probe_without_vocab_cannot_match_cross_language():
+    """无词汇表时,中文目标对英文角标无能为力(标 healable)——回归对照。"""
+    probe = MCPPageProbe(_FakeMCP(CART_SNAPSHOT))
+    eng = AssertionEngine(probe)
+    results = await eng.verify_all(
+        [Assertion(type="text_equals", target="购物车图标数量", expected="1")]
+    )
+    assert not results[0].passed
+    assert results[0].healable
+
+
+async def test_dict_vocab_resolver_substring_match():
+    resolver = DictVocabResolver({"购物车图标": {"role": "link", "name": "1"}})
+    # 子串命中:查询词更长也能对上
+    assert await resolver.resolve("购物车图标数量") == {"role": "link", "name": "1"}
+    assert await resolver.resolve("无关词") is None
+
+
+# ── 方案(a):selector 型词汇表 → browser_evaluate DOM 求值 ─────
+
+
+class _EvalMCP:
+    """区分 browser_snapshot 与 browser_evaluate 的 fake:后者返回预设 JSON。"""
+
+    def __init__(self, snapshot_text, eval_json):
+        self._snap = snapshot_text
+        self._eval = eval_json
+        self.eval_calls = []
+
+    async def call_tool(self, name, arguments=None):
+        if name == "browser_evaluate":
+            self.eval_calls.append(arguments)
+            return ("eval", self._eval)
+        return ("snap", self._snap)
+
+    def result_to_text(self, result):
+        kind, payload = result
+        # playwright-mcp 会用 ``### Result`` 等包裹,这里模拟带包裹的文本
+        return f"### Result\n```\n{payload}\n```" if kind == "eval" else payload
+
+
+async def test_probe_resolves_via_selector_eval():
+    """selector 型词汇表:'购物车图标' → .shopping_cart_badge,DOM 求值取文本 '1'。"""
+    resolver = DictVocabResolver({"购物车图标": {"selector": ".shopping_cart_badge"}})
+    mcp = _EvalMCP(CART_SNAPSHOT, '{"found":true,"visible":true,"count":1,"text":"1"}')
+    probe = MCPPageProbe(mcp, resolver=resolver)
+    eng = AssertionEngine(probe)
+    results = await eng.verify_all(
+        [Assertion(type="text_equals", target="购物车图标数量", expected="1")]
+    )
+    assert results[0].passed
+    # 求值函数里应带上该 selector
+    assert any(".shopping_cart_badge" in (c.get("function") or "") for c in mcp.eval_calls)
+
+
+async def test_selector_count_badge_two_items():
+    """计数角标的稳健性:2 件时 text='2',selector 型不写死值(name 型做不到)。"""
+    resolver = DictVocabResolver({"购物车图标": {"selector": ".shopping_cart_badge"}})
+    mcp = _EvalMCP(CART_SNAPSHOT, '{"found":true,"visible":true,"count":1,"text":"2"}')
+    probe = MCPPageProbe(mcp, resolver=resolver)
+    eng = AssertionEngine(probe)
+    results = await eng.verify_all(
+        [Assertion(type="text_equals", target="购物车图标数量", expected="2")]
+    )
+    assert results[0].passed
+
+
+async def test_explicit_assertion_selector_takes_precedence():
+    """Assertion.selector 显式给定时直接走 DOM 求值,优先于词汇表/语义匹配。"""
+    mcp = _EvalMCP(CART_SNAPSHOT, '{"found":true,"visible":true,"count":1,"text":"1"}')
+    probe = MCPPageProbe(mcp)  # 无 resolver
+    eng = AssertionEngine(probe)
+    results = await eng.verify_all(
+        [
+            Assertion(
+                type="text_equals",
+                target="购物车数量",
+                selector=".shopping_cart_badge",
+                expected="1",
+            )
+        ]
+    )
+    assert results[0].passed
+    assert len(mcp.eval_calls) == 1
+
+
+async def test_selector_not_found_is_healable():
+    """selector 求值 found=false(如购物车为空)→ 标 healable,交由裁决/自愈。"""
+    mcp = _EvalMCP(CART_SNAPSHOT, '{"found":false}')
+    probe = MCPPageProbe(mcp)
+    eng = AssertionEngine(probe)
+    results = await eng.verify_all(
+        [Assertion(type="text_equals", target="x", selector=".missing", expected="1")]
+    )
+    assert not results[0].passed
+    assert results[0].healable
