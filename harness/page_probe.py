@@ -138,9 +138,21 @@ def _parse_node_line(stripped: str) -> A11yNode | None:
     name = m.group("name") or ""
     value = m.group("value")
     if value is not None:
-        value = value.strip()
+        value = _unquote(value.strip())
     # role 为 text 且无 name 时,value 即文本内容(形如 `text: 待审批`)
     return A11yNode(role=role, name=name, value=value)
+
+
+def _unquote(s: str) -> str:
+    """剥掉一层成对的外层引号。
+
+    a11y 快照是 YAML,纯数字/含特殊字符的文本会被加引号保持字符串(如购物车角标
+    渲染成 ``: "1"``)。不剥掉的话 text_content 会带字面引号,导致
+    ``text_equals "1" != 1`` 误判。
+    """
+    if len(s) >= 2 and s[0] == s[-1] and s[0] in "\"'":
+        return s[1:-1]
+    return s
 
 
 def parse_snapshot(text: str) -> Snapshot:

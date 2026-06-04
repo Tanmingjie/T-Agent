@@ -57,6 +57,15 @@ def test_parse_nodes():
     assert any(n.role == "text" and n.value == "待审批" for n in snap.nodes)
 
 
+def test_parse_quoted_numeric_value():
+    """YAML 会给纯数字文本加引号(购物车角标 `: "1"`),解析须剥掉字面引号,
+    否则 text_equals 比较 '"1"' != '1' 误判。"""
+    snap = parse_snapshot("```yaml\n- generic [ref=e26]: \"1\"\n- generic [ref=e7]: '2'\n```")
+    vals = [n.text_content for n in snap.nodes]
+    assert "1" in vals and "2" in vals
+    assert '"1"' not in vals
+
+
 def test_parse_empty():
     snap = parse_snapshot("")
     assert snap.url == ""
