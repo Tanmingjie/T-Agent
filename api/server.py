@@ -13,7 +13,6 @@ _load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from api.repository import SQLModelRepository
 from storage.db import Store
@@ -67,7 +66,9 @@ app.include_router(permission.router, prefix="/api")
 app.include_router(results.router, prefix="/api")
 app.include_router(vocabulary.router, prefix="/api")
 
-# Serve React build in production
-frontend_dist = Path(__file__).resolve().parent.parent / "frontend" / "dist"
-if frontend_dist.exists():
-    app.mount("/", StaticFiles(directory=str(frontend_dist), html=True), name="frontend")
+
+# 纯 API 服务:前端由 Vite dev server(:5173)托管,不在此挂静态构建,
+# 避免 :8000 服务到旧 dist 造成混乱。
+@app.get("/")
+async def root() -> dict:
+    return {"service": "T-agent", "version": "0.2.0", "docs": "/docs", "api_prefix": "/api"}

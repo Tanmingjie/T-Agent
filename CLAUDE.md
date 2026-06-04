@@ -81,7 +81,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - 已删死代码:`RunConsolePage`/`RunOverviewPage`/`CaseResultPage`/`CodeViewerPage`/`ProgressBar`/`FileTree`/`StepListPanel`/旧 `SuiteDetailPage`(`@monaco-editor/react` 随之不再被引用,dep 留着无害)。
   - 后端配合:`api/routers/execution.py` 执行默认 `--isolated --headless`(规避 Chrome 密码泄露弹框,env `MCP_ISOLATED`/`MCP_HEADLESS` 可关)。
   - 数据依赖:抽屉的断言/代码/截图来自 `ExecutionRecord`(需该用例有 run 记录);截图依赖运行时真落图(Windows 上 `test_recorder` 截图目录预存失败,实际未落图则回退"无截图")。
-  - **注意**:`api/server.py` 仍会挂 `frontend/dist`(若存在)到 `:8000`——开发期用 Vite `:5173`,`npm run build` 后记得删 `frontend/dist` 否则 8000 端口挂的是旧构建。
+  - **前后端分离**:`api/server.py` 是**纯 API**(`:8000`),不再挂 `frontend/dist` 静态构建(已移除,避免服务旧构建造成混乱)。前端一律走 Vite dev server `:5173`(`npm run dev`)。若日后要让后端托管前端,需**显式**重新引入静态挂载并自管构建新鲜度。
 - **真实环境验证加固(进行中)** — 用 DeepSeek(代 Qwen3)+ 真实浏览器跑 saucedemo TC101,暴露并修复:① `collect_assertions` 断言去重(LLM 常把同一断言既放用例级又放 step.expect);② page_probe 后缀循环剥离 + **精确优先匹配**(短目标 '1' 子串会误中长描述);③ **词汇表接入断言侧(方案A)** — `MCPPageProbe(resolver=...)` 运行时按真实 role+name 解析跨语言/图标类目标,healing 同步接通 vocab,CLI 加 `--vocab` 手动词汇表入口(见 `examples/saucedemo_vocab.json`)。
   - ④ **selector 型词汇表(已做)** — 词条/`Assertion.selector` 给 CSS 时,`MCPPageProbe.query` 走 `browser_evaluate` DOM 求值(返回 `{found,visible,count,text}`),对计数角标稳健(2 件→text='2',不像 name 型写死)。解析优先级:显式 selector > 词汇表 selector > 词汇表 role+name a11y 精确 > 原始 a11y。saucedemo vocab 已改 selector 型。
   - ⑤ **词汇表落 DB + 前端维护(已做)** — `execution.py` 构造 `VocabularyResolver(VocabularyManager(store))` 注入 agent,闭合"维护词汇表→执行真正用上"的环;`find_page` 对空 `page_title`/`login_role` 宽松匹配(运行时 role 常未知也能命中手动词条);`VocabularyResolver` 支持 selector-only 词条;前端 `VocabularyPage` 从只读改为可维护(展开看词条、增改删、selector 字段、新建/删除页面词汇表)。
