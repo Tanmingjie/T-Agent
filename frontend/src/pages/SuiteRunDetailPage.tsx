@@ -2,34 +2,45 @@ import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { apiGet } from "../api/client";
 import StatusBadge from "../components/StatusBadge";
+import Drawer from "../components/Drawer";
+import CaseDrawerBody from "../components/CaseDrawerBody";
 import { CheckCircle, XCircle, ChevronLeft } from "lucide-react";
 
-interface CaseResult {
+interface Case {
+  id: string;
+  name: string;
+  steps: string[];
+  preconditions: string[];
+  expected: string[];
+}
+
+interface RunCase {
   case_id: string;
   passed: boolean;
-  verdict: string;
   steps_count: number;
   token_usage: number;
 }
 
 interface RunDetail {
   id: string;
-  suite_id: string;
   status: string;
   total_cases: number;
   passed_cases: number;
   failed_cases: number;
   started_at: number;
-  finished_at: number | null;
-  cases: CaseResult[];
+  cases: RunCase[];
 }
 
 type BadgeStatus = "passed" | "failed" | "running" | "completed" | "aborted";
 
-export default function RunOverviewPage() {
+export default function SuiteRunDetailPage() {
   const { id, runId } = useParams<{ id: string; runId: string }>();
   const navigate = useNavigate();
   const [run, setRun] = useState<RunDetail | null>(null);
+  const [caseMap, setCaseMap] = useState<Record<string, Case>>({});
+  const [selected, setSelected] = useState<{ info: Case; passed: boolean } | null>(
+    null,
+  );
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -37,7 +48,27 @@ export default function RunOverviewPage() {
     apiGet<RunDetail>(`/suites/${id}/runs/${runId}`)
       .then(setRun)
       .catch((e) => setError(e.message));
+    apiGet<{ cases: Case[] }>(`/suites/${id}`)
+      .then((s) => {
+        const m: Record<string, Case> = {};
+        for (const c of s.cases) m[c.id] = c;
+        setCaseMap(m);
+      })
+      .catch(() => {});
   }, [id, runId]);
+
+  function openCase(rc: RunCase) {
+    const info =
+      caseMap[rc.case_id] ??
+      ({
+        id: rc.case_id,
+        name: rc.case_id,
+        steps: [],
+        preconditions: [],
+        expected: [],
+      } as Case);
+    setSelected({ info, passed: rc.passed });
+  }
 
   const cases = run?.cases ?? [];
 
@@ -99,9 +130,7 @@ export default function RunOverviewPage() {
             {cases.map((c) => (
               <tr
                 key={c.case_id}
-                onClick={() =>
-                  navigate(`/suites/${id}/runs/${runId}/case/${c.case_id}`)
-                }
+                onClick={() => openCase(c)}
                 className="border-b border-gray-100 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors"
               >
                 <td className="px-5 py-3.5">
@@ -114,8 +143,10 @@ export default function RunOverviewPage() {
                     {c.passed ? "通过" : "失败"}
                   </span>
                 </td>
-                <td className="px-5 py-3.5 font-mono text-xs text-gray-600">
-                  {c.case_id}
+                <td className="px-5 py-3.5 text-surface-900">
+                  {caseMap[c.case_id]?.name ?? (
+                    <span className="font-mono text-xs text-gray-600">{c.case_id}</span>
+                  )}
                 </td>
                 <td className="px-5 py-3.5 text-gray-500">{c.steps_count}</td>
                 <td className="px-5 py-3.5 text-gray-500">{c.token_usage}</td>
@@ -124,6 +155,27 @@ export default function RunOverviewPage() {
           </tbody>
         </table>
       </div>
+
+      {/* Case drawer (复用用例表的双栏抽屉,绑定本次 run) */}
+      <Drawer
+        open={selected !== null}
+        onClose={() => setSelected(null)}
+        width="max-w-5xl"
+        title={
+          selected && (
+            <p className="text-sm text-gray-500 truncate">{selected.info.name}</p>
+          )
+        }
+      >
+        {selected && (
+          <CaseDrawerBody
+            suiteId={id!}
+            runId={runId!}
+            caseInfo={selected.info}
+            status={selected.passed ? "passed" : "failed"}
+          />
+        )}
+      </Drawer>
     </div>
   );
 }

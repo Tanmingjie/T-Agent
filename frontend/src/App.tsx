@@ -4,10 +4,8 @@ import SuiteLayout from "./components/SuiteLayout";
 import SuiteListPage from "./pages/SuiteListPage";
 import SuiteCasesPage from "./pages/SuiteCasesPage";
 import SuiteHistoryPage from "./pages/SuiteHistoryPage";
+import SuiteRunDetailPage from "./pages/SuiteRunDetailPage";
 import SuiteSettingsPage from "./pages/SuiteSettingsPage";
-import RunOverviewPage from "./pages/RunOverviewPage";
-import CaseResultPage from "./pages/CaseResultPage";
-import CodeViewerPage from "./pages/CodeViewerPage";
 import VocabularyPage from "./pages/VocabularyPage";
 
 export default function App() {
@@ -25,20 +23,8 @@ export default function App() {
       <Route path="/suites/:id" element={<SuiteLayout />}>
         <Route index element={<SuiteCasesPage />} />
         <Route path="history" element={<SuiteHistoryPage />} />
+        <Route path="runs/:runId" element={<SuiteRunDetailPage />} />
         <Route path="settings" element={<SuiteSettingsPage />} />
-      </Route>
-
-      {/* Historical run detail flow */}
-      <Route element={<RootLayout />}>
-        <Route path="/suites/:id/runs/:runId" element={<RunOverviewPage />} />
-        <Route
-          path="/suites/:id/runs/:runId/case/:caseId"
-          element={<CaseResultPage />}
-        />
-        <Route
-          path="/suites/:id/runs/:runId/case/:caseId/code"
-          element={<CodeViewerPage />}
-        />
       </Route>
     </Routes>
   );

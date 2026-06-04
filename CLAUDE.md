@@ -74,7 +74,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 阶段二 ✅ T-11~T-19(自愈 / Context Compact / Hooks / Session+LoginHook / 预置条件分类器 / Skill / Permission / Orchestrator / Custom Tool)。四条验收标准 saucedemo 真实演示通过(见 `examples/acceptance_stage2.py`)。
 - 阶段三 ✅ T-20~T-22(`codegen/`BDDGenerator / `storage/db.py` SQLModel 持久化 / `intelligence/`词汇表+Scanner)。
 - 阶段四 ✅ T-23~T-27(FastAPI 后端 5 路由+SSE / Repository 抽象层 / React 前端控制台(Suite 管理、执行控制台、结果详情、词汇表)/ BDD `step_N` 标记)。
-- **UI Redesign (进行中)** — 基于 TestSprite 产品界面交互设计优化前端(Tailwind 设计令牌 + Sidebar 深色导航 + StatusBadge + 各页面重设计)。具体页面/组件的完成进度以 git 历史和当前代码为准,不在此处逐项追踪(易腐烂)。
+- **UI Redesign (TestSprite 风格,已落地一轮)** — 参照 TestSprite 控制台重构前端,设计语言:**森林绿**强调色(`brand` 令牌已由 cyan 改 green)、**浅色分组侧栏**、**表格**列表、**双栏抽屉**。关键结构(以 git 历史/当前代码为准,不逐项追踪):
+  - 布局:`RootLayout`(全局浅色侧栏:测试套件/词汇表)+ `SuiteLayout`(进入套件后切换为**套件内导航**:用例/执行历史/设置 + 面包屑)。
+  - 用例页(`SuiteCasesPage`):状态列 + 顶部进度条 + **原地执行**(`hooks/useSuiteRun` 封装 SSE,不再跳独立控制台页);点用例 → **双栏抽屉**(`CaseDrawerBody`):左=信息/测试结果卡/步骤卡,右=测试结果(Preview 最终态截图 / 代码 / 断言结果)或单步截图。
+  - 执行历史 → run 详情(`SuiteRunDetailPage`,挂 SuiteLayout 下)点用例**复用同一抽屉**(绑定该次 runId),不再三页跳转。
+  - 已删死代码:`RunConsolePage`/`RunOverviewPage`/`CaseResultPage`/`CodeViewerPage`/`ProgressBar`/`FileTree`/`StepListPanel`/旧 `SuiteDetailPage`(`@monaco-editor/react` 随之不再被引用,dep 留着无害)。
+  - 后端配合:`api/routers/execution.py` 执行默认 `--isolated --headless`(规避 Chrome 密码泄露弹框,env `MCP_ISOLATED`/`MCP_HEADLESS` 可关)。
+  - 数据依赖:抽屉的断言/代码/截图来自 `ExecutionRecord`(需该用例有 run 记录);截图依赖运行时真落图(Windows 上 `test_recorder` 截图目录预存失败,实际未落图则回退"无截图")。
+  - **注意**:`api/server.py` 仍会挂 `frontend/dist`(若存在)到 `:8000`——开发期用 Vite `:5173`,`npm run build` 后记得删 `frontend/dist` 否则 8000 端口挂的是旧构建。
 - **真实环境验证加固(进行中)** — 用 DeepSeek(代 Qwen3)+ 真实浏览器跑 saucedemo TC101,暴露并修复:① `collect_assertions` 断言去重(LLM 常把同一断言既放用例级又放 step.expect);② page_probe 后缀循环剥离 + **精确优先匹配**(短目标 '1' 子串会误中长描述);③ **词汇表接入断言侧(方案A)** — `MCPPageProbe(resolver=...)` 运行时按真实 role+name 解析跨语言/图标类目标,healing 同步接通 vocab,CLI 加 `--vocab` 手动词汇表入口(见 `examples/saucedemo_vocab.json`)。
   - ④ **selector 型词汇表(已做)** — 词条/`Assertion.selector` 给 CSS 时,`MCPPageProbe.query` 走 `browser_evaluate` DOM 求值(返回 `{found,visible,count,text}`),对计数角标稳健(2 件→text='2',不像 name 型写死)。解析优先级:显式 selector > 词汇表 selector > 词汇表 role+name a11y 精确 > 原始 a11y。saucedemo vocab 已改 selector 型。
   - ⑤ **词汇表落 DB + 前端维护(已做)** — `execution.py` 构造 `VocabularyResolver(VocabularyManager(store))` 注入 agent,闭合"维护词汇表→执行真正用上"的环;`find_page` 对空 `page_title`/`login_role` 宽松匹配(运行时 role 常未知也能命中手动词条);`VocabularyResolver` 支持 selector-only 词条;前端 `VocabularyPage` 从只读改为可维护(展开看词条、增改删、selector 字段、新建/删除页面词汇表)。
