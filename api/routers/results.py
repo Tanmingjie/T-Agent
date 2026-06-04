@@ -88,18 +88,18 @@ async def get_case_code(suite_id: str, run_id: str, case_id: str, repo=Depends(g
     if record is None:
         raise HTTPException(404, "Result not found")
 
-    # Look for generated code files
-    feat = GENERATED_ROOT / f"{case_id}.feature"
-    steps = GENERATED_ROOT / f"test_{case_id}.py"
-
-    files = {}
-    if feat.exists():
-        files[f"{case_id}.feature"] = feat.read_text()
-    if steps.exists():
-        files[f"test_{case_id}.py"] = steps.read_text()
-
-    if not files:
-        files["generated_code"] = record.generated_code or ""
+    # 优先用本次 run 持久化的 generated_code(磁盘文件按 case_id 命名,会被后续
+    # run 覆盖,对 per-run 抽屉不准);无则回退磁盘文件。
+    files: dict[str, str] = {}
+    if record.generated_code:
+        files[f"{case_id}.py"] = record.generated_code
+    else:
+        feat = GENERATED_ROOT / f"{case_id}.feature"
+        steps = GENERATED_ROOT / f"test_{case_id}.py"
+        if feat.exists():
+            files[f"{case_id}.feature"] = feat.read_text()
+        if steps.exists():
+            files[f"test_{case_id}.py"] = steps.read_text()
 
     return {"files": files, "case_id": case_id}
 

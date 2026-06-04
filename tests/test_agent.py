@@ -122,6 +122,10 @@ async def test_run_passes_when_assertions_pass():
     assert record.passed is True
     assert len(record.case_assertions) == 2
     assert all(a["status"] == "pass" for a in record.case_assertions)
+    # 执行通过 → 生成 pytest-bdd 代码并持久化到 record
+    assert record.generated_code
+    assert "Feature:" in record.generated_code
+    assert "import" in record.generated_code
 
 
 async def test_verdict_is_assertion_driven_not_llm():

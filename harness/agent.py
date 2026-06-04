@@ -16,6 +16,7 @@ import logging
 import os
 from pathlib import Path
 
+from codegen.bdd import BDDGenerator
 from harness.assertion import AssertionEngine
 from harness.context import ContextCompactor
 from harness.healing import HealingSubagent
@@ -56,6 +57,9 @@ _CONTROL_TOOLS = {"mark_step_done"}
 _NO_SHOT_TOOLS = {"browser_snapshot", "browser_take_screenshot"}
 # 截图开关:默认开,env MCP_SCREENSHOT=0 关闭
 _CAPTURE_SCREENSHOTS = os.getenv("MCP_SCREENSHOT", "1") != "0"
+
+# 生成代码落盘目录(与 api/routers/results.py 的 GENERATED_ROOT 一致)
+_GENERATED_ROOT = "storage/generated"
 
 
 def _step_keywords(step_plan: StepPlan) -> list[str]:
@@ -291,6 +295,18 @@ class TestCaseAgent:
             await self.hooks.run(AFTER_CASE, ctx)
 
         record = recorder.finalize(passed=passed)
+
+        # —— 代码生成(规格 §5.6):仅执行通过后产出 pytest-bdd 代码 ——
+        if passed:
+            try:
+                # 把断言聚合进 spec(LLM 常放 step.expect),否则生成的 Then 段为空
+                gen_spec = spec.model_copy(update={"assertions": collect_assertions(spec)})
+                gen = BDDGenerator().generate(gen_spec, record)
+                record.generated_code = f"{gen.feature}\n\n{gen.step_defs}"
+                gen.write(_GENERATED_ROOT)  # storage/generated/(供下载)
+            except Exception as e:  # noqa: BLE001 — 代码生成失败不影响用例结果
+                logger.warning("用例 %s 代码生成失败:%s", case.id, e)
+
         logger.info(
             "用例 %s 执行完毕:%s(LLM 自报=%s,停因=%s)",
             case.id,
