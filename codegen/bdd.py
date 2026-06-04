@@ -21,6 +21,7 @@ import re
 import black
 
 from codegen.base import CodeGenerator, GeneratedCode
+from codegen.locators import Locator, LocatorStrategy
 from input.models import Assertion, ExecutionRecord, SpecStep, TestSpec
 
 
@@ -49,21 +50,71 @@ def _step_text(step: SpecStep) -> str:
     return t  # execute / 其它:用原始语义
 
 
-def _step_body(step: SpecStep, base_url: str) -> str:
+# ── Locator → Playwright 定位表达式(渲染层) ───────────────────
+
+
+def _render_locator(loc: Locator, *, single: bool = True) -> str:
+    """规范化 Locator → Playwright 定位表达式(解析到单元素)。"""
+    s = loc.strategy
+    if s == LocatorStrategy.ROLE:
+        return f"page.get_by_role({_q(loc.role)}, name={_q(loc.name)})"
+    if s == LocatorStrategy.TEST_ID:
+        return f"page.get_by_test_id({_q(loc.name)})"
+    if s == LocatorStrategy.LABEL:
+        return f"page.get_by_label({_q(loc.name)})"
+    if s == LocatorStrategy.PLACEHOLDER:
+        return f"page.get_by_placeholder({_q(loc.name)})"
+    if s == LocatorStrategy.CSS:
+        base = f"page.locator({_q(loc.value)})"
+        return f"{base}.first" if single else base
+    # TEXT
+    base = f"page.get_by_text({_q(loc.name or loc.target)})"
+    return f"{base}.first" if single else base
+
+
+def _locator_expr(
+    target: str, action: str, locators: dict[str, Locator] | None, *, single: bool = True
+) -> tuple[str, bool]:
+    """求一个 (target, action) 的定位表达式。
+
+    命中解析出的 Locator(词汇表)→ 按其策略渲染;否则回退**原有启发式**
+    (fill/select→get_by_label,其余→get_by_text),保持向后兼容。
+    返回 (表达式, 是否兜底需人工核对)。
+    """
+    loc = (locators or {}).get(target)
+    if loc is not None:
+        return _render_locator(loc, single=single), loc.fallback
+    if action in ("fill", "select"):
+        return f"page.get_by_label({_q(target)})", True
+    base = f"page.get_by_text({_q(target)})"
+    return (f"{base}.first" if single else base), True
+
+
+# 兜底定位器的提醒(作为**前置注释行**,避免内联注释把语句撑长被 black 换行)
+_REVIEW_NOTE = "    # TODO 定位器兜底(文本/标签匹配),建议核对真实选择器"
+
+
+def _with_review(stmt: str, review: bool) -> str:
+    """组装函数体:兜底时在语句前加一行提醒注释。stmt 不含前导缩进。"""
+    return f"{_REVIEW_NOTE}\n    {stmt}" if review else f"    {stmt}"
+
+
+def _step_body(step: SpecStep, base_url: str, locators: dict[str, Locator] | None = None) -> str:
     a, t, d = step.action, step.target, step.data
     if a == "navigate":
         url = f"{base_url.rstrip('/')}/{t.lstrip('/')}" if t.startswith("/") else t
         return f"    page.goto({_q(url)})  # 导航到「{t}」"
-    if a == "fill":
-        return f"    page.get_by_label({_q(t)}).fill({_q(d or '')})"
-    if a == "select":
-        return f"    page.get_by_label({_q(t)}).select_option({_q(d or '')})"
-    if a == "click":
-        return f"    page.get_by_text({_q(t)}).first.click()"
-    if a == "hover":
-        return f"    page.get_by_text({_q(t)}).first.hover()"
     if a == "wait":
         return f"    page.wait_for_timeout(1000)  # 等待「{t}」"
+    if a in ("fill", "select", "click", "hover"):
+        expr, review = _locator_expr(t, a, locators)
+        tail = {
+            "fill": f".fill({_q(d or '')})",
+            "select": f".select_option({_q(d or '')})",
+            "click": ".click()",
+            "hover": ".hover()",
+        }[a]
+        return _with_review(f"{expr}{tail}", review)
     return f"    # TODO 业务动作({a}):{t} —— 请按实际补充\n    pass"
 
 
@@ -82,21 +133,29 @@ def _assertion_text(a: Assertion) -> str:
     return mapping.get(a.type, f"{a.target} 满足 {a.type}")
 
 
-def _assertion_body(a: Assertion) -> str:
+def _assertion_body(a: Assertion, locators: dict[str, Locator] | None = None) -> str:
     exp = a.expected or ""
     if a.type == "url_contains":
         return f"    expect(page).to_have_url(re.compile({_q(re.escape(exp))}))"
     if a.type == "url_equals":
         return f"    expect(page).to_have_url({_q(exp)})"
+    # 显式 selector(Assertion.selector)优先;否则走词汇表解析 / 文本兜底
+    if a.selector:
+        single = f"page.locator({_q(a.selector)}).first"
+        multi = f"page.locator({_q(a.selector)})"
+        review = False
+    else:
+        single, review = _locator_expr(a.target, "click", locators, single=True)
+        multi, _ = _locator_expr(a.target, "click", locators, single=False)
     if a.type == "element_visible":
-        return f"    expect(page.get_by_text({_q(a.target)}).first).to_be_visible()"
+        return _with_review(f"expect({single}).to_be_visible()", review)
     if a.type == "element_count":
         n = exp if str(exp).isdigit() else "1"
-        return f"    expect(page.get_by_text({_q(a.target)})).to_have_count({n})"
+        return _with_review(f"expect({multi}).to_have_count({n})", review)
     if a.type == "text_equals":
-        return f"    expect(page.get_by_text({_q(a.target)}).first).to_have_text({_q(exp)})"
+        return _with_review(f"expect({single}).to_have_text({_q(exp)})", review)
     if a.type == "text_contains":
-        return f"    expect(page.get_by_text({_q(a.target)}).first).to_contain_text({_q(exp)})"
+        return _with_review(f"expect({single}).to_contain_text({_q(exp)})", review)
     return f"    # TODO 断言({a.type}):{a.target} —— 阶段一/三未直接支持,请人工确认\n    pass"
 
 
@@ -104,10 +163,15 @@ def _assertion_body(a: Assertion) -> str:
 
 
 class BDDGenerator(CodeGenerator):
-    def generate(self, spec: TestSpec, record: ExecutionRecord) -> GeneratedCode:
+    def generate(
+        self,
+        spec: TestSpec,
+        record: ExecutionRecord,
+        locators: dict[str, Locator] | None = None,
+    ) -> GeneratedCode:
         name = spec.case_id
         feature = self._feature(spec)
-        step_defs = self._step_defs(spec, name)
+        step_defs = self._step_defs(spec, name, locators)
         conftest = _CONFTEST
         return GeneratedCode(name=name, feature=feature, step_defs=step_defs, conftest=conftest)
 
@@ -139,7 +203,9 @@ class BDDGenerator(CodeGenerator):
 
         return "\n".join(lines) + "\n"
 
-    def _step_defs(self, spec: TestSpec, name: str) -> str:
+    def _step_defs(
+        self, spec: TestSpec, name: str, locators: dict[str, Locator] | None = None
+    ) -> str:
         blocks: list[str] = [
             "import re",
             "",
@@ -173,9 +239,9 @@ class BDDGenerator(CodeGenerator):
                 i,
             )
         for i, s in enumerate(spec.steps, start=1):
-            emit("when", _step_text(s), _step_body(s, spec.base_url), i)
+            emit("when", _step_text(s), _step_body(s, spec.base_url, locators), i)
         for i, a in enumerate(spec.assertions, start=1):
-            emit("then", _assertion_text(a), _assertion_body(a), i)
+            emit("then", _assertion_text(a), _assertion_body(a, locators), i)
 
         code = "\n".join(blocks) + "\n"
         ast.parse(code)  # 语法校验,失败即抛

@@ -17,6 +17,7 @@ import os
 from pathlib import Path
 
 from codegen.bdd import BDDGenerator
+from codegen.locators import resolve_locators
 from harness.assertion import AssertionEngine
 from harness.context import ContextCompactor
 from harness.healing import HealingSubagent
@@ -301,7 +302,12 @@ class TestCaseAgent:
             try:
                 # 把断言聚合进 spec(LLM 常放 step.expect),否则生成的 Then 段为空
                 gen_spec = spec.model_copy(update={"assertions": collect_assertions(spec)})
-                gen = BDDGenerator().generate(gen_spec, record)
+                # 解析层(框架无关):语义 target → 稳健 Locator(词汇表 role+name 优先)
+                targets = [s.target for s in gen_spec.steps] + [
+                    a.target for a in gen_spec.assertions
+                ]
+                locators = await resolve_locators(targets, self.vocab_resolver, url=state["url"])
+                gen = BDDGenerator().generate(gen_spec, record, locators=locators)
                 record.generated_code = f"{gen.feature}\n\n{gen.step_defs}"
                 gen.write(_GENERATED_ROOT)  # storage/generated/(供下载)
             except Exception as e:  # noqa: BLE001 — 代码生成失败不影响用例结果

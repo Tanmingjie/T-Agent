@@ -135,3 +135,78 @@ def test_black_formatted_idempotent():
 
     code = _gen().step_defs
     assert black.format_str(code, mode=black.Mode()) == code
+
+
+# ── 定位器解析层(框架无关)──────────────────────────────────────
+
+
+def test_locator_from_vocab_prefers_role_over_selector():
+    from codegen.locators import LocatorStrategy, locator_from_vocab
+
+    # role+name 与 selector 同时存在 → 取更稳的 role+name
+    loc = locator_from_vocab("登录按钮", {"role": "button", "name": "Login", "selector": ".btn"})
+    assert loc.strategy == LocatorStrategy.ROLE
+    assert loc.role == "button" and loc.name == "Login"
+    # 仅 selector → CSS
+    loc2 = locator_from_vocab("购物车", {"selector": ".shopping_cart_badge"})
+    assert loc2.strategy == LocatorStrategy.CSS and loc2.value == ".shopping_cart_badge"
+    # 仅 name → 文本
+    loc3 = locator_from_vocab("标题", {"name": "欢迎"})
+    assert loc3.strategy == LocatorStrategy.TEXT and loc3.name == "欢迎"
+    # 空 → None
+    assert locator_from_vocab("x", {}) is None
+    assert locator_from_vocab("x", None) is None
+
+
+async def test_resolve_locators_builds_map():
+    from codegen.locators import LocatorStrategy, resolve_locators
+
+    class _Resolver:
+        async def resolve(self, target, *, url="", title=""):
+            return {"role": "button", "name": "Login"} if target == "登录按钮" else None
+
+    out = await resolve_locators(["登录按钮", "未知目标"], _Resolver())
+    assert set(out) == {"登录按钮"}
+    assert out["登录按钮"].strategy == LocatorStrategy.ROLE
+
+
+async def test_resolve_locators_no_resolver_returns_empty():
+    from codegen.locators import resolve_locators
+
+    assert await resolve_locators(["a", "b"], None) == {}
+
+
+def test_bdd_renders_role_and_css_locators_from_map():
+    from codegen.locators import Locator, LocatorStrategy
+
+    spec = TestSpec(
+        case_id="TC9",
+        name="登录",
+        base_url="https://x",
+        steps=[SpecStep(action="click", target="登录按钮")],
+        assertions=[Assertion(type="text_equals", target="购物车角标", expected="1")],
+    )
+    locators = {
+        "登录按钮": Locator(LocatorStrategy.ROLE, role="button", name="Login", target="登录按钮"),
+        "购物车角标": Locator(
+            LocatorStrategy.CSS, value=".shopping_cart_badge", target="购物车角标"
+        ),
+    }
+    code = BDDGenerator().generate(spec, _record(), locators=locators).step_defs
+    ast.parse(code)
+    assert 'get_by_role("button", name="Login")' in code
+    assert 'page.locator(".shopping_cart_badge")' in code
+    # 命中词汇表的目标不应再带兜底提醒
+    assert "TODO 定位器兜底" not in code
+
+
+def test_bdd_unresolved_target_marks_review():
+    # 未命中词汇表 → 文本兜底 + 提醒注释(供人工核对)
+    spec = TestSpec(
+        case_id="TC8",
+        name="点击",
+        base_url="https://x",
+        steps=[SpecStep(action="click", target="某个没录入词汇表的按钮")],
+    )
+    code = BDDGenerator().generate(spec, _record(), locators={}).step_defs
+    assert "TODO 定位器兜底" in code

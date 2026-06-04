@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from pathlib import Path
 
+from codegen.locators import Locator
 from input.models import ExecutionRecord, TestSpec
 
 
@@ -42,7 +43,16 @@ class GeneratedCode:
 
 
 class CodeGenerator(ABC):
-    """代码生成器抽象接口。"""
+    """代码生成器抽象接口。
+
+    ``locators``:解析层(框架无关)预解析好的 {语义 target: Locator},由各实现渲染成
+    自身框架语法。为空/未命中的 target 由实现回退启发式定位。
+    """
 
     @abstractmethod
-    def generate(self, spec: TestSpec, record: ExecutionRecord) -> GeneratedCode: ...
+    def generate(
+        self,
+        spec: TestSpec,
+        record: ExecutionRecord,
+        locators: dict[str, Locator] | None = None,
+    ) -> GeneratedCode: ...
