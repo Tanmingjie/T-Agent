@@ -59,6 +59,11 @@ def _load_vocab_resolver(path: str | None) -> DictVocabResolver | None:
     data = json.loads(Path(path).read_text(encoding="utf-8"))
     if not isinstance(data, dict):
         raise SystemExit(f"--vocab 文件应为 JSON 对象 {{业务词: {{role, name}}}},得到:{type(data)}")
+    bad = [k for k, v in data.items() if not isinstance(v, dict)]
+    if bad:
+        raise SystemExit(
+            f"--vocab 每个词条的值必须是对象 {{role/name/selector}},以下词条不是:{bad}"
+        )
     return DictVocabResolver(data)
 
 

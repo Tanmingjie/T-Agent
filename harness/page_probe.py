@@ -34,14 +34,38 @@ from harness.assertion import ElementQuery
 
 
 def _extract_json(text: str) -> dict | None:
-    """从 browser_evaluate 的结果文本里抽出第一个 JSON 对象(playwright-mcp 会包裹格式)。"""
+    """从 browser_evaluate 的结果文本里抽出 JSON 对象。
+
+    playwright-mcp 的真实返回形如::
+
+        ### Result
+        "{\\"found\\":true,...}"        # 求值结果:被引号包裹的 JSON 字符串字面量
+        ### Ran Playwright code
+        ```js
+        await page.evaluate('() => { ... }');   # 回显的 JS 代码,含花括号
+        ```
+
+    因此**不能**对全文做 ``{.*}`` 匹配——会从 Result 的 ``{`` 一路吞到回显代码的
+    最后一个 ``}``,得到非法 JSON。先窄化到 ``### Result`` 段(隔离回显代码),
+    再解开引号包裹的字符串字面量,最后取对象。
+    """
     if not text:
         return None
-    m = re.search(r"\{.*\}", text, re.DOTALL)
-    if not m:
+    m = re.search(r"###\s*Result(.*?)(?:\n###|\Z)", text, re.DOTALL)
+    seg = m.group(1).strip() if m else text
+    # 段内容可能是被引号包裹的 JSON 字符串字面量("{\"found\":..}") → 先解一层
+    if seg.startswith('"'):
+        try:
+            inner = json.loads(seg)
+            if isinstance(inner, str):
+                seg = inner
+        except (ValueError, TypeError):
+            pass
+    m2 = re.search(r"\{.*\}", seg, re.DOTALL)
+    if not m2:
         return None
     try:
-        data = json.loads(m.group(0))
+        data = json.loads(m2.group(0))
         return data if isinstance(data, dict) else None
     except (ValueError, TypeError):
         return None
@@ -295,7 +319,9 @@ class MCPPageProbe:
         if self._resolver is None:
             return None
         snap = await self._ensure()
-        return await self._resolver.resolve(target, url=snap.url, title=snap.title)
+        entry = await self._resolver.resolve(target, url=snap.url, title=snap.title)
+        # 防御:词条值必须是 dict(下游 entry.get(...) 才安全);畸形词汇表不应炸断言
+        return entry if isinstance(entry, dict) else None
 
     async def query(self, target: str, selector: str | None = None) -> ElementQuery:
         snap = await self._ensure()

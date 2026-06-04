@@ -232,8 +232,20 @@ class _EvalMCP:
 
     def result_to_text(self, result):
         kind, payload = result
-        # playwright-mcp 会用 ``### Result`` 等包裹,这里模拟带包裹的文本
-        return f"### Result\n```\n{payload}\n```" if kind == "eval" else payload
+        if kind != "eval":
+            return payload
+        # 复刻真实 playwright-mcp 的 browser_evaluate 返回:Result 段是**引号包裹的
+        # JSON 字符串字面量**,其后**回显含花括号的 JS 代码**。对全文做贪婪 {..} 匹配
+        # 会把回显代码一起吞进去 → 这正是 _extract_json 修复的 bug,故 fake 必须复刻。
+        import json as _json
+
+        return (
+            "### Result\n"
+            + _json.dumps(payload)  # -> "{\"found\":true,...}"
+            + "\n### Ran Playwright code\n```js\n"
+            "await page.evaluate('() => { return document.querySelector(\"x\"); }');\n"
+            "```\n### Page\n- Page URL: https://x/\n"
+        )
 
 
 async def test_probe_resolves_via_selector_eval():
@@ -291,3 +303,44 @@ async def test_selector_not_found_is_healable():
     )
     assert not results[0].passed
     assert results[0].healable
+
+
+# ── _extract_json:解析 browser_evaluate 返回(隔离回显的 JS 代码) ──────
+
+
+def test_extract_json_ignores_echoed_js_braces():
+    """真实格式:Result 是引号包裹的 JSON 字面量,后面回显的 JS 含花括号。
+
+    旧实现对全文贪婪 {..} 匹配会吞进回显代码 → 解析失败;修复后只解析 Result 段。"""
+    from harness.page_probe import _extract_json
+
+    real = (
+        "### Result\n"
+        '"{\\"found\\":true,\\"count\\":1,\\"text\\":\\"Example Domain\\"}"\n'
+        "### Ran Playwright code\n```js\n"
+        "await page.evaluate('() => { const e = document.querySelector(\\'h1\\'); return {x:1}; }');\n"
+        "```\n### Page\n- Page URL: https://example.com/\n"
+    )
+    assert _extract_json(real) == {"found": True, "count": 1, "text": "Example Domain"}
+
+
+def test_extract_json_fenced_plain_object():
+    from harness.page_probe import _extract_json
+
+    assert _extract_json('### Result\n```\n{"found":false}\n```') == {"found": False}
+    assert _extract_json("") is None
+    assert _extract_json("no json here") is None
+
+
+async def test_resolve_entry_guards_non_dict():
+    """畸形词汇表(值非 dict)不应让 entry.get(...) 炸断言:resolve_entry 返回 None。"""
+
+    class _BadResolver:
+        async def resolve(self, target, *, url="", title=""):
+            return "我是字符串不是dict"
+
+    probe = MCPPageProbe(_FakeMCP(SNAPSHOT), resolver=_BadResolver())
+    assert await probe.resolve_entry("任意") is None
+    # query 不抛错,退回原始 a11y 语义匹配
+    q = await probe.query("提交")
+    assert q.found
