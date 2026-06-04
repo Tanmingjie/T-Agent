@@ -38,18 +38,18 @@ export default function CaseResultPage() {
 
   return (
     <div>
-      <button onClick={() => navigate(`/suites/${id}/runs/${runId}`)} className="text-sm text-gray-500 hover:underline mb-2">
+      <button onClick={() => navigate(`/suites/${id}/runs/${runId}`)} className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-surface-900 mb-3 transition-colors">
         ← 返回执行
       </button>
 
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold">{caseId}</h2>
-        <div className="flex gap-2">
-          <span className={`px-3 py-1 rounded text-sm font-semibold ${result.passed ? "bg-green-100 text-green-800" : "bg-red-100 text-red-800"}`}>
+        <h1 className="text-xl font-semibold text-surface-900">{caseId}</h1>
+        <div className="flex items-center gap-2">
+          <span className={`px-2.5 py-1 rounded-md text-xs font-medium border ${result.passed ? "bg-brand-50 text-brand-700 border-brand-200" : "bg-red-50 text-red-700 border-red-200"}`}>
             {result.passed ? "PASS" : "FAIL"}
           </span>
           <button onClick={() => navigate(`/suites/${id}/runs/${runId}/case/${caseId}/code`)}
-            className="border px-3 py-1 rounded text-sm">
+            className="border border-gray-300 text-gray-700 px-3.5 py-1.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors">
             查看代码
           </button>
         </div>
@@ -92,7 +92,7 @@ export default function CaseResultPage() {
             {(["snapshot", "code", "log"] as const).map((t) => (
               <button key={t}
                 onClick={() => setTab(t)}
-                className={`px-3 py-1 text-sm rounded ${tab === t ? "bg-cyan-100 text-cyan-800" : "hover:bg-gray-50"}`}
+                className={`px-3 py-1 text-sm rounded-md ${tab === t ? "bg-brand-50 text-brand-700" : "hover:bg-gray-50 text-gray-600"}`}
               >
                 {t === "snapshot" ? "快照" : t === "code" ? "代码" : "日志"}
               </button>

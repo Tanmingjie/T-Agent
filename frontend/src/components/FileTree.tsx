@@ -14,7 +14,7 @@ export default function FileTree({ files, onSelect, selected }: Props) {
           key={fn}
           onClick={() => onSelect(fn)}
           className={`block w-full text-left px-3 py-1.5 text-sm rounded mb-0.5 font-mono ${
-            selected === fn ? "bg-cyan-100" : "hover:bg-gray-50"
+            selected === fn ? "bg-brand-50" : "hover:bg-gray-50"
           }`}
         >
           📄 {fn}

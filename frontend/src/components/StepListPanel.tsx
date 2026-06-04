@@ -21,7 +21,7 @@ export default function StepListPanel({ steps, onSelect, selected }: Props) {
           <button
             onClick={() => onSelect(s.step_no)}
             className={`w-full text-left px-3 py-2 text-sm rounded mb-1 ${
-              selected === s.step_no ? "bg-cyan-100" : "hover:bg-gray-50"
+              selected === s.step_no ? "bg-brand-50" : "hover:bg-gray-50"
             }`}
           >
             <span className="text-green-500 mr-1">✅</span>

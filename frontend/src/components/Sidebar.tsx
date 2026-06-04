@@ -1,46 +1,63 @@
 import { NavLink } from "react-router-dom";
 import { Layers, BookOpen, Zap } from "lucide-react";
 
-const links = [
-  { to: "/suites", label: "Suites", icon: Layers },
-  { to: "/vocabulary", label: "词汇表", icon: BookOpen },
+const groups = [
+  {
+    label: "Dashboard",
+    links: [{ to: "/suites", label: "测试套件", icon: Layers }],
+  },
+  {
+    label: "配置",
+    links: [{ to: "/vocabulary", label: "词汇表", icon: BookOpen }],
+  },
 ];
 
 export default function Sidebar() {
   return (
-    <aside className="w-56 bg-surface-900 text-white flex flex-col shrink-0">
+    <aside className="w-60 bg-white border-r border-gray-200 flex flex-col shrink-0">
       {/* Brand */}
-      <div className="px-5 py-4 border-b border-white/10">
+      <div className="px-5 h-14 flex items-center border-b border-gray-200">
         <NavLink to="/suites" className="flex items-center gap-2.5">
-          <div className="w-8 h-8 rounded-lg bg-brand-500 flex items-center justify-center">
-            <Zap size={18} className="text-white" />
+          <div className="w-7 h-7 rounded-lg bg-brand-600 flex items-center justify-center">
+            <Zap size={16} className="text-white" />
           </div>
-          <span className="font-bold text-lg tracking-tight">T-Agent</span>
+          <span className="font-semibold text-[15px] tracking-tight text-surface-900">
+            T-Agent
+          </span>
         </NavLink>
       </div>
 
-      {/* Nav */}
-      <nav className="flex-1 px-3 py-4 space-y-1">
-        {links.map(({ to, label, icon: Icon }) => (
-          <NavLink
-            key={to}
-            to={to}
-            className={({ isActive }) =>
-              `flex items-center gap-3 px-3 py-2 rounded-lg text-sm transition-colors ${
-                isActive
-                  ? "bg-white/10 text-white font-medium"
-                  : "text-gray-400 hover:text-white hover:bg-white/5"
-              }`
-            }
-          >
-            <Icon size={18} />
-            <span>{label}</span>
-          </NavLink>
+      {/* Nav groups */}
+      <nav className="flex-1 px-3 py-4 space-y-6 overflow-y-auto">
+        {groups.map((g) => (
+          <div key={g.label}>
+            <p className="px-3 mb-1.5 text-[11px] font-medium uppercase tracking-wider text-gray-400">
+              {g.label}
+            </p>
+            <div className="space-y-0.5">
+              {g.links.map(({ to, label, icon: Icon }) => (
+                <NavLink
+                  key={to}
+                  to={to}
+                  className={({ isActive }) =>
+                    `flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors ${
+                      isActive
+                        ? "bg-gray-100 text-surface-900 font-medium"
+                        : "text-gray-600 hover:text-surface-900 hover:bg-gray-50"
+                    }`
+                  }
+                >
+                  <Icon size={17} />
+                  <span>{label}</span>
+                </NavLink>
+              ))}
+            </div>
+          </div>
         ))}
       </nav>
 
       {/* Footer */}
-      <div className="px-5 py-4 border-t border-white/10 text-xs text-gray-500">
+      <div className="px-5 py-4 border-t border-gray-200 text-xs text-gray-400">
         AI Test Automation
       </div>
     </aside>

@@ -70,7 +70,17 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
             from intelligence.vocabulary import VocabularyManager, VocabularyResolver
 
             vocab_resolver = VocabularyResolver(VocabularyManager(store))
-            async with MCPClient() as mcp:
+            # 浏览器启动参数:默认 --isolated(一次性 profile,规避 Chrome
+            # 「密码泄露」原生弹框——该弹框不在 a11y 快照里,自愈无法关闭,只能从源头规避)
+            # + --headless(后台运行)。可用 env 关掉:MCP_ISOLATED=0 / MCP_HEADLESS=0。
+            import os
+
+            mcp_args = ["@playwright/mcp@latest"]
+            if os.getenv("MCP_ISOLATED", "1") != "0":
+                mcp_args.append("--isolated")
+            if os.getenv("MCP_HEADLESS", "1") != "0":
+                mcp_args.append("--headless")
+            async with MCPClient(args=mcp_args) as mcp:
                 agent = TestCaseAgent(llm=llm, mcp=mcp, vocab_resolver=vocab_resolver)
 
                 orch = Orchestrator(agent=agent)

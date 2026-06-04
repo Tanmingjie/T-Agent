@@ -91,33 +91,38 @@ export default function VocabularyPage() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h2 className="text-2xl font-bold">Page Intelligence 词汇表</h2>
+      <div className="flex items-start justify-between mb-6">
+        <div>
+          <h1 className="text-xl font-semibold text-surface-900">词汇表</h1>
+          <p className="text-sm text-gray-500 mt-1">
+            维护业务词 → 页面元素的映射，供断言/自愈跨语言解析目标。
+          </p>
+        </div>
         <div className="flex gap-2">
           <button
             onClick={() => setNewPage({ ...EMPTY_PAGE })}
-            className="border border-cyan-600 text-cyan-700 px-4 py-2 rounded hover:bg-cyan-50"
+            className="border border-gray-300 text-gray-700 px-3.5 py-2 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
           >
             新建词汇表
           </button>
           <button
             onClick={scan}
             disabled={scanning}
-            className="bg-cyan-600 text-white px-4 py-2 rounded hover:bg-cyan-700 disabled:opacity-50"
+            className="bg-brand-600 text-white px-3.5 py-2 rounded-md text-sm font-medium hover:bg-brand-700 disabled:opacity-50 transition-colors"
           >
-            {scanning ? "扫描中..." : "扫描页面"}
+            {scanning ? "扫描中…" : "扫描页面"}
           </button>
         </div>
       </div>
 
-      <div className="mb-4">
+      <div className="flex items-center gap-2 mb-3">
         <input
-          className="border px-3 py-2 rounded w-64 text-sm"
-          placeholder="搜索 URL 或页面标题..."
+          className="w-64 border border-gray-300 rounded-md px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500"
+          placeholder="搜索 URL 或页面标题…"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
         />
-        <span className="text-sm text-gray-500 ml-3">共 {items.length} 条</span>
+        <span className="text-xs text-gray-400 ml-auto">共 {items.length} 条</span>
       </div>
 
       {newPage && (
@@ -130,20 +135,22 @@ export default function VocabularyPage() {
       )}
 
       {items.length === 0 ? (
-        <p className="text-gray-500 text-center py-20">
-          暂无词汇表数据。点击"新建词汇表"手动维护,或"扫描页面"自动提炼。
-        </p>
+        <div className="bg-white border border-gray-200 rounded-lg py-16 text-center">
+          <p className="text-gray-500 text-sm">
+            暂无词汇表数据。点击"新建词汇表"手动维护，或"扫描页面"自动提炼。
+          </p>
+        </div>
       ) : (
-        <div className="bg-white border rounded overflow-hidden">
+        <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">
           <table className="w-full text-sm">
-            <thead className="bg-gray-50">
-              <tr>
-                <th className="text-left px-4 py-2 w-8"></th>
-                <th className="text-left px-4 py-2">页面路径</th>
-                <th className="text-left px-4 py-2">页面标题</th>
-                <th className="text-left px-4 py-2">登录角色</th>
-                <th className="text-left px-4 py-2">词汇数</th>
-                <th className="px-4 py-2"></th>
+            <thead>
+              <tr className="border-b border-gray-200 text-left text-xs font-medium text-gray-500">
+                <th className="px-5 py-3 w-8"></th>
+                <th className="px-5 py-3 font-medium">页面路径</th>
+                <th className="px-5 py-3 font-medium">页面标题</th>
+                <th className="px-5 py-3 font-medium">登录角色</th>
+                <th className="px-5 py-3 font-medium w-20">词汇数</th>
+                <th className="px-5 py-3 w-16"></th>
               </tr>
             </thead>
             <tbody>
@@ -153,21 +160,21 @@ export default function VocabularyPage() {
                 return (
                   <Fragment key={k}>
                     <tr
-                      className="border-t hover:bg-gray-50 cursor-pointer"
+                      className="border-b border-gray-100 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors"
                       onClick={() => setExpanded(open ? null : k)}
                     >
-                      <td className="px-4 py-2 text-gray-400">{open ? "▾" : "▸"}</td>
-                      <td className="px-4 py-2 font-mono text-xs">{v.url_pattern}</td>
-                      <td className="px-4 py-2">{v.page_title}</td>
-                      <td className="px-4 py-2">{v.login_role || <span className="text-gray-400">(任意)</span>}</td>
-                      <td className="px-4 py-2">{Object.keys(v.vocabulary).length}</td>
-                      <td className="px-4 py-2 text-right">
+                      <td className="px-5 py-3 text-gray-400">{open ? "▾" : "▸"}</td>
+                      <td className="px-5 py-3 font-mono text-xs text-gray-600">{v.url_pattern}</td>
+                      <td className="px-5 py-3 text-surface-900">{v.page_title}</td>
+                      <td className="px-5 py-3 text-gray-500">{v.login_role || <span className="text-gray-300">(任意)</span>}</td>
+                      <td className="px-5 py-3 text-gray-500">{Object.keys(v.vocabulary).length}</td>
+                      <td className="px-5 py-3 text-right">
                         <button
                           onClick={(e) => {
                             e.stopPropagation();
                             deletePage(v);
                           }}
-                          className="text-red-600 hover:underline text-xs"
+                          className="text-red-600 hover:text-red-700 text-xs"
                         >
                           删除
                         </button>
@@ -175,7 +182,7 @@ export default function VocabularyPage() {
                     </tr>
                     {open && (
                       <tr>
-                        <td colSpan={6} className="bg-gray-50 px-4 py-3">
+                        <td colSpan={6} className="bg-gray-50/60 px-5 py-3">
                           <TermEditor page={v} onSave={savePage} />
                         </td>
                       </tr>
@@ -237,7 +244,7 @@ function NewPageForm({
       <div className="flex gap-2 mt-3">
         <button
           onClick={onCreate}
-          className="bg-cyan-600 text-white px-3 py-1.5 rounded text-sm hover:bg-cyan-700"
+          className="bg-brand-600 text-white px-3.5 py-1.5 rounded-md text-sm font-medium hover:bg-brand-700 transition-colors"
         >
           创建
         </button>
@@ -301,7 +308,7 @@ function TermEditor({ page, onSave }: { page: Vocab; onSave: (v: Vocab) => Promi
             {entries.map(([term, e]) => (
               <tr key={term} className="border-t border-gray-200">
                 <td className="py-1 font-medium">{term}</td>
-                <td className="py-1 font-mono text-cyan-700">{e.selector || "—"}</td>
+                <td className="py-1 font-mono text-brand-700">{e.selector || "—"}</td>
                 <td className="py-1">{e.role || "—"}</td>
                 <td className="py-1">{e.name || "—"}</td>
                 <td className="py-1 text-gray-500">{e.source || "—"}</td>
@@ -327,7 +334,7 @@ function TermEditor({ page, onSave }: { page: Vocab; onSave: (v: Vocab) => Promi
         <Field label="conf" value={draft.confidence} onChange={(v) => setDraft({ ...draft, confidence: v })} placeholder="0.9" width="w-16" />
         <button
           onClick={addTerm}
-          className="bg-cyan-600 text-white px-3 py-1.5 rounded text-xs hover:bg-cyan-700"
+          className="bg-brand-600 text-white px-3.5 py-1.5 rounded-md text-xs font-medium hover:bg-brand-700 transition-colors"
         >
           添加词条
         </button>

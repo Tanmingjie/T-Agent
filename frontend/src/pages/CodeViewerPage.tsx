@@ -24,15 +24,15 @@ export default function CodeViewerPage() {
 
   return (
     <div>
-      <button onClick={() => navigate(`/suites/${id}/runs/${runId}/case/${caseId}`)} className="text-sm text-gray-500 hover:underline mb-2">
+      <button onClick={() => navigate(`/suites/${id}/runs/${runId}/case/${caseId}`)} className="inline-flex items-center gap-1 text-sm text-gray-500 hover:text-surface-900 mb-3 transition-colors">
         ← 返回结果
       </button>
 
       <div className="flex items-center justify-between mb-4">
-        <h2 className="text-xl font-bold">{caseId} — 代码</h2>
+        <h1 className="text-xl font-semibold text-surface-900">{caseId} — 代码</h1>
         <a
           href={`/api/suites/${id}/runs/${runId}/cases/${caseId}/code/download`}
-          className="bg-cyan-600 text-white px-4 py-1 rounded text-sm hover:bg-cyan-700"
+          className="bg-brand-600 text-white px-4 py-1.5 rounded-md text-sm font-medium hover:bg-brand-700 transition-colors"
         >
           下载 .zip
         </a>
