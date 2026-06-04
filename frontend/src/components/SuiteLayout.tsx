@@ -1,7 +1,8 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useParams, useNavigate, Link } from "react-router-dom";
 import { apiGet } from "../api/client";
-import { ListChecks, History, Settings, ChevronLeft, Zap } from "lucide-react";
+import { ListChecks, History, Settings, ChevronLeft } from "lucide-react";
+import IconRail from "./IconRail";
 
 interface SuiteInfo {
   name: string;
@@ -35,6 +36,7 @@ export default function SuiteLayout() {
 
   return (
     <div className="flex h-screen bg-white text-surface-900">
+      <IconRail />
       {/* Suite-scoped sidebar */}
       <aside className="w-60 bg-white border-r border-gray-200 flex flex-col shrink-0">
         <div className="px-4 h-14 flex items-center border-b border-gray-200">
@@ -76,16 +78,8 @@ export default function SuiteLayout() {
           ))}
         </nav>
 
-        <div className="px-4 py-3 border-t border-gray-200">
-          <Link
-            to="/suites"
-            className="flex items-center gap-2 text-xs text-gray-400 hover:text-gray-600 transition-colors"
-          >
-            <div className="w-5 h-5 rounded bg-brand-600 flex items-center justify-center">
-              <Zap size={12} className="text-white" />
-            </div>
-            T-Agent
-          </Link>
+        <div className="px-5 py-4 border-t border-gray-200 text-xs text-gray-400">
+          AI Test Automation
         </div>
       </aside>
 
@@ -100,7 +94,7 @@ export default function SuiteLayout() {
             {suite?.name ?? "…"}
           </span>
         </div>
-        <div className="max-w-6xl mx-auto px-8 py-7">
+        <div className="px-8 py-7">
           <Outlet context={{ suite }} />
         </div>
       </main>
