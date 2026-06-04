@@ -65,8 +65,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - Python **3.11** + `uv`(规格用 `str | None` 等 3.10+ 语法;本机默认 3.9 不可用)。
 - 本地包名 **`mcp_client`** 而非 `mcp`,避让官方 `mcp` SDK 顶层包名冲突。
 - ReAct 用**文本式观察回灌**,不依赖严格 tool_call_id 配对(本地 Qwen 支持不稳)。
-- `ExecutionRecord.case_assertions` 是**有意新增**字段(规格模型没列),承载可信 PASS/FAIL 依据。
+- `ExecutionRecord.case_assertions` / `spec` 是**有意新增**字段(规格模型没列):前者承载可信 PASS/FAIL 依据,后者存档 LLM 翻译产物供前端可视化 + 发现翻译偏差。
 - 断言**聚合**用例级 `assertions` + 各步 `expect`(`agent.collect_assertions`),因 LLM 放断言位置不稳定。
+- **定位三层**:`Locator` 模型(框架无关)/ 解析层(语义 target→Locator,放 generator 外)/ 渲染层(各 CodeGenerator 自实现);稳健度 `ROLE>TEST_ID>LABEL>PLACEHOLDER>TEXT>CSS`。BDD 只是渲染实现之一。
+- 截图/代码生成在 `agent.run` 内**端到端接通**:浏览器动作后落 `step_NNN.png`(真实 run_id 目录),断言通过后生成 BDD 代码写 `record.generated_code`+落盘。
 
 ## 实施进度
 
@@ -106,6 +108,23 @@ T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规
 - 改完跑 `pytest`,并 `isort`+`black` 格式化后再交。
 - 分阶段推进:一个阶段验收通过再进下一阶段,不跳阶段、不过度设计未来阶段。
 - 不确定的设计点(尤其用例管理平台集成)不要自行假设,先问用户。
+
+## 工程经验(避坑,血泪复用)
+
+- **"有模块"≠"接通了"**:本项目多次出现"能力模块写好、单测绿,但执行链从没调用它"——
+  截图(`ToolOutcome.screenshot` 从不落盘)、代码生成(`BDDGenerator` 从不被调)、
+  `spec` 从不进 `ExecutionRecord`。**验收必须走真实端到端到产物**,别只看模块单测。
+- **环境先于代码怀疑**:"改了没效果"先确认"在看/在跑的是不是同一份东西"——
+  Tailwind 改 `tailwind.config.js` **Vite 不热更需重启**;`:8000` 旧 `dist`、`:5173` 旧编译、
+  浏览器缓存,都比代码更会骗人。(已根除:`:8000` 不再挂前端,前端只走 `:5173`。)
+- **Tailwind 产物是 `rgb()` 不是 hex**:在编译 CSS 里 grep 颜色要按 `rgb(...)` 找。
+- **a11y 快照是 YAML**:纯数字/特殊文本会被加引号(`: "1"`),解析须剥字面引号,
+  否则 `text_equals "1" != 1` 误判(saucedemo 终态拿不到 live 绿的真因,非"加购不生效")。
+- **稳健定位在语义层**:role+可及名/test-id 不随样式/布局/class 变;CSS/文本脆弱。
+  定位逻辑要与具体测试框架解耦(模型+解析层 / 渲染层分离)。
+- **per-run 数据别按 case_id 落平文件**:会被后续 run 覆盖、抽屉串味;优先存进 `ExecutionRecord`。
+- **误判结论要随证据回收**:文档里写过的根因,拿到新证据(如引号 bug)要更新,别让旧判断误导后人。
+- **本工具 bash cwd 跨调用保持**:`cd frontend` 后下一条命令仍在 frontend,git 操作记得回根目录。
 
 ## 常用命令
 
@@ -152,15 +171,18 @@ T-agent/
 ├── mcp_client/       # MCP 官方 SDK 封装(stdio 连 playwright-mcp)
 ├── intelligence/     # Page Intelligence(词汇表 / 用例预解析 / TestSpec 生成)
 ├── input/            # 输入层(models 结构体 + Excel 解析)
-├── codegen/          # 输出层(BDD 代码生成)
-├── api/              # FastAPI 后端(server + 路由 + Repository)
+├── codegen/          # 输出层(代码生成)
+│   ├── base.py       #   CodeGenerator 抽象 + GeneratedCode 落盘
+│   ├── locators.py   #   框架无关稳健定位器解析层(语义 target→Locator)
+│   └── bdd.py        #   BDDGenerator(渲染 Locator→pytest-bdd Playwright)
+├── api/              # FastAPI 后端(纯 API,:8000;不挂前端静态构建)
 │   ├── routers/      #   suites/execution/permission/results/vocabulary
 │   └── repository.py #   抽象层 + SQLModel 实现
-├── storage/          # SQLModel 模型 + SQLite 持久化
-├── frontend/         # React + Vite + Tailwind 控制台
+├── storage/          # SQLModel 模型 + SQLite 持久化(screenshots/ + generated/)
+├── frontend/         # React + Vite + Tailwind 控制台(:5173)
 │   └── src/
-│       ├── pages/    #   SuiteList/SuiteDetail/RunConsole/CaseResult/CodeViewer/Vocabulary
-│       ├── components/ # PermissionDialog/ProgressBar/StepListPanel/FileTree/Sidebar/StatusBadge
+│       ├── pages/    #   SuiteList/SuiteCases/SuiteHistory/SuiteRunDetail/SuiteSettings/Vocabulary
+│       ├── components/ # RootLayout/SuiteLayout/IconRail/Drawer/CaseDrawerBody/Sidebar/…
 │       └── api/     #   client.ts(API 封装)
 ├── cli/              # 命令行入口(run_case.py)
 ├── tests/            # 单元测试(fake/mock 驱动,不连真实 LLM/浏览器)

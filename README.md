@@ -20,7 +20,7 @@
 | 四: 工程化界面 | T-23~T-27(FastAPI 后端/React 前端/SSE/Repository 抽象层) | ✅ 完成 |
 | 五: 用例管理集成 | 预留 `external_id` | 🔜 待定 |
 
-**测试: 293 passed / 1 skipped**
+**测试: 321 passed / 1 skipped**(另 2 个 Windows 平台预存在失败:截图目录 / 命令替换)
 
 ## 实现原则(务必遵守)
 
@@ -83,18 +83,21 @@ T-agent/
 ├── mcp_client/       # MCP 官方 SDK 封装(stdio 连 playwright-mcp)
 ├── intelligence/     # Page Intelligence(词汇表 / 用例预解析 / TestSpec 生成)
 ├── input/            # 输入层(models 结构体 + Excel 解析)
-├── codegen/          # 输出层(BDD 代码生成)
-├── api/              # FastAPI 后端(server + 路由 + Repository)
+├── codegen/          # 输出层(代码生成)
+│   ├── base.py       #   CodeGenerator 抽象 + GeneratedCode 落盘
+│   ├── locators.py   #   框架无关的稳健定位器解析层(语义 target→Locator)
+│   └── bdd.py        #   BDDGenerator(渲染 Locator→pytest-bdd Playwright)
+├── api/              # FastAPI 后端(纯 API,:8000;不挂前端静态构建)
 │   ├── routers/      #   suites/execution/permission/results/vocabulary
 │   └── repository.py #   抽象层 + SQLModel 实现
-├── storage/          # SQLModel 模型 + SQLite 持久化
-├── frontend/         # React + Vite + Tailwind 控制台
+├── storage/          # SQLModel 模型 + SQLite 持久化(screenshots/ + generated/)
+├── frontend/         # React + Vite + Tailwind 控制台(:5173)
 │   └── src/
-│       ├── pages/    #   SuiteList/SuiteDetail/RunConsole/CaseResult/CodeViewer/Vocabulary
-│       ├── components/ # PermissionDialog/ProgressBar/StepListPanel/FileTree
+│       ├── pages/    #   SuiteList/SuiteCases/SuiteHistory/SuiteRunDetail/SuiteSettings/Vocabulary
+│       ├── components/ # RootLayout/SuiteLayout/IconRail/Drawer/CaseDrawerBody/Sidebar/...
 │       └── api/      #   client.ts(API 封装)
 ├── cli/              # 命令行入口
-├── tests/            # 单元测试(293 passed)
+├── tests/            # 单元测试(321 passed)
 ├── examples/         # 验收入口 + saucedemo 用例
 ├── 实现规格说明书.md  # 唯一真相源:所有模块详细规格
 └── 产品设计文档_v2.0.md # 产品设计原文
@@ -115,9 +118,10 @@ T-agent/
 | 页面探测 | `harness/page_probe.py` | 解析 A11y 树, 语义匹配 |
 | Suite 调度 | `harness/orchestrator.py` | 串行执行 + 用例间隔离 + 结果汇总 |
 | 权限管控 | `harness/permission.py` | 高危词+prod 锁, API 侧审批 |
-| FastAPI 入口 | `api/server.py` | 5 路由子模块 + SSE 推送 |
+| FastAPI 入口 | `api/server.py` | 纯 API(5 路由子模块 + SSE 推送),不挂前端 |
 | Repository 层 | `api/repository.py` | 抽象基类 + SQLModel 实现 |
-| BDD 代码生成 | `codegen/bdd.py` | TestSpec → pytest-bdd Playwright 代码 |
+| 定位器解析层 | `codegen/locators.py` | 框架无关:语义 target→稳健 Locator(词汇表来源) |
+| BDD 代码生成 | `codegen/bdd.py` | 渲染 Locator → pytest-bdd Playwright 代码 |
 | Page Intelligence | `intelligence/` | 词汇表 + Scanner + 用例预解析 |
 
 ## 格式化
