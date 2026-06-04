@@ -176,6 +176,27 @@ def test_collect_assertions_aggregates_case_and_step_level():
     assert types.count("url_contains") == 2  # given + step1
 
 
+def test_collect_assertions_dedups_case_and_step_duplicates():
+    """LLM 常把同一断言既放用例级又放某步 expect,聚合后必须去重(真实跑 TC101)。"""
+    dup = Assertion(type="text_equals", target="购物车图标数量", expected="1")
+    spec = TestSpec(
+        case_id="TC",
+        name="x",
+        base_url="http://x",
+        steps=[SpecStep(action="click", target="加购", expect=[dup.model_copy()])],
+        assertions=[
+            Assertion(type="url_contains", target="URL", expected="inventory.html"),
+            dup.model_copy(),
+        ],
+    )
+    out = collect_assertions(spec)
+    # url_contains + text_equals 各一条,step 里重复的 text_equals 被去重
+    assert len(out) == 2
+    keys = {(a.type, a.target, a.expected) for a in out}
+    assert ("text_equals", "购物车图标数量", "1") in keys
+    assert ("url_contains", "URL", "inventory.html") in keys
+
+
 async def test_run_verifies_step_level_expect_when_case_assertions_empty():
     # 复现真实 bug:断言全在 step.expect,用例级为空 → 仍应被验证,不被漏掉
     spec = TestSpec(

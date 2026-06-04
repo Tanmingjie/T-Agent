@@ -107,7 +107,8 @@ async def test_happy_path_completes():
 
 
 async def test_llm_finished_without_toolcall():
-    plan = _plan(1)
+    # 无待办步骤(空 plan,all_resolved 为真)时,模型不调工具并自报结果 → 正常结束
+    plan = _plan(0)
     llm = _ScriptedLLM([_resp(content="无需操作 TEST_RESULT: FAIL")])
     loop = ReActLoop(
         llm, tools=[], execute=_make_executor(plan), step_plan=plan, build_system=_build_system
@@ -116,6 +117,30 @@ async def test_llm_finished_without_toolcall():
     assert result.stop_reason == StopReason.LLM_FINISHED
     assert result.llm_result == "FAIL"
     assert result.action_steps == []
+
+
+async def test_premature_test_result_does_not_stop_with_pending_steps():
+    """回归:模型完成第1步后提前吐 TEST_RESULT(不调工具),但第2步还没做。
+
+    旧逻辑会因 maybe_result 命中而立即终止(真实环境 DeepSeek 登录后即停的根因);
+    新逻辑不采信自报结果,推它继续,直到所有步骤真正完成。"""
+    plan = _plan(2)
+    llm = _ScriptedLLM(
+        [
+            _resp(content="点第一个", calls=[("browser_click", {"ref": "b1"})]),
+            _resp(content="完成第一步", calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(content="我觉得可以了 TEST_RESULT: PASS"),  # 提前收尾:无 tool_call
+            _resp(content="继续点第二个", calls=[("browser_click", {"ref": "b2"})]),
+            _resp(content="完成第二步", calls=[("mark_step_done", {"step_no": 2})]),
+        ]
+    )
+    loop = ReActLoop(
+        llm, tools=[], execute=_make_executor(plan), step_plan=plan, build_system=_build_system
+    )
+    result = await loop.run()
+    # 没有被提前的 TEST_RESULT 终止,第2步被推着做完
+    assert result.stop_reason == StopReason.COMPLETED
+    assert plan.all_done()
 
 
 async def test_idle_nudge_pushes_model_to_continue():

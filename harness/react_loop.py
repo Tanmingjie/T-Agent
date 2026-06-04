@@ -186,24 +186,32 @@ class ReActLoop:
 
             # 模型不再调用工具
             if not resp.tool_calls:
-                # 真完成:所有步骤已落定,或模型明确给出了 TEST_RESULT
-                if self.step_plan.all_resolved() or maybe_result is not None:
+                # 真完成:所有步骤已落定(空 plan 亦为真)→ 结束。
+                # 注意:**有未完成步骤时,绝不因模型自报 TEST_RESULT 而终止**(铁律4:
+                # 最终 PASS/FAIL 以断言裁决为准)。否则 DeepSeek 等会在登录后提前吐一句
+                # TEST_RESULT 就让循环在中途停下,后续步骤(如加购)永远不执行。
+                if self.step_plan.all_resolved():
                     result.stop_reason = StopReason.LLM_FINISHED
                     break
-                # 否则模型"哑火"但还有步骤没做 → 推它继续(防呆上限内)
+                # 模型"哑火"或提前收尾,但还有步骤没做 → 推它继续(防呆上限内)
                 idle_nudges += 1
                 if idle_nudges > self.max_idle_nudges:
-                    logger.warning("模型连续 %d 次未推进且无 TEST_RESULT,终止", idle_nudges)
+                    logger.warning("模型连续 %d 次未推进(步骤未完成),终止", idle_nudges)
                     result.stop_reason = StopReason.LLM_FINISHED
                     break
                 cur = self.step_plan.current
                 cur_desc = f"第 {cur.step_no} 步「{cur.describe()}」" if cur else "剩余步骤"
+                premature = (
+                    "(你输出了 TEST_RESULT,但步骤尚未全部完成,系统不会采信。)"
+                    if maybe_result is not None
+                    else ""
+                )
                 messages.append({"role": "assistant", "content": reasoning})
                 messages.append(
                     {
                         "role": "user",
                         "content": (
-                            f"你还没有完成所有步骤,当前应执行{cur_desc}。"
+                            f"你还没有完成所有步骤,当前应执行{cur_desc}。{premature}"
                             "请继续调用工具执行,完成该步后调用 mark_step_done;"
                             "所有步骤都完成后再输出 TEST_RESULT。不要提前停止。"
                         ),

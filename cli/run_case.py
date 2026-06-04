@@ -41,9 +41,25 @@ _load_dotenv(_ROOT / ".env")
 
 from harness.agent import TestCaseAgent  # noqa: E402
 from harness.llm import LiteLLMClient  # noqa: E402
+from harness.page_probe import DictVocabResolver  # noqa: E402
 from input.excel_parser import parse_excel  # noqa: E402
 from input.models import TestCase, TestSpec  # noqa: E402
 from mcp_client.client import MCPClient  # noqa: E402
+
+
+def _load_vocab_resolver(path: str | None) -> DictVocabResolver | None:
+    """从 JSON 文件加载手动词汇表 {业务词: {role, name}} → DictVocabResolver。
+
+    用于跨语言/图标类断言目标的运行时解析(saucedemo 无 DB 词汇表时手动喂)。
+    """
+    if not path:
+        return None
+    import json
+
+    data = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(data, dict):
+        raise SystemExit(f"--vocab 文件应为 JSON 对象 {{业务词: {{role, name}}}},得到:{type(data)}")
+    return DictVocabResolver(data)
 
 
 def _print_spec(spec: TestSpec) -> None:
@@ -143,7 +159,10 @@ async def _run(args: argparse.Namespace) -> int:
         print("⚠️  未提供 --base-url,TestCase.base_url 为空(Agent 可能无法导航)。")
 
     llm = LiteLLMClient(model=args.model, api_base=args.api_base, api_key=args.api_key)
-    agent = TestCaseAgent(llm, None, context=args.context, max_steps=args.max_steps)  # mcp 稍后注入
+    resolver = _load_vocab_resolver(args.vocab)
+    agent = TestCaseAgent(
+        llm, None, context=args.context, max_steps=args.max_steps, vocab_resolver=resolver
+    )  # mcp 稍后注入
 
     # 先生成并打印 TestSpec 供审查
     print("正在生成 TestSpec…")
@@ -153,8 +172,15 @@ async def _run(args: argparse.Namespace) -> int:
         print("(--spec-only:仅生成 TestSpec,不执行)")
         return 0
 
-    # 连 playwright-mcp(stdio)后执行
-    async with MCPClient() as mcp:
+    # 连 playwright-mcp(stdio)后执行。
+    # --isolated:无持久 profile → 不触发 Chrome「密码泄露」弹框(该弹框是浏览器 UI,
+    #            不在 a11y 快照里,自愈无法识别/关闭,只能靠启动参数规避)。
+    mcp_args = ["@playwright/mcp@latest"]
+    if args.isolated:
+        mcp_args.append("--isolated")
+    if args.headless:
+        mcp_args.append("--headless")
+    async with MCPClient(args=mcp_args) as mcp:
         agent.mcp = mcp
         record = await agent.run(case, spec=spec)
     _print_record(record)
@@ -173,6 +199,19 @@ def main(argv: list[str] | None = None) -> int:
         "--api-base", default=None, help="LLM API base/base_url(默认读 env LLM_API_BASE)"
     )
     p.add_argument("--api-key", default=None, help="LLM API key(默认读 env LLM_API_KEY)")
+    p.add_argument(
+        "--vocab",
+        default=None,
+        help="手动词汇表 JSON 路径({业务词:{role,name}}),运行时解析跨语言/图标类目标",
+    )
+    p.add_argument(
+        "--isolated",
+        action="store_true",
+        help="playwright-mcp 隔离模式(无持久 profile,规避 Chrome 密码泄露弹框)",
+    )
+    p.add_argument(
+        "--headless", action="store_true", help="playwright-mcp 无头模式(后台运行,不弹窗)"
+    )
     p.add_argument("--spec-only", action="store_true", help="只生成并打印 TestSpec,不执行")
     p.add_argument("--check-llm", action="store_true", help="只做 LLM 连通性自检,不跑用例")
     p.add_argument("-v", "--verbose", action="store_true", help="输出 DEBUG 日志")

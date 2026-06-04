@@ -125,11 +125,20 @@ class AssertionEngine:
         snapshot_text = raw_fn()
         if not snapshot_text:
             return None
+        # 词汇表第一优先(§5.4/§5.5):若探针能解析出真实元素名,作为高置信候选直接喂给
+        # 自愈,命中即用,免于 LLM 臆造。探针无解析器时 vocabulary 为 None,行为不变。
+        vocabulary: dict | None = None
+        resolve_entry = getattr(self.probe, "resolve_entry", None)
+        if callable(resolve_entry):
+            entry = await resolve_entry(a.target)
+            if entry and entry.get("name"):
+                vocabulary = {a.target: str(entry["name"]).strip()}
         heal = await self.healer.relocate(
             intent=f"断言 {a.type} 的目标",
             target=a.target,
             snapshot_text=snapshot_text,
             expected=a.expected,
+            vocabulary=vocabulary,
         )
         if not heal.healed or heal.chosen is None:
             original.reason += f";自愈未能重定位({heal.summary})"

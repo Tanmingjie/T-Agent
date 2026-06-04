@@ -72,7 +72,17 @@ def collect_assertions(spec: TestSpec) -> list[Assertion]:
     out: list[Assertion] = list(spec.assertions)
     for step in list(spec.given) + list(spec.steps):
         out.extend(step.expect)
-    return out
+    # 去重:LLM 常把同一断言既放用例级又放某步 expect,聚合后会重复计入,
+    # 导致裁决里出现两条一模一样的结果(见真实跑 TC101)。按语义键去重,保序。
+    seen: set[tuple] = set()
+    deduped: list[Assertion] = []
+    for a in out:
+        key = (a.type, a.target, a.expected, a.selector)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(a)
+    return deduped
 
 
 def make_executor(step_plan: StepPlan, mcp) -> ToolExecutor:
@@ -110,6 +120,7 @@ class TestCaseAgent:
         permission: PermissionChecker | None = None,
         tools_registry: ToolRegistry | None = None,
         step_callback: Callable[[str, dict], Coroutine] | None = None,
+        vocab_resolver=None,
     ) -> None:
         self.llm = llm
         self.mcp = mcp
@@ -121,6 +132,7 @@ class TestCaseAgent:
         self.permission = permission
         self.tools_registry = tools_registry
         self.step_callback = step_callback
+        self.vocab_resolver = vocab_resolver
 
     async def generate_spec(self, case: TestCase) -> TestSpec:
         """仅生成 TestSpec(供 CLI 先打印给用户审查)。"""
@@ -234,7 +246,7 @@ class TestCaseAgent:
         recorder.set_token_usage(self._token_usage())
 
         # —— 断言裁决(确定性,非 LLM 眼判;目标找不到时自愈重定位) ——
-        probe = MCPPageProbe(self.mcp)
+        probe = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
         await probe.refresh()  # 用例结束后抓一次终态快照
         engine = AssertionEngine(probe, healer=healer)
         # 聚合用例级 + 步骤级 expect 断言,避免 LLM 把断言放在 step.expect 时被漏验
