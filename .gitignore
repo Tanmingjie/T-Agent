@@ -38,3 +38,9 @@ frontend/dist/
 
 # brainstorming 可视化伴侣产物
 .superpowers/
+
+# UI 研究产物 (参考截图/快照)
+storage/ui_research/
+
+# 开发辅助脚本
+scripts/

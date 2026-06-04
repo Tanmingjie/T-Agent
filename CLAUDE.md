@@ -55,6 +55,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `api/routers/results.py` — 执行结果查询(用例列表/断言详情/代码查看)。
 - `api/routers/vocabulary.py` — 词汇表 CRUD + scan 触发。
 - `frontend/` — React + Vite + Tailwind 前端控制台(Suite 管理、执行控制台、结果详情含 Monaco 编辑器、词汇表)。
+  - **Design Tokens** (`tailwind.config.js`): `brand` (cyan 系, 50–950)、`surface` (slate 系, 50–950)、`shadow-card` / `shadow-elevated`。
+  - **UI Skills 已安装**: `frontend-design`(anthropics)、`ui-ux-pro-max` + 6 CKM skills(nextlevelbuilder)。通过 `npx skills add` 安装，各环境自行拉取。
 
 数据结构全部在 `input/models.py`(pydantic;落库 SQLModel 留到 T-21)。
 
@@ -72,6 +74,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 阶段二 ✅ T-11~T-19(自愈 / Context Compact / Hooks / Session+LoginHook / 预置条件分类器 / Skill / Permission / Orchestrator / Custom Tool)。四条验收标准 saucedemo 真实演示通过(见 `examples/acceptance_stage2.py`)。
 - 阶段三 ✅ T-20~T-22(`codegen/`BDDGenerator / `storage/db.py` SQLModel 持久化 / `intelligence/`词汇表+Scanner)。
 - 阶段四 ✅ T-23~T-27(FastAPI 后端 5 路由+SSE / Repository 抽象层 / React 前端控制台(Suite 管理、执行控制台、结果详情、词汇表)/ BDD `step_N` 标记)。
+- **UI Redesign (进行中)** — 基于 TestSprite 产品界面交互设计优化前端。已完成: Tailwind 设计令牌(brand/surface 色阶、阴影)、Sidebar 深色导航、StatusBadge 组件(含 Lucide 图标)、SuiteListPage 仪表盘重设计、App.tsx 侧边栏布局。**待完成:** RunConsolePage 执行控制台、SuiteDetailPage、RunOverviewPage、CaseResultPage、CodeViewerPage、VocabularyPage、ProgressBar/PermissionDialog/StepListPanel 组件 polish。
 - **下一步:阶段五** — 用例管理平台集成(规格明确"现在不做",只预留 `external_id`);或工程化打磨(E2E 测试、部署脚本、文档等)。
 - 全量单测 **293 passed / 1 skipped**。
 
@@ -136,7 +139,7 @@ T-agent/
 ├── frontend/         # React + Vite + Tailwind 控制台
 │   └── src/
 │       ├── pages/    #   SuiteList/SuiteDetail/RunConsole/CaseResult/CodeViewer/Vocabulary
-│       ├── components/ # PermissionDialog/ProgressBar/StepListPanel/FileTree
+│       ├── components/ # PermissionDialog/ProgressBar/StepListPanel/FileTree/Sidebar/StatusBadge
 │       └── api/     #   client.ts(API 封装)
 ├── cli/              # 命令行入口(run_case.py)
 ├── tests/            # 单元测试(293 passed)

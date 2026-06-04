@@ -2,7 +2,9 @@ import { useEffect, useState, useRef } from "react";
 import { useParams, useNavigate } from "react-router-dom";
 import { sseUrl, apiPost, safeParse } from "../api/client";
 import ProgressBar from "../components/ProgressBar";
+import StatusBadge from "../components/StatusBadge";
 import PermissionDialog from "../components/PermissionDialog";
+import { Play, CheckCircle, XCircle, Clock, Loader2, ArrowLeft, BarChart3, Activity } from "lucide-react";
 
 interface CaseStatus {
   case_id: string;
