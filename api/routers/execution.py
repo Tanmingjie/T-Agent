@@ -65,8 +65,13 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
             from harness.llm import LiteLLMClient
 
             llm = LiteLLMClient()
+            # DB 词汇表接入执行:运行时按真实页面解析业务词 → role/name/selector
+            # (闭合"维护词汇表 → 执行真正用上"的环;§5.5)。
+            from intelligence.vocabulary import VocabularyManager, VocabularyResolver
+
+            vocab_resolver = VocabularyResolver(VocabularyManager(store))
             async with MCPClient() as mcp:
-                agent = TestCaseAgent(llm=llm, mcp=mcp)
+                agent = TestCaseAgent(llm=llm, mcp=mcp, vocab_resolver=vocab_resolver)
 
                 orch = Orchestrator(agent=agent)
 

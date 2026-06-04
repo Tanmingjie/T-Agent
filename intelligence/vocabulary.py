@@ -29,6 +29,11 @@ def route_match(url_pattern: str, url: str) -> bool:
         return url_pattern in url
 
 
+def _loose_eq(a: str, b: str) -> bool:
+    """宽松相等:任一侧为空(未指定)即视为通配命中,否则按相等。"""
+    return not a or not b or a == b
+
+
 def _term_lookup(vocab: dict, term: str) -> dict | None:
     """在一页词汇表里查业务词:先精确,再子串(优先长 key)。"""
     if term in vocab:
@@ -45,13 +50,17 @@ class VocabularyManager:
         self.store = store
 
     async def find_page(self, url: str, page_title: str, login_role: str) -> PageVocabulary | None:
-        """按 路由匹配 + 标题 + 角色 找页面词汇表(非 stale 优先)。"""
+        """按 路由匹配 + 标题 + 角色 找页面词汇表(非 stale 优先)。
+
+        page_title / login_role 采用**宽松匹配**:任一侧为空视为通配。这样运行时
+        探针(login_role 常未知、传空)仍能命中手动维护的词条;而两侧都给值时按相等匹配。
+        """
         candidates = [
             v
             for v in await self.store.list_vocabularies()
             if route_match(v.url_pattern, url)
-            and v.page_title == page_title
-            and v.login_role == login_role
+            and _loose_eq(v.page_title, page_title)
+            and _loose_eq(v.login_role, login_role)
         ]
         if not candidates:
             return None
@@ -111,7 +120,10 @@ class VocabularyResolver:
         entry = await self.manager.resolve(
             target, url=url, page_title=title, login_role=self.login_role
         )
-        if isinstance(entry, dict) and (entry.get("name") or entry.get("role")):
+        # selector / name / role 任一可用即返回(selector 型最稳健,见 page_probe)
+        if isinstance(entry, dict) and (
+            entry.get("selector") or entry.get("name") or entry.get("role")
+        ):
             return entry
         return None
 

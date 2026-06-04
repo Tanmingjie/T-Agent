@@ -72,6 +72,47 @@ async def test_resolve_miss_returns_none(store):
     )
 
 
+# ── 宽松匹配 + VocabularyResolver(运行时接入) ────────────────
+
+
+async def test_loose_match_empty_login_role_hits(store):
+    """运行时 login_role 常未知(传空)→ 应仍能命中按 admin 存的词条(空=通配)。"""
+    await store.save_vocabulary(
+        PageVocabulary(
+            url_pattern="/inventory",
+            page_title="Swag Labs",
+            login_role="admin",
+            vocabulary={"购物车图标": {"selector": ".shopping_cart_badge"}},
+        )
+    )
+    mgr = VocabularyManager(store)
+    hit = await mgr.resolve(
+        "购物车图标", url="https://x/inventory.html", page_title="Swag Labs", login_role=""
+    )
+    assert hit == {"selector": ".shopping_cart_badge"}
+
+
+async def test_vocabulary_resolver_returns_selector_entry(store):
+    """VocabularyResolver(给 page_probe 用)能解析 selector-only 词条。"""
+    from intelligence.vocabulary import VocabularyResolver
+
+    await store.save_vocabulary(
+        PageVocabulary(
+            url_pattern="/inventory",
+            page_title="Swag Labs",
+            login_role="",
+            vocabulary={"购物车图标": {"selector": ".shopping_cart_badge"}},
+        )
+    )
+    resolver = VocabularyResolver(VocabularyManager(store))
+    entry = await resolver.resolve(
+        "购物车图标数量", url="https://x/inventory.html", title="Swag Labs"
+    )
+    assert entry == {"selector": ".shopping_cart_badge"}
+    # 未命中页面 → None
+    assert await resolver.resolve("购物车图标", url="https://x/other", title="X") is None
+
+
 # ── 手动条目优先于 AI 扫描 ──────────────────────────────────
 
 
