@@ -83,7 +83,7 @@ export default function SuiteLayout() {
         </div>
       </aside>
 
-      <main className="flex-1 overflow-auto bg-gray-50/40">
+      <main className="flex-1 overflow-auto bg-canvas">
         {/* Breadcrumb */}
         <div className="h-12 border-b border-gray-200 bg-white px-8 flex items-center text-sm text-gray-500">
           <Link to="/suites" className="hover:text-surface-900 transition-colors">

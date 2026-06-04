@@ -508,7 +508,7 @@ export default function CaseDrawerBody({
         </aside>
 
         {/* ── Right pane ── */}
-        <section className="flex-1 overflow-auto bg-gray-50/40">
+        <section className="flex-1 overflow-auto bg-canvas">
           {loading ? (
             <div className="p-6 text-sm text-gray-400">加载中…</div>
           ) : sel.kind === "info" ? (
