@@ -35,6 +35,7 @@ frontend/dist/
 
 # Claude Code skills (通过 npx skills add 安装，各环境自行拉取)
 .agents/
+.claude/skills/
 
 # brainstorming 可视化伴侣产物
 .superpowers/
