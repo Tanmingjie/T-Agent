@@ -46,6 +46,8 @@ class Recorder:
         )
         # 用例级最终断言结果(dict 形态,见 AssertionResult.to_dict)
         self.case_assertions: list[dict] = []
+        # ReAct 循环停因 + 迭代数(诊断"为什么停在某步":早停/卡死/步数上限…)
+        self.stop_reason: str = ""
 
     # ── 录制 ──────────────────────────────────────────────────
 
@@ -75,6 +77,10 @@ class Recorder:
         """存档本次执行使用的 TestSpec(供前端可视化翻译结果)。"""
         self.record.spec = spec
 
+    def set_stop_reason(self, reason: str) -> None:
+        """记录 ReAct 循环停因(写入 final_result 摘要,便于诊断早停)。"""
+        self.stop_reason = reason
+
     # ── 截图目录 ──────────────────────────────────────────────
 
     @property
@@ -99,9 +105,10 @@ class Recorder:
     def _summarize(self) -> str:
         verdict = "PASS" if self.record.passed else "FAIL"
         n_steps = len(self.record.steps)
-        lines = [
-            f"[{verdict}] 用例 {self.record.case_id},共 {n_steps} 步,自愈 {self.record.heal_count} 次。"
-        ]
+        head = f"[{verdict}] 用例 {self.record.case_id},共 {n_steps} 步,自愈 {self.record.heal_count} 次。"
+        if self.stop_reason:
+            head += f"(停因={self.stop_reason})"
+        lines = [head]
         if self.case_assertions:
             lines.append("用例级断言:")
             for a in self.case_assertions:

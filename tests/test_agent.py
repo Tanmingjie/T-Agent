@@ -243,3 +243,41 @@ async def test_run_records_steps():
     record = await agent.run(_case(), spec=_spec())
     assert [s.tool_name for s in record.steps] == ["browser_click", "mark_step_done"]
     assert record.exec_id
+
+
+async def test_live_progress_streams_phases_and_steps_in_order():
+    """执行期实时推送:阶段事件 + 逐步 step_change 在执行过程中按序到达,
+    而非整条用例跑完才补发(修复抽屉执行中无数据)。"""
+    llm = _ScriptedLLM(
+        [
+            _resp(content="点提交", calls=[("browser_click", {"ref": "e3"})]),
+            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(content="TEST_RESULT: PASS"),
+        ]
+    )
+    events: list[tuple[str, dict]] = []
+
+    async def cb(event, data):
+        events.append((event, data))
+
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    await agent.run(_case(), spec=_spec(), step_callback=cb)
+
+    # 生命周期阶段按序出现
+    phases = [d["phase"] for e, d in events if e == "phase"]
+    assert phases == ["spec", "executing", "asserting", "codegen"]
+    # executing 阶段先于 step_change(步骤在执行阶段内逐步推送)
+    exec_idx = next(
+        i for i, (e, d) in enumerate(events) if e == "phase" and d["phase"] == "executing"
+    )
+    first_step = next(i for i, (e, _) in enumerate(events) if e == "step_change")
+    assert exec_idx < first_step
+    # asserting 阶段在所有 step_change 之后(步骤实时发完才进断言)
+    assert_idx = next(
+        i for i, (e, d) in enumerate(events) if e == "phase" and d["phase"] == "asserting"
+    )
+    last_step = max(i for i, (e, _) in enumerate(events) if e == "step_change")
+    assert last_step < assert_idx
+    # step_change 内容可被前端解析(tool(args) 形式)
+    sc = [d for e, d in events if e == "step_change"]
+    assert any("browser_click" in d["description"] for d in sc)

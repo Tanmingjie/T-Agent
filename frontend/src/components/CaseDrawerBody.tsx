@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { apiGet } from "../api/client";
 import {
   CheckCircle,
@@ -13,7 +13,11 @@ import {
   Copy,
   Check,
 } from "lucide-react";
-import type { CaseRunState, CaseRunStatus } from "../hooks/useSuiteRun";
+import type {
+  CaseRunState,
+  CaseRunStatus,
+  PhaseStatus,
+} from "../hooks/useSuiteRun";
 
 interface CaseInfo {
   id: string;
@@ -123,20 +127,32 @@ function prettyLive(desc: string): string {
 
 const pad3 = (n: number) => String(n).padStart(3, "0");
 
-const STATUS_PILL: Record<CaseRunStatus, { label: string; icon: React.ReactNode; cls: string }> = {
+const STATUS_PILL: Record<
+  CaseRunStatus,
+  { label: string; icon: React.ReactNode; cls: string }
+> = {
   pending: { label: "未执行", icon: <Clock size={15} />, cls: "text-gray-400" },
   running: {
     label: "执行中",
     icon: <Loader2 size={15} className="animate-spin" />,
     cls: "text-brand-600",
   },
-  passed: { label: "通过", icon: <CheckCircle size={15} />, cls: "text-brand-700" },
+  passed: {
+    label: "通过",
+    icon: <CheckCircle size={15} />,
+    cls: "text-brand-700",
+  },
   failed: { label: "失败", icon: <XCircle size={15} />, cls: "text-red-600" },
-  healing: { label: "自愈中", icon: <Wrench size={15} />, cls: "text-amber-600" },
+  healing: {
+    label: "自愈中",
+    icon: <Wrench size={15} />,
+    cls: "text-amber-600",
+  },
 };
 
 function AssertIcon({ status }: { status: string }) {
-  if (status === "pass") return <CheckCircle size={15} className="text-brand-600" />;
+  if (status === "pass")
+    return <CheckCircle size={15} className="text-brand-600" />;
   if (status === "fail") return <XCircle size={15} className="text-red-600" />;
   return <MinusCircle size={15} className="text-gray-300" />;
 }
@@ -229,10 +245,13 @@ function InfoView({
           执行规格 (TestSpec)
         </h3>
         <p className="text-xs text-gray-400 mb-4">
-          AI 把用例翻译成的结构化执行规格,断言在此一次性结构化。可据此核对翻译是否准确。
+          AI
+          把用例翻译成的结构化执行规格,断言在此一次性结构化。可据此核对翻译是否准确。
         </p>
         {!spec ? (
-          <p className="text-sm text-gray-400">本次执行无规格记录(历史数据或执行前)。</p>
+          <p className="text-sm text-gray-400">
+            本次执行无规格记录(历史数据或执行前)。
+          </p>
         ) : (
           <div className="space-y-4">
             <ListBlock title="前置 (given)" items={given.map(specLine)} />
@@ -242,13 +261,17 @@ function InfoView({
               items={assertions.map(
                 (a) =>
                   `[${a.type}] ${a.target}${
-                    a.expected != null && a.expected !== "" ? ` == ${a.expected}` : ""
+                    a.expected != null && a.expected !== ""
+                      ? ` == ${a.expected}`
+                      : ""
                   }`,
               )}
             />
-            {given.length === 0 && steps.length === 0 && assertions.length === 0 && (
-              <p className="text-sm text-gray-400">规格为空</p>
-            )}
+            {given.length === 0 &&
+              steps.length === 0 &&
+              assertions.length === 0 && (
+                <p className="text-sm text-gray-400">规格为空</p>
+              )}
           </div>
         )}
       </section>
@@ -297,7 +320,9 @@ function CodeBlock({ code }: { code: string }) {
                 <span className="sticky left-0 w-10 shrink-0 select-none bg-white text-right pr-3 text-gray-300 border-r border-gray-100">
                   {i + 1}
                 </span>
-                <span className="pl-3 pr-4 text-gray-700 whitespace-pre">{ln || " "}</span>
+                <span className="pl-3 pr-4 text-gray-700 whitespace-pre">
+                  {ln || " "}
+                </span>
               </div>
             ))}
           </code>
@@ -307,7 +332,59 @@ function CodeBlock({ code }: { code: string }) {
   );
 }
 
-type Selection = { kind: "info" } | { kind: "result" } | { kind: "step"; no: number };
+/** 执行中视图:生命周期阶段清单(末项进行中转圈,其余打勾)+ 运行提示。参考 TestSprite。 */
+function RunningView({
+  phases,
+  status,
+}: {
+  phases: PhaseStatus[];
+  status: CaseRunStatus;
+}) {
+  return (
+    <div className="p-6 space-y-5 max-w-2xl">
+      <div className="flex items-center gap-2 text-brand-600">
+        <Loader2 size={18} className="animate-spin" />
+        <span className="text-sm font-medium">
+          {status === "healing" ? "自愈中…" : "测试运行中…"}
+        </span>
+      </div>
+      <p className="text-xs text-gray-400">
+        代码与最终态截图将在执行完成后出现。
+      </p>
+      <ul className="space-y-2.5">
+        {phases.length === 0 && (
+          <li className="flex items-center gap-2.5 text-sm text-gray-500">
+            <Loader2 size={15} className="text-brand-600 animate-spin" />
+            正在准备执行环境…
+          </li>
+        )}
+        {phases.map((p, i) => {
+          const active = i === phases.length - 1;
+          return (
+            <li key={p.phase} className="flex items-center gap-2.5 text-sm">
+              {active ? (
+                <Loader2
+                  size={15}
+                  className="text-brand-600 animate-spin shrink-0"
+                />
+              ) : (
+                <CheckCircle size={15} className="text-brand-600 shrink-0" />
+              )}
+              <span className={active ? "text-surface-900" : "text-gray-500"}>
+                {p.label}
+              </span>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
+}
+
+type Selection =
+  | { kind: "info" }
+  | { kind: "result" }
+  | { kind: "step"; no: number };
 
 interface DisplayStep {
   no: number; // 用于截图 URL (history 用 step_no);live/spec 用序号
@@ -338,30 +415,60 @@ export default function CaseDrawerBody({
   const [sel, setSel] = useState<Selection>({ kind: "info" });
   const [rightTab, setRightTab] = useState<"preview" | "code">("preview");
 
+  const isRunning = status === "running" || status === "healing";
+  // 进行中的结果请求:重新加载时先 abort 上一次,避免 /result+/code 在 HTTP/1.1
+  // 连接池上堆积 pending(SSE 长连接已占 1 个槽,反复点开会很快耗尽 6 连接上限)。
+  const reqRef = useRef<AbortController | null>(null);
+
+  const loadResult = useCallback(
+    (autoSelect: boolean) => {
+      if (!runId) return;
+      reqRef.current?.abort(); // 取消上一次未完成的结果/代码请求
+      const ac = new AbortController();
+      reqRef.current = ac;
+      setLoading(true);
+      Promise.all([
+        apiGet<CaseResult>(
+          `/suites/${suiteId}/runs/${runId}/cases/${caseInfo.id}/result`,
+          ac.signal,
+        ).catch(() => null),
+        apiGet<CodeResp>(
+          `/suites/${suiteId}/runs/${runId}/cases/${caseInfo.id}/code`,
+          ac.signal,
+        ).catch(() => null),
+      ])
+        .then(([r, c]) => {
+          if (ac.signal.aborted) return; // 已被取代,丢弃结果
+          if (r) {
+            setResult(r);
+            if (autoSelect) setSel({ kind: "result" }); // 已执行完成,默认定位测试结果
+          }
+          if (c) setCode(Object.values(c.files).join("\n\n") || null);
+        })
+        .finally(() => {
+          if (!ac.signal.aborted) setLoading(false);
+        });
+    },
+    [suiteId, runId, caseInfo.id],
+  );
+
+  // 打开抽屉 / 切换 run:复位并拉一次结果(执行中拿不到则为 null,走 running 视图)
   useEffect(() => {
     setResult(null);
     setCode(null);
-    setSel({ kind: "info" });
     setRightTab("preview");
-    if (!runId) return;
-    setLoading(true);
-    Promise.all([
-      apiGet<CaseResult>(`/suites/${suiteId}/runs/${runId}/cases/${caseInfo.id}/result`).catch(
-        () => null,
-      ),
-      apiGet<CodeResp>(`/suites/${suiteId}/runs/${runId}/cases/${caseInfo.id}/code`).catch(
-        () => null,
-      ),
-    ])
-      .then(([r, c]) => {
-        if (r) {
-          setResult(r);
-          setSel({ kind: "result" }); // 已执行完成,默认定位测试结果
-        }
-        if (c) setCode(Object.values(c.files).join("\n\n") || null);
-      })
-      .finally(() => setLoading(false));
+    setSel(isRunning ? { kind: "result" } : { kind: "info" });
+    loadResult(true);
+    return () => reqRef.current?.abort(); // 关抽屉/切换时取消在途请求
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [suiteId, runId, caseInfo.id]);
+
+  // 用例在本次会话内跑完(running→passed/failed):重新拉结果,免得抽屉停在"执行中"
+  useEffect(() => {
+    if (status === "passed" || status === "failed") loadResult(true);
+    if (isRunning) setSel({ kind: "result" }); // 执行中默认停在结果栏(running 视图)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status]);
 
   // 统一步骤列表:history(有截图) > live(实时) > spec(规格)
   const steps: DisplayStep[] = useMemo(() => {
@@ -385,9 +492,11 @@ export default function CaseDrawerBody({
         .filter((s) => !NOISE.some((n) => s.description.includes(n)))
         .sort((a, b) => a.index - b.index)
         .map((s) => ({
-          no: s.index + 1,
+          // index 即后端全局 step_no(与截图文件名 step_NNN.png 一致),不能 +1
+          no: s.index,
           label: prettyLive(s.description),
-          hasShot: false,
+          // 非 NOISE 的浏览器动作执行时已逐帧落盘截图;取不到时 <Shot> 回退占位
+          hasShot: true,
           state: s.status === "done" ? ("done" as const) : ("running" as const),
         }));
     }
@@ -407,14 +516,19 @@ export default function CaseDrawerBody({
   const pill = STATUS_PILL[status] ?? STATUS_PILL.pending;
   const shotUrl = (no: number) =>
     `/api/screenshots/${runId}/${caseInfo.id}/step_${pad3(no)}.png`;
-  const selStep = sel.kind === "step" ? steps.find((s) => s.no === sel.no) : undefined;
+  const selStep =
+    sel.kind === "step" ? steps.find((s) => s.no === sel.no) : undefined;
 
   return (
     <div className="flex flex-col h-full">
       {/* Big header */}
       <div className="px-6 py-4 border-b border-gray-200 shrink-0">
-        <h2 className="text-lg font-semibold text-surface-900">{caseInfo.name}</h2>
-        <div className={`mt-1 inline-flex items-center gap-1.5 text-sm ${pill.cls}`}>
+        <h2 className="text-lg font-semibold text-surface-900">
+          {caseInfo.name}
+        </h2>
+        <div
+          className={`mt-1 inline-flex items-center gap-1.5 text-sm ${pill.cls}`}
+        >
           {pill.icon}
           {pill.label}
         </div>
@@ -434,35 +548,50 @@ export default function CaseDrawerBody({
           >
             <div className="flex items-center gap-2">
               <FileText size={16} className="text-brand-600 shrink-0" />
-              <span className="text-sm font-medium text-surface-900">用例信息</span>
+              <span className="text-sm font-medium text-surface-900">
+                用例信息
+              </span>
             </div>
             <p className="mt-1 text-xs text-gray-500 line-clamp-2">
               预置条件 · 预期结果 · 执行规格 (TestSpec)
             </p>
           </button>
 
-          {/* Test result card */}
-          {result && (
+          {/* Test result card(执行中显示转圈占位,参考 TestSprite) */}
+          {(result || isRunning) && (
             <button
               onClick={() => setSel({ kind: "result" })}
               className={`w-full text-left rounded-lg border p-3 transition-colors ${
                 sel.kind === "result"
-                  ? result.passed
+                  ? !result
                     ? "border-brand-300 bg-brand-50/60"
-                    : "border-red-300 bg-red-50/60"
+                    : result.passed
+                      ? "border-brand-300 bg-brand-50/60"
+                      : "border-red-300 bg-red-50/60"
                   : "border-gray-200 hover:bg-gray-50"
               }`}
             >
               <div className="flex items-center gap-2">
-                {result.passed ? (
+                {!result ? (
+                  <Loader2
+                    size={16}
+                    className="text-brand-600 shrink-0 animate-spin"
+                  />
+                ) : result.passed ? (
                   <CheckCircle size={16} className="text-brand-600 shrink-0" />
                 ) : (
                   <XCircle size={16} className="text-red-600 shrink-0" />
                 )}
-                <span className="text-sm font-medium text-surface-900">测试结果</span>
+                <span className="text-sm font-medium text-surface-900">
+                  测试结果
+                </span>
               </div>
               <p className="mt-1 text-xs text-gray-500 line-clamp-2">
-                {result.passed ? "测试通过，无断言失败。" : "测试失败，查看断言详情。"}
+                {!result
+                  ? "执行中…"
+                  : result.passed
+                    ? "测试通过，无断言失败。"
+                    : "测试失败，查看断言详情。"}
               </p>
             </button>
           )}
@@ -487,7 +616,10 @@ export default function CaseDrawerBody({
                   >
                     <span className="mt-0.5 shrink-0">
                       {s.state === "running" ? (
-                        <Loader2 size={14} className="text-gray-400 animate-spin" />
+                        <Loader2
+                          size={14}
+                          className="text-gray-400 animate-spin"
+                        />
                       ) : s.state === "done" ? (
                         <CheckCircle size={14} className="text-brand-600" />
                       ) : (
@@ -496,7 +628,9 @@ export default function CaseDrawerBody({
                         </span>
                       )}
                     </span>
-                    <span className="text-sm text-gray-700 leading-snug">{s.label}</span>
+                    <span className="text-sm text-gray-700 leading-snug">
+                      {s.label}
+                    </span>
                   </button>
                 );
               })}
@@ -514,18 +648,24 @@ export default function CaseDrawerBody({
           ) : sel.kind === "info" ? (
             <InfoView caseInfo={caseInfo} spec={result?.spec} />
           ) : sel.kind === "step" && selStep ? (
-            /* Step view: screenshot + detail */
+            /* Step view: screenshot + detail(显式选中步骤优先于运行态占位) */
             <div className="p-6 space-y-4">
-              <h3 className="text-sm font-medium text-surface-900">{selStep.label}</h3>
+              <h3 className="text-sm font-medium text-surface-900">
+                {selStep.label}
+              </h3>
               {runId ? (
                 <div className="max-w-xl">
                   <Shot src={shotUrl(selStep.no)} alt={selStep.label} />
                 </div>
               ) : (
-                <p className="text-sm text-gray-400">该步骤无截图（执行后生成）</p>
+                <p className="text-sm text-gray-400">
+                  该步骤无截图（执行后生成）
+                </p>
               )}
               {selStep.url && (
-                <p className="text-xs text-gray-400 break-all">URL: {selStep.url}</p>
+                <p className="text-xs text-gray-400 break-all">
+                  URL: {selStep.url}
+                </p>
               )}
               {selStep.toolResult && (
                 <div>
@@ -538,6 +678,9 @@ export default function CaseDrawerBody({
                 </div>
               )}
             </div>
+          ) : isRunning && !result ? (
+            /* Running view: 生命周期阶段清单(执行中无结果时,参考 TestSprite) */
+            <RunningView phases={liveState?.phases ?? []} status={status} />
           ) : (
             /* Result view: Preview/Code tabs + assertions */
             <div className="flex flex-col min-h-full">
@@ -573,7 +716,9 @@ export default function CaseDrawerBody({
                   <CodeBlock code={code} />
                 ) : (
                   <p className="text-sm text-gray-400">
-                    {runId ? "暂无生成代码（执行通过后生成）。" : "执行后可查看生成代码。"}
+                    {runId
+                      ? "暂无生成代码（执行通过后生成）。"
+                      : "执行后可查看生成代码。"}
                   </p>
                 )}
 
@@ -588,21 +733,29 @@ export default function CaseDrawerBody({
                     ) : (
                       <ul className="space-y-1.5">
                         {result.case_assertions.map((a, i) => (
-                          <li key={i} className="flex items-start gap-2 text-sm">
+                          <li
+                            key={i}
+                            className="flex items-start gap-2 text-sm"
+                          >
                             <span className="mt-0.5 shrink-0">
                               <AssertIcon status={a.status} />
                             </span>
                             <span className="text-gray-700">
-                              <span className="text-gray-400">[{a.type}]</span> {a.target}
+                              <span className="text-gray-400">[{a.type}]</span>{" "}
+                              {a.target}
                               {a.expected != null && a.expected !== "" && (
-                                <span className="text-gray-400"> == {a.expected}</span>
-                              )}
-                              {a.status === "fail" && (a.actual || a.reason) && (
-                                <span className="block text-xs text-red-600 mt-0.5">
-                                  实际: {a.actual ?? "—"}
-                                  {a.reason ? ` · ${a.reason}` : ""}
+                                <span className="text-gray-400">
+                                  {" "}
+                                  == {a.expected}
                                 </span>
                               )}
+                              {a.status === "fail" &&
+                                (a.actual || a.reason) && (
+                                  <span className="block text-xs text-red-600 mt-0.5">
+                                    实际: {a.actual ?? "—"}
+                                    {a.reason ? ` · ${a.reason}` : ""}
+                                  </span>
+                                )}
                             </span>
                           </li>
                         ))}
@@ -610,6 +763,11 @@ export default function CaseDrawerBody({
                     )}
                     <p className="mt-3 text-xs text-gray-400">
                       Token {result.token_usage} · 自愈 {result.heal_count} 次
+                      {(() => {
+                        // final_result 首行含「(停因=…)」,抽出来便于诊断早停
+                        const m = result.final_result?.match(/停因=([^)]+)/);
+                        return m ? ` · 停因 ${m[1]}` : "";
+                      })()}
                     </p>
                   </section>
                 )}

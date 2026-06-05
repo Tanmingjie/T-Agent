@@ -99,6 +99,11 @@ class ActionStep(BaseModel):
     tool_result: str = ""
     screenshot: str | None = None  # 文件路径
     url: str = ""
+    # 执行期捕获的被操作元素真实 a11y 身份(从操作的 ref 回查快照得到)。
+    # 让未录入词汇表的目标也能在 codegen 拿到稳健 get_by_role 定位(覆盖面 > 仅词汇表)。
+    element_role: str = ""
+    element_name: str = ""
+    step_target: str = ""  # 该操作所属业务步骤的语义 target(供 codegen 按 target 回填定位)
     heal_attempts: list[dict] = []
     assertion_results: list[dict] = []
     is_custom_tool: bool = False

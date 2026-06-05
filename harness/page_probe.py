@@ -79,6 +79,9 @@ _NODE_RE = re.compile(
     r"(?:\s*:\s*(?P<value>.*))?$"  # 可选 : value
 )
 
+# 从节点 attrs 段里提取 ref(形如 [ref=e11])
+_REF_RE = re.compile(r"\[ref=([^\]]+)\]")
+
 # 语义 target 常见后缀,匹配前剥离以提高命中率
 _TARGET_SUFFIXES = (
     "按钮",
@@ -109,6 +112,7 @@ class A11yNode:
     role: str
     name: str = ""
     value: str | None = None
+    ref: str = ""  # playwright-mcp 元素引用(形如 e11),供执行期按操作的 ref 回查真实身份
 
     @property
     def text_content(self) -> str:
@@ -139,8 +143,21 @@ def _parse_node_line(stripped: str) -> A11yNode | None:
     value = m.group("value")
     if value is not None:
         value = _unquote(value.strip())
+    ref = ""
+    mref = _REF_RE.search(m.group("attrs") or "")
+    if mref:
+        ref = mref.group(1)
     # role 为 text 且无 name 时,value 即文本内容(形如 `text: 待审批`)
-    return A11yNode(role=role, name=name, value=value)
+    return A11yNode(role=role, name=name, value=value, ref=ref)
+
+
+def build_ref_index(text: str) -> dict[str, A11yNode]:
+    """从快照文本建 ``{ref: A11yNode}`` 索引,供执行期按操作的 ref 回查真实 role+name。
+
+    ref 是 playwright-mcp 每次快照重新分配的元素引用;LLM 操作时回传的 ref 即对应它
+    最近一次观察到的快照。据此可拿到被操作元素的**真实 a11y 身份**(覆盖面 > 仅词汇表)。
+    """
+    return {n.ref: n for n in parse_snapshot(text).nodes if n.ref}
 
 
 def _unquote(s: str) -> str:

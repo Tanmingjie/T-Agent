@@ -14,9 +14,15 @@ export interface StepStatus {
   description: string;
 }
 
+export interface PhaseStatus {
+  phase: string;
+  label: string;
+}
+
 export interface CaseRunState {
   status: CaseRunStatus;
   steps: StepStatus[];
+  phases: PhaseStatus[]; // 生命周期阶段流(翻译/执行/断言/代码),最后一个为当前进行中
 }
 
 export interface PermReq {
@@ -57,7 +63,8 @@ export function useSuiteRun(suiteId: string | undefined) {
       stop();
       // 预置所有用例为 pending
       const seed: Record<string, CaseRunState> = {};
-      for (const cid of caseIds) seed[cid] = { status: "pending", steps: [] };
+      for (const cid of caseIds)
+        seed[cid] = { status: "pending", steps: [], phases: [] };
       setStatuses(seed);
       setRunning(true);
       setDone(false);
@@ -70,22 +77,40 @@ export function useSuiteRun(suiteId: string | undefined) {
         );
         setRunId(run_id);
 
-        const es = new EventSource(sseUrl(`/suites/${suiteId}/stream?run_id=${run_id}`));
+        const es = new EventSource(
+          sseUrl(`/suites/${suiteId}/stream?run_id=${run_id}`),
+        );
         esRef.current = es;
 
-        const upd = (
-          caseId: string,
-          fn: (c: CaseRunState) => CaseRunState,
-        ) =>
+        const upd = (caseId: string, fn: (c: CaseRunState) => CaseRunState) =>
           setStatuses((prev) => ({
             ...prev,
-            [caseId]: fn(prev[caseId] ?? { status: "pending", steps: [] }),
+            [caseId]: fn(
+              prev[caseId] ?? { status: "pending", steps: [], phases: [] },
+            ),
           }));
 
         es.addEventListener("case_start", (e) => {
           const d = safeParse((e as MessageEvent).data);
           if (!d) return;
-          upd(d.case_id as string, (c) => ({ ...c, status: "running" }));
+          upd(d.case_id as string, (c) => ({
+            ...c,
+            status: "running",
+            steps: [],
+            phases: [],
+          }));
+        });
+
+        es.addEventListener("phase", (e) => {
+          const d = safeParse((e as MessageEvent).data);
+          if (!d) return;
+          upd(d.case_id as string, (c) => ({
+            ...c,
+            phases: [
+              ...c.phases.filter((p) => p.phase !== d.phase),
+              { phase: d.phase as string, label: d.label as string },
+            ],
+          }));
         });
 
         es.addEventListener("step_change", (e) => {

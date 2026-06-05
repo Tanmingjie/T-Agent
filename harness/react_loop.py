@@ -28,6 +28,7 @@ from enum import Enum
 from typing import Awaitable, Callable
 
 from harness.llm import LLMClient, LLMToolCallError, ToolCall
+from harness.page_probe import build_ref_index
 from harness.step_plan import StepPlan
 from input.models import ActionStep
 
@@ -134,11 +135,12 @@ class ReActLoop:
         task_message: str = "开始执行测试。请按执行计划逐步操作,每完成一步调用 mark_step_done。",
         max_steps: int = 30,
         loop_window: int = 3,
-        max_idle_nudges: int = 3,
+        max_idle_nudges: int = 5,
         healer=None,
         get_snapshot=None,
         compactor=None,
         capture_screenshot=None,
+        on_step=None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -149,6 +151,8 @@ class ReActLoop:
         self.compactor = compactor  # Context Compact(可选),发 LLM 前压缩历史
         # 截图回调:async (step_no, tool_name) -> filename|None;每步执行后落盘截图
         self.capture_screenshot = capture_screenshot
+        # 实时步骤回调:async (ActionStep) -> None;每步落定后立即回调(供 SSE 实时推送进度)
+        self.on_step = on_step
         self.execute = execute
         self.step_plan = step_plan
         self.build_system = build_system
@@ -165,6 +169,9 @@ class ReActLoop:
         recent_sigs: deque[str] = deque(maxlen=self.loop_window)
         step_no = 0
         idle_nudges = 0  # 模型"哑火"(无 tool_call 且未完成)时的连续推动次数
+        # 最近一次观察(工具结果)文本,含 playwright-mcp 快照。LLM 本轮回传的 ref 即
+        # 对应它最近观察到的这份快照 → 据此回查被操作元素的真实 (role, name)。
+        last_snapshot_text = ""
 
         for iteration in range(1, self.max_steps + 1):
             result.iterations = iteration
@@ -178,9 +185,26 @@ class ReActLoop:
             try:
                 resp = await self.llm.chat(messages, tools=self.tools)
             except LLMToolCallError as e:
-                logger.warning("tool_call 容错后仍失败,终止循环:%s", e)
-                result.stop_reason = StopReason.TOOL_CALL_ERROR
-                break
+                # 铁律3:偶发 tool_call 格式错误不得搞崩 ReAct 循环。还有未完成步骤时,
+                # 不直接终止,而是哑火续推(纠偏后让模型重出正确调用),仅在预算耗尽/
+                # 步骤已全部落定时才真正终止 → 治"输入密码后模型吐了个坏调用就停在中途"。
+                logger.warning("tool_call 容错后仍失败:%s", e)
+                idle_nudges += 1
+                if self.step_plan.all_resolved() or idle_nudges > self.max_idle_nudges:
+                    result.stop_reason = StopReason.TOOL_CALL_ERROR
+                    break
+                cur = self.step_plan.current
+                cur_desc = f"第 {cur.step_no} 步「{cur.describe()}」" if cur else "剩余步骤"
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"上一次工具调用格式有误,已忽略。请重新输出一个**格式正确**的"
+                            f"工具调用以继续{cur_desc};不要重复刚才的错误格式,也不要提前结束。"
+                        ),
+                    }
+                )
+                continue
 
             reasoning = resp.content or ""
             maybe_result = parse_test_result(reasoning)
@@ -215,8 +239,11 @@ class ReActLoop:
                         "role": "user",
                         "content": (
                             f"你还没有完成所有步骤,当前应执行{cur_desc}。{premature}"
-                            "请继续调用工具执行,完成该步后调用 mark_step_done;"
-                            "所有步骤都完成后再输出 TEST_RESULT。不要提前停止。"
+                            "请**立即调用工具**继续:若不确定当前页面有哪些可操作元素,"
+                            "先调用 browser_snapshot 取最新快照(每个元素带 ref),再用 "
+                            "browser_click/browser_type 等操作该元素;完成该步后调用 "
+                            "mark_step_done。所有步骤都完成后再输出 TEST_RESULT。"
+                            "不要只输出文字而不调用工具,也不要提前停止。"
                         ),
                     }
                 )
@@ -238,6 +265,10 @@ class ReActLoop:
 
             # Act + Observe:逐个执行 tool_call
             intent = _parse_intent(reasoning)
+            # 本轮所有 ref 都基于「上一次观察到的快照」分配,先建一份 ref→节点 索引
+            ref_index = build_ref_index(last_snapshot_text)
+            cur_step = self.step_plan.current
+            cur_target = cur_step.target if cur_step is not None else ""
             for tc in resp.tool_calls:
                 step_no += 1
                 started = time.monotonic()
@@ -258,6 +289,12 @@ class ReActLoop:
                     except Exception as e:  # noqa: BLE001 — 截图失败不影响执行
                         logger.warning("步骤 %d 截图失败:%s", step_no, e)
 
+                # 执行期捕获:从操作回传的 ref 回查上一份快照,拿被操作元素真实 role+name
+                el_role, el_name = "", ""
+                ref = tc.arguments.get("ref")
+                if ref and (node := ref_index.get(str(ref))) is not None:
+                    el_role, el_name = node.role, node.name
+
                 result.action_steps.append(
                     ActionStep(
                         step_no=step_no,
@@ -268,14 +305,27 @@ class ReActLoop:
                         tool_result=outcome.text,
                         screenshot=shot,
                         url=outcome.url,
+                        element_role=el_role,
+                        element_name=el_name,
+                        step_target=cur_target,
                         is_custom_tool=outcome.is_custom_tool,
                         is_hook_action=outcome.is_hook_action,
                         duration_ms=duration_ms,
                         heal_attempts=heal_attempts,
                     )
                 )
+                # 实时回调:本步已落定,立即推送(SSE 实时进度,不等整轮/整条用例结束)
+                if self.on_step is not None:
+                    try:
+                        await self.on_step(result.action_steps[-1])
+                    except Exception as e:  # noqa: BLE001 — 推送失败不影响执行
+                        logger.warning("on_step 回调失败:%s", e)
+
                 # 观察回灌(含自愈建议)
                 messages.append({"role": "user", "content": f"[观察] {outcome.text}{obs_suffix}"})
+                # 记下本次观察快照,供下一轮 ref 回查(浏览器工具结果自带新快照)
+                if outcome.text:
+                    last_snapshot_text = outcome.text
 
             # 所有步骤已落定 → 完成(交由外层跑断言裁决)
             if self.step_plan.all_resolved():

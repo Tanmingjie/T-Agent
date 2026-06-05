@@ -271,14 +271,42 @@ async def test_tool_exception_does_not_crash():
     assert "[工具执行异常]" in result.action_steps[0].tool_result
 
 
-async def test_tool_call_error_stops():
+async def test_tool_call_error_persistent_stops():
+    """持续的 tool_call 格式错误(超过哑火预算)才真正终止为 TOOL_CALL_ERROR。"""
+    plan = _plan(1)  # 1 步未完成
+    err = LLMToolCallError("解析不了")
+    # max_idle_nudges=3:需第 4 次仍报错才终止(前 3 次哑火续推)
+    llm = _ScriptedLLM([_resp()], raise_on={0: err, 1: err, 2: err, 3: err})
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+        max_idle_nudges=3,
+    )
+    result = await loop.run()
+    assert result.stop_reason == StopReason.TOOL_CALL_ERROR
+
+
+async def test_tool_call_error_transient_recovers():
+    """铁律3:偶发 tool_call 错误不得搞崩循环——纠偏续推后仍能完成剩余步骤。"""
     plan = _plan(1)
-    llm = _ScriptedLLM([_resp()], raise_on={0: LLMToolCallError("解析不了")})
+    # 第 0 次报错(该槽被 raise 消费)→ 续推;第 1 次正常 mark_step_done 完成该步 → 收尾
+    llm = _ScriptedLLM(
+        [
+            _resp(content="坏"),  # idx0 槽:被 raise 占用
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # idx1:纠偏后正常调用
+            _resp(content="完成"),
+        ],
+        raise_on={0: LLMToolCallError("偶发坏格式")},
+    )
     loop = ReActLoop(
         llm, tools=[], execute=_make_executor(plan), step_plan=plan, build_system=_build_system
     )
     result = await loop.run()
-    assert result.stop_reason == StopReason.TOOL_CALL_ERROR
+    assert result.stop_reason != StopReason.TOOL_CALL_ERROR
+    assert plan.all_resolved()
 
 
 # ── 操作侧自愈(T-11) ─────────────────────────────────────────

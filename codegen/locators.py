@@ -10,8 +10,9 @@
    框架语法。具体渲染(Playwright ``get_by_role`` / Selenium / Cypress ...)由各
    ``CodeGenerator`` 实现。换框架只改渲染层,定位解析全复用——故 BDD 只是一种实现。
 
-本轮定位来源:**词汇表**(role+name 优先,selector 次之)。执行期捕获真实 a11y
-role+name 作为更广覆盖的来源,留待下一轮。
+定位来源(优先级从高到低):**执行期捕获**的真实 a11y role+name
+(``locators_from_steps``,覆盖未录入词汇表的目标)> **词汇表**(role+name 优先,
+selector 次之)> 文本兜底。执行捕获更贴合本次实际渲染,故优先于静态词汇表。
 """
 
 from __future__ import annotations
@@ -70,6 +71,27 @@ def locator_from_vocab(target: str, entry: dict | None) -> Locator | None:
     if name:
         return Locator(LocatorStrategy.TEXT, name=name, target=target)
     return None
+
+
+def locators_from_steps(steps) -> dict[str, Locator]:
+    """执行期捕获的 ActionStep → ``{业务 target: ROLE Locator}``(框架无关)。
+
+    执行时已从被操作元素的 ref 回查到真实 ``(role, name)`` 并记在 ActionStep 上;这里据此
+    给**未录入词汇表**的目标也产出稳健 ``get_by_role`` 定位,覆盖面 > 仅词汇表。优先级最高
+    (执行捕获 > 词汇表 > 文本兜底):真实页面身份比静态词汇表更贴合本次实际渲染。
+
+    仅在 role 与 name 都齐备时采纳(role 无 name 的 get_by_role 过于宽泛,反不如词汇表);
+    同一 target 取首个成功捕获。
+    """
+    out: dict[str, Locator] = {}
+    for s in steps:
+        role = (getattr(s, "element_role", "") or "").strip()
+        name = (getattr(s, "element_name", "") or "").strip()
+        target = (getattr(s, "step_target", "") or "").strip()
+        if not (role and name and target):
+            continue
+        out.setdefault(target, Locator(LocatorStrategy.ROLE, role=role, name=name, target=target))
+    return out
 
 
 async def resolve_locators(

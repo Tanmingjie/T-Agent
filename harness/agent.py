@@ -12,12 +12,13 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from pathlib import Path
 
 from codegen.bdd import BDDGenerator
-from codegen.locators import resolve_locators
+from codegen.locators import locators_from_steps, resolve_locators
 from harness.assertion import AssertionEngine
 from harness.context import ContextCompactor
 from harness.healing import HealingSubagent
@@ -162,6 +163,38 @@ class TestCaseAgent:
         ctx = ctx or ExecutionContext(case=case)
         recorder = Recorder(case.id, suite_id=case.suite_id, run_id=run_id)
 
+        # 实时进度回调(SSE):阶段 + 逐步,执行期即时推送,而非整条用例跑完才补发
+        cb = step_callback or self.step_callback
+
+        async def emit_phase(phase: str, label: str) -> None:
+            if cb is None:
+                return
+            try:
+                await cb("phase", {"case_id": case.id, "phase": phase, "label": label})
+            except Exception:  # noqa: BLE001 — 推送失败不影响执行
+                pass
+
+        async def emit_step(step) -> None:
+            if cb is None:
+                return
+            desc = (
+                f"{step.tool_name}({', '.join(f'{k}={v}' for k, v in step.tool_input.items())})"
+                if step.tool_input
+                else step.tool_name
+            )
+            try:
+                await cb(
+                    "step_change",
+                    {
+                        "case_id": case.id,
+                        "step_index": step.step_no,
+                        "status": "done",
+                        "description": desc,
+                    },
+                )
+            except Exception:  # noqa: BLE001
+                pass
+
         # before_case Hooks:失败则用例直接 FAIL,不进 Agent(规格 §5.4)
         if self.hooks is not None:
             bc = await self.hooks.run(BEFORE_CASE, ctx)
@@ -174,6 +207,7 @@ class TestCaseAgent:
                 await self.hooks.run(AFTER_CASE, ctx)
                 return record
 
+        await emit_phase("spec", "翻译用例为执行规格 (TestSpec)")
         if spec is None:
             spec = await self.generate_spec(case)
 
@@ -254,31 +288,16 @@ class TestCaseAgent:
             get_snapshot=get_snapshot,
             compactor=ContextCompactor(),
             capture_screenshot=capture_screenshot,
+            on_step=emit_step,  # 每步落定即时推送(实时进度)
         )
+        await emit_phase("executing", "驱动浏览器逐步执行")
         result = await loop.run()
         recorder.extend_steps(result.action_steps)
-        cb = step_callback or self.step_callback
-        if cb is not None:
-            for step in result.action_steps:
-                try:
-                    await cb(
-                        "step_change",
-                        {
-                            "case_id": case.id,
-                            "step_index": step.step_no,
-                            "status": "done",
-                            "description": (
-                                f"{step.tool_name}({', '.join(f'{k}={v}' for k, v in step.tool_input.items())})"
-                                if step.tool_input
-                                else step.tool_name
-                            ),
-                        },
-                    )
-                except Exception:  # noqa: BLE001
-                    pass  # step_callback 失败不影响执行
         recorder.set_token_usage(self._token_usage())
+        recorder.set_stop_reason(f"{result.stop_reason.value}/iter={result.iterations}")
 
         # —— 断言裁决(确定性,非 LLM 眼判;目标找不到时自愈重定位) ——
+        await emit_phase("asserting", "结构化断言裁决")
         probe = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
         await probe.refresh()  # 用例结束后抓一次终态快照
         engine = AssertionEngine(probe, healer=healer)
@@ -299,6 +318,7 @@ class TestCaseAgent:
 
         # —— 代码生成(规格 §5.6):仅执行通过后产出 pytest-bdd 代码 ——
         if passed:
+            await emit_phase("codegen", "生成测试代码")
             try:
                 # 把断言聚合进 spec(LLM 常放 step.expect),否则生成的 Then 段为空
                 gen_spec = spec.model_copy(update={"assertions": collect_assertions(spec)})
@@ -307,7 +327,12 @@ class TestCaseAgent:
                     a.target for a in gen_spec.assertions
                 ]
                 locators = await resolve_locators(targets, self.vocab_resolver, url=state["url"])
-                gen = BDDGenerator().generate(gen_spec, record, locators=locators)
+                # 执行期捕获的真实 role+name 优先级最高,覆盖词汇表解析结果
+                locators = {**locators, **locators_from_steps(record.steps)}
+                # black.format_str + ast.parse 是同步 CPU,挪线程避免占用事件循环(收尾不卡)
+                gen = await asyncio.to_thread(
+                    BDDGenerator().generate, gen_spec, record, locators=locators
+                )
                 record.generated_code = f"{gen.feature}\n\n{gen.step_defs}"
                 gen.write(_GENERATED_ROOT)  # storage/generated/(供下载)
             except Exception as e:  # noqa: BLE001 — 代码生成失败不影响用例结果
