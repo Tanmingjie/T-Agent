@@ -653,7 +653,11 @@ export default function CaseDrawerBody({
           {loading ? (
             <div className="p-6 text-sm text-gray-400">加载中…</div>
           ) : sel.kind === "info" ? (
-            <InfoView caseInfo={caseInfo} spec={result?.spec} />
+            // 执行中结果未落库,用实时推送的 spec_ready 作回退,翻译后即可看执行规格
+            <InfoView
+              caseInfo={caseInfo}
+              spec={result?.spec ?? (liveState?.spec as TestSpec | undefined)}
+            />
           ) : sel.kind === "step" && selStep ? (
             /* Step view: screenshot + detail(显式选中步骤优先于运行态占位) */
             <div className="p-6 space-y-4">

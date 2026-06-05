@@ -174,6 +174,16 @@ class TestCaseAgent:
             except Exception:  # noqa: BLE001 — 推送失败不影响执行
                 pass
 
+        async def emit_spec(spec: TestSpec) -> None:
+            # 翻译完成即把 TestSpec 推给前端,执行中点「用例信息」也能看到执行规格
+            # (此前 spec 只随结果落库,执行期抽屉不拉结果故为空)。
+            if cb is None:
+                return
+            try:
+                await cb("spec_ready", {"case_id": case.id, "spec": spec.model_dump(mode="json")})
+            except Exception:  # noqa: BLE001
+                pass
+
         async def emit_step(step) -> None:
             if cb is None:
                 return
@@ -212,6 +222,7 @@ class TestCaseAgent:
             spec = await self.generate_spec(case)
 
         recorder.set_spec(spec)  # 存档翻译产物,供前端可视化
+        await emit_spec(spec)  # 实时推送给抽屉(执行中也能看执行规格)
         plan = StepPlan.from_spec(spec)
 
         # 工具集 = MCP 工具 + mark_step_done 控制工具 + 自定义工具(LLM 按需调用)
