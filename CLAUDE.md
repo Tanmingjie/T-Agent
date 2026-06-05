@@ -112,7 +112,21 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     文案("提交"→"保存并提交"),仅在本次自动生成 spec 时增强(显式传入的 spec 不动)。
   - **查看 prompt(调试)** — `ActionStep.prompt` 记每轮请求(System Prompt + 最近输入,
     不存完整历史避免 DB 膨胀);`react_loop` 每步落定时挂上,经 recorder/SSE 透出,抽屉
-    步骤详情加「查看 prompt」按钮(落库 + 执行中实时都能看)。
+    步骤详情加「查看 prompt」按钮(落库 + 执行中实时都能看)。**注意**:结果接口
+    `api/routers/results.py::_build_history` 是**独立于** `recorder.to_history` 的另一套
+    序列化,改 history 字段要**两处都改**(否则执行中能看、完成后丢)。
+- **执行态可观测收口(2026-06-05,已做)** — 围绕"执行中也能看清"补的一组小修:
+  - **实时推送 TestSpec** — 翻译完成即发 `spec_ready` SSE,执行中点「用例信息」就能看执行
+    规格(此前 spec 只随结果落库,执行期抽屉为空)。
+  - **执行中状态区分色** — running 用蓝(`blue-*`)、通过才绿,不再全程一片绿(参考 TestSprite)。
+  - **步骤截图按真实落图状态** — `step_change` 带真实 `screenshot` 文件名,前端 `hasShot=!!screenshot`;
+    失败/重试步、快照步本就不落图,不再一律假设有图去取不存在的 `step_NNN.png` 报 404。
+  - **抽屉步骤详情收口** — 移除「执行结果」原始 mcp 观察文本(用户不关心),保留 URL + 查看 prompt。
+  - **`react_loop` 执行捕获修复** — `last_snapshot_text` 仅在观察**真带 `[ref=`** 时更新,
+    否则「操作→mark_step_done→操作」序列会被非快照输出覆盖,令第二步捕获漏采。
+  - **LiteLLM 封装两修** — ① 未传 tools 时 `_parse` 不再对 content 做 tool_call 兜底/报错
+    (正常 JSON 含 `"name"` 子串曾被误判成坏调用而抛错,连累 Scanner/SpecGen);
+    ② import 前 `LITELLM_LOCAL_MODEL_COST_MAP=True`,内网免去联网拉价目表的握手超时 + warning。
 - **下一步候选:**
   - **执行期捕获真实 a11y role+name → ActionStep(已做)** — `page_probe` 解析快照里每个节点的 `ref`(`A11yNode.ref` + `build_ref_index(text)→{ref:node}`);`react_loop` 在操作元素时(`browser_click/type/...` 带 `ref`)从**上一份观察快照**的 ref 索引回查真实 `(role, name)`,连同当前业务步骤 `target` 记到 `ActionStep`(`element_role`/`element_name`/`step_target`)。`codegen/locators.py::locators_from_steps` 据此对**未录入词汇表**的目标也产出稳健 `get_by_role` 定位;`agent.run` 把它 overlay 到词汇表解析结果之上(**执行捕获优先**:`{**vocab, **captured}`)。仅 role+name 齐备才采纳(role 无 name 过宽,反不如词汇表)。
   - 阶段五(用例管理平台集成,规格"现在不做");ReAct 早停护栏 / 真实内网用例 live 验证。
@@ -143,6 +157,12 @@ T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规
   定位逻辑要与具体测试框架解耦(模型+解析层 / 渲染层分离)。
 - **per-run 数据别按 case_id 落平文件**:会被后续 run 覆盖、抽屉串味;优先存进 `ExecutionRecord`。
 - **误判结论要随证据回收**:文档里写过的根因,拿到新证据(如引号 bug)要更新,别让旧判断误导后人。
+- **同一数据有"两套序列化"要一起改**:`recorder.to_history`(执行内/落库)与
+  `api/routers/results.py::_build_history`(结果接口)各自手写 step 序列化,加字段只改一处会
+  出现"执行中能看、完成后丢"(本轮 `prompt` 字段即栽在此)。改 history 结构务必两处同步。
+- **封装别越权兜底**:LLM 封装在**未传 tools** 时不应对 content 做 tool_call 提取/报错——
+  正常 JSON/文本里只要含 `"name"` 子串就会被误判成坏工具调用而抛错,连累所有要纯内容的
+  调用(Scanner/SpecGen/healing)。容错只在"调用方确实期望工具调用"时启用。
 - **本工具 bash cwd 跨调用保持**:`cd frontend` 后下一条命令仍在 frontend,git 操作记得回根目录。
 - **单事件循环会被同步活儿饿死**:uvicorn 默认单进程/单 loop/单线程,无锁、协作式(只在 `await` 让出)。长任务(用例执行)跑在 API 共用 loop 上时,链路里**任何不让出的同步代码**(快照解析、库的同步开销、CPU)都会让**所有 HTTP 请求 pending**——表象像"DB 锁/崩溃",实为 loop 被占。诊断要点:**连无 DB 的接口也 pending = loop 阻塞**(非 DB 锁)。根治不是逐行挪线程(打地鼠),而是把执行**整体搬出 API loop**(独立线程+独立 loop+独立 Store;SSE 经 `call_soon_threadsafe` 桥接)。SQLAlchemy async engine **绑定创建它的 loop**,跨 loop 必须各用各的 Store。
 - **SQLite WAL 必须在事务外、连接级设**:`PRAGMA journal_mode=WAL` 在 `engine.begin()`(事务)里会被**静默忽略**;要用 connect 监听器逐连接设,否则默认 rollback-journal 下写阻塞读。
