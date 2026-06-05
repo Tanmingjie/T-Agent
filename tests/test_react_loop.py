@@ -392,6 +392,72 @@ async def test_no_healing_on_success():
     assert result.action_steps[0].heal_attempts == []  # 成功不触发自愈
 
 
+async def test_step_captures_request_prompt():
+    """每步落定时记下本轮请求(System Prompt + 最近输入),供「查看 prompt」。"""
+    plan = _plan(1)
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e1"})]),
+            _resp(calls=[("mark_step_done", {"step": 1})]),
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+    )
+    result = await loop.run()
+    step0 = result.action_steps[0]
+    assert "### System Prompt" in step0.prompt
+    assert "SYSTEM" in step0.prompt  # _build_system 的输出确实进了 prompt
+    assert "### 最近输入" in step0.prompt
+
+
+async def test_action_healing_uses_vocabulary_first():
+    """操作侧自愈:vocab_resolver 命中业务词 → 作为词汇表候选传给 healer(规格 §5.4)。"""
+    plan = _plan(1)
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_click", {"element": "提交按钮", "ref": "e9"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),
+        ]
+    )
+
+    seen: dict = {}
+
+    class _RecordingHealer:
+        async def relocate(self, *, intent, target, snapshot_text, expected=None, vocabulary=None):
+            seen["vocabulary"] = vocabulary
+            from harness.healing import HealCandidate, HealResult
+
+            cand = HealCandidate(target="提交", strategy="P1_role", confidence=0.95)
+            return HealResult(healed=True, chosen=cand, candidates=[cand], summary="ok")
+
+    class _Resolver:
+        login_role = ""
+
+        async def resolve(self, target, *, url="", title=""):
+            return {"role": "button", "name": "保存并提交"}
+
+    async def get_snap():
+        return _HEAL_SNAPSHOT
+
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan, fail_tools={"browser_click"}),
+        step_plan=plan,
+        build_system=_build_system,
+        healer=_RecordingHealer(),
+        get_snapshot=get_snap,
+        vocab_resolver=_Resolver(),
+    )
+    await loop.run()
+    assert seen["vocabulary"] == {"提交按钮": "保存并提交"}
+
+
 async def test_intent_parsed_into_actionstep():
     plan = _plan(1)
     llm = _ScriptedLLM(

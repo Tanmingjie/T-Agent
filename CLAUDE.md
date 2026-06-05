@@ -96,10 +96,27 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **框架无关定位器解析层(`codegen/locators.py`)** — `LocatorStrategy`(ROLE>TEST_ID>LABEL>PLACEHOLDER>TEXT>CSS,**按稳健度**)+ `Locator` 模型 + `resolve_locators`(词汇表来源,role+name>selector>name);解析放在 generator **之外**,各 CodeGenerator 只渲染自身语法(BDD 只是一种实现)。未命中词汇表回退文本启发式 + 前置 TODO 注释。
   - **前后端边界 + 皮肤** — `api/server.py` **移除 `frontend/dist` 静态挂载**,`:8000` 纯 API、前端一律 `:5173`(根除"改了前端但 :8000 服务旧构建"的反复混乱);brand 主色改 TestSprite 沙绿 `#478d54` + 新增 `canvas` 灰底白卡背景;代码区浅色主题+行号+限高滚动+复制。
 - **执行中实时反馈(已做,修执行期抽屉空白)** — 根因:`agent.run` 原把 `step_callback` 放在 `loop.run()` **返回之后**一次性补发,执行期间(占满几乎全部耗时)SSE 只有 `case_start`、抽屉拿不到任何 live 数据。修:① `ReActLoop` 加 `on_step` 回调,每步落定**即时**推送 `step_change`(去掉事后补发);② `agent.run` 发**生命周期阶段**事件 `phase`(spec 翻译 / executing / asserting / codegen),orchestrator 的 `sse_callback` 透传;③ 前端 `useSuiteRun` 收 `phase` 入 `CaseRunState.phases`,`CaseDrawerBody` 加 `RunningView`(阶段清单:末项转圈、其余打勾 + 实时步骤),`case_start` 时右栏默认切到该视图;用例在本次会话内跑完(running→passed/failed)**重新拉结果**,免得抽屉停在"执行中"。参考 TestSprite 的运行态交互。
+- **词汇表全链接通 + 可观测(已做)** — 此前词汇表只服务**判定/产物**(断言探针、codegen),
+  执行驱动完全没用,且规格设想的两处是孤儿代码。本轮补齐:
+  - **Scanner 策略C 接通(执行期增量扫描)** — `agent.run` 结束后 `_incremental_scan` 复用
+    ReAct 期间已捕获的 a11y 快照(`action_steps.tool_result` 含 `[ref=`),按 URL 去重、
+    独立 context 调 `Scanner.scan_and_save` 提炼业务词→元素映射并库(手动条目优先,AI 标
+    `source=ai`)。**扫前先 `find_page` 查重**:非 stale 词汇表(含手动)就跳过,免同界面
+    多用例重复提炼;页面变更经自愈 `mark_stale` 触发下次重扫。env `VOCAB_SCAN=0` 关。
+    (此前 `/vocabulary/scan` 是空壳桩、Scanner 从没被执行链调用——又一例「有模块≠接通」。)
+  - **操作侧自愈查词汇表(规格 §5.4「词汇表第一优先」)** — `react_loop._heal_action` 按
+    业务词 `vocab_resolver.resolve` → 真实页面名,作 P1 候选传 `healer.relocate(vocabulary=)`;
+    此前操作侧自愈根本没传 vocab(只断言侧传了)。
+  - **翻译期 `enhance_targets` 增强(规格 §5.2)** — `agent._enhance_spec_with_vocab` 接通
+    孤儿 `enhance_targets`:按 base_url 命中的词汇表把**精确**业务词 target 改写成页面真实
+    文案("提交"→"保存并提交"),仅在本次自动生成 spec 时增强(显式传入的 spec 不动)。
+  - **查看 prompt(调试)** — `ActionStep.prompt` 记每轮请求(System Prompt + 最近输入,
+    不存完整历史避免 DB 膨胀);`react_loop` 每步落定时挂上,经 recorder/SSE 透出,抽屉
+    步骤详情加「查看 prompt」按钮(落库 + 执行中实时都能看)。
 - **下一步候选:**
   - **执行期捕获真实 a11y role+name → ActionStep(已做)** — `page_probe` 解析快照里每个节点的 `ref`(`A11yNode.ref` + `build_ref_index(text)→{ref:node}`);`react_loop` 在操作元素时(`browser_click/type/...` 带 `ref`)从**上一份观察快照**的 ref 索引回查真实 `(role, name)`,连同当前业务步骤 `target` 记到 `ActionStep`(`element_role`/`element_name`/`step_target`)。`codegen/locators.py::locators_from_steps` 据此对**未录入词汇表**的目标也产出稳健 `get_by_role` 定位;`agent.run` 把它 overlay 到词汇表解析结果之上(**执行捕获优先**:`{**vocab, **captured}`)。仅 role+name 齐备才采纳(role 无 name 过宽,反不如词汇表)。
   - 阶段五(用例管理平台集成,规格"现在不做");ReAct 早停护栏 / 真实内网用例 live 验证。
-- 单测数量以 `python -m pytest -q` 实跑为准(当前约 325;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
+- 单测数量以 `python -m pytest -q` 实跑为准(当前约 342;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
 
 T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规格)与 §6(实施计划)。
 

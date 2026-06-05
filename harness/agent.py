@@ -35,6 +35,7 @@ from harness.tools import ToolRegistry
 from input.models import Assertion, ExecutionRecord, TestCase, TestSpec
 from intelligence.pre_analysis import SpecGenerator
 from intelligence.scanner import Scanner
+from intelligence.vocabulary import enhance_targets
 
 logger = logging.getLogger(__name__)
 
@@ -208,6 +209,7 @@ class TestCaseAgent:
                         # 真实截图文件名(None=该步未截图,如快照/失败步)→ 前端据此判断有无图,
                         # 不再一律假设有图(否则失败/重试步会去取不存在的 step_NNN.png 报 404)
                         "screenshot": step.screenshot,
+                        "prompt": step.prompt,  # 本轮请求,供执行中「查看 prompt」
                     },
                 )
             except Exception:  # noqa: BLE001
@@ -228,6 +230,9 @@ class TestCaseAgent:
         await emit_phase("spec", "翻译用例为执行规格 (TestSpec)")
         if spec is None:
             spec = await self.generate_spec(case)
+            # 词汇表增强(规格 §5.2):用页面真实文案改写模糊业务词("提交"→"保存并提交")。
+            # 仅当本次自动生成 spec 时增强;调用方显式传入(如 CLI 审查后)的 spec 不动。
+            spec = await self._enhance_spec_with_vocab(spec, case)
 
         recorder.set_spec(spec)  # 存档翻译产物,供前端可视化
         await emit_spec(spec)  # 实时推送给抽屉(执行中也能看执行规格)
@@ -308,6 +313,7 @@ class TestCaseAgent:
             compactor=ContextCompactor(),
             capture_screenshot=capture_screenshot,
             on_step=emit_step,  # 每步落定即时推送(实时进度)
+            vocab_resolver=self.vocab_resolver,  # 操作侧自愈词汇表优先
         )
         await emit_phase("executing", "驱动浏览器逐步执行")
         result = await loop.run()
@@ -369,6 +375,34 @@ class TestCaseAgent:
         )
         return record
 
+    async def _enhance_spec_with_vocab(self, spec: TestSpec, case: TestCase) -> TestSpec:
+        """翻译期词汇表增强(规格 §5.2):按 base_url 命中的页面词汇表,把 spec 里精确等于
+        某业务词的 target 改写成页面真实文案。保守(仅精确键匹配)、best-effort。"""
+        if self.vocab_resolver is None:
+            return spec
+        manager = getattr(self.vocab_resolver, "manager", None)
+        if manager is None:
+            return spec
+        url = case.base_url or spec.base_url
+        if not url:
+            return spec
+        login_role = getattr(self.vocab_resolver, "login_role", "") or ""
+        try:
+            page = await manager.find_page(url, "", login_role)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("翻译期查词汇表失败:%s", e)
+            return spec
+        if page is None or page.stale:
+            return spec
+        mapping = {
+            term: str(e["name"])
+            for term, e in page.vocabulary.items()
+            if isinstance(e, dict) and e.get("name")
+        }
+        if not mapping:
+            return spec
+        return enhance_targets(spec, mapping)
+
     async def _incremental_scan(self, result, emit_phase) -> None:
         """执行期增量扫描(策略C):复用 ReAct 期间已捕获的 a11y 快照,独立 context 提炼
         「业务词 → UI 元素」映射并入词汇表(手动条目优先,不被覆盖)。
@@ -394,10 +428,19 @@ class TestCaseAgent:
         if not by_url:
             return
 
-        await emit_phase("scanning", "提炼页面词汇表")
         login_role = getattr(self.vocab_resolver, "login_role", "") or ""
         scanner = Scanner(self.llm)
+        phase_emitted = False
         for snapshot_text in by_url.values():
+            snap = parse_snapshot(snapshot_text)
+            # 去重:该页已有「非 stale」词汇表(含手动维护)就跳过,免同界面多用例重复提炼。
+            # 页面变更时自愈失败会 mark_stale → 下次重扫;新页面照常扫(自我纠正)。
+            existing = await manager.find_page(snap.url, snap.title, login_role)
+            if existing is not None and not existing.stale:
+                continue
+            if not phase_emitted:  # 真要扫了才发阶段事件(无新页面则不显示 scanning)
+                await emit_phase("scanning", "提炼页面词汇表")
+                phase_emitted = True
             try:
                 await scanner.scan_and_save(snapshot_text, login_role=login_role, manager=manager)
             except Exception as e:  # noqa: BLE001 — 扫描失败不影响用例结果

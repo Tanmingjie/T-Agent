@@ -129,6 +129,7 @@ class Recorder:
                     "model_output": {
                         "reasoning": s.reasoning,
                         "intent": s.intent,
+                        "prompt": s.prompt,  # 本轮请求(System+最近输入),供「查看 prompt」
                         "tool_name": s.tool_name,
                         "tool_input": s.tool_input,
                     },

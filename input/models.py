@@ -96,6 +96,7 @@ class ActionStep(BaseModel):
     tool_input: dict = {}
     reasoning: str = ""  # ReAct 思考链
     intent: str = ""  # 操作意图(自愈重定位的依据)
+    prompt: str = ""  # 本轮发给 LLM 的请求(System Prompt + 最近输入),供「查看 prompt」调试
     tool_result: str = ""
     screenshot: str | None = None  # 文件路径
     url: str = ""

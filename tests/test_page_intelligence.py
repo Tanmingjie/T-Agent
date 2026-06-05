@@ -249,6 +249,76 @@ async def test_agent_incremental_scan_persists_from_run(store):
     assert got.get("source") == "ai"
 
 
+async def test_agent_incremental_scan_dedups_fresh_page(store):
+    """同页面已有非 stale 词汇表 → 第二次扫描跳过(不再调 LLM 提炼)。"""
+    from harness.agent import TestCaseAgent
+    from harness.react_loop import ReActResult
+    from input.models import ActionStep
+    from intelligence.vocabulary import VocabularyManager, VocabularyResolver
+
+    class _CountingLLM(LLMClient):
+        def __init__(self):
+            self.calls = 0
+
+        async def chat(self, messages, tools=None, **kwargs):
+            self.calls += 1
+            return LLMResponse(
+                content=json.dumps(
+                    {"提交": {"role": "button", "name": "保存并提交"}}, ensure_ascii=False
+                )
+            )
+
+    llm = _CountingLLM()
+    resolver = VocabularyResolver(VocabularyManager(store), login_role="admin")
+    agent = TestCaseAgent(llm=llm, mcp=None, vocab_resolver=resolver)
+    result = ReActResult(
+        action_steps=[
+            ActionStep(
+                step_no=1,
+                tool_name="browser_snapshot",
+                tool_result=SNAPSHOT,
+                url="https://intranet/order/9",
+            )
+        ]
+    )
+
+    async def _noop_phase(phase, label):
+        pass
+
+    await agent._incremental_scan(result, _noop_phase)  # 首次:扫
+    await agent._incremental_scan(result, _noop_phase)  # 二次:已存非 stale → 跳过
+    assert llm.calls == 1  # 只提炼了一次
+
+
+async def test_agent_enhance_spec_with_vocab_rewrites_target(store):
+    """翻译期增强:base_url 命中的词汇表把精确业务词 target 改写成页面真实文案。"""
+    from harness.agent import TestCaseAgent
+    from input.models import SpecStep, TestCase, TestSpec
+    from intelligence.vocabulary import VocabularyManager, VocabularyResolver
+
+    await store.save_vocabulary(
+        PageVocabulary(
+            url_pattern="/order",
+            page_title="",
+            login_role="",
+            vocabulary={"提交": {"role": "button", "name": "保存并提交"}},
+        )
+    )
+    resolver = VocabularyResolver(VocabularyManager(store))
+    agent = TestCaseAgent(llm=_FakeLLM(), mcp=None, vocab_resolver=resolver)
+
+    spec = TestSpec(
+        case_id="T1",
+        name="下单",
+        base_url="https://intranet/order/9",
+        steps=[SpecStep(action="click", target="提交"), SpecStep(action="click", target="取消")],
+    )
+    case = TestCase(id="T1", name="下单", base_url="https://intranet/order/9", steps=[])
+    out = await agent._enhance_spec_with_vocab(spec, case)
+    assert out.steps[0].target == "保存并提交"  # 命中改写
+    assert out.steps[1].target == "取消"  # 未命中保持
+
+
 async def test_agent_incremental_scan_skips_without_snapshots(store):
     """无任何带 ref 的快照时,不调用 LLM、不写库(best-effort 早退)。"""
     from harness.agent import TestCaseAgent

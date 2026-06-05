@@ -28,7 +28,7 @@ from enum import Enum
 from typing import Awaitable, Callable
 
 from harness.llm import LLMClient, LLMToolCallError, ToolCall
-from harness.page_probe import build_ref_index
+from harness.page_probe import build_ref_index, parse_snapshot
 from harness.step_plan import StepPlan
 from input.models import ActionStep
 
@@ -141,6 +141,7 @@ class ReActLoop:
         compactor=None,
         capture_screenshot=None,
         on_step=None,
+        vocab_resolver=None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -153,6 +154,9 @@ class ReActLoop:
         self.capture_screenshot = capture_screenshot
         # 实时步骤回调:async (ActionStep) -> None;每步落定后立即回调(供 SSE 实时推送进度)
         self.on_step = on_step
+        # 词汇表解析器(可选):操作侧自愈时按业务词查真实页面名,作为 P1 候选(规格 §5.4
+        # "词汇表第一优先查询")。无则自愈退回纯快照启发式。
+        self.vocab_resolver = vocab_resolver
         self.execute = execute
         self.step_plan = step_plan
         self.build_system = build_system
@@ -181,6 +185,10 @@ class ReActLoop:
             # Context Compact:发 LLM 前压缩历史观察(按当前步骤关键词保相关度)
             if self.compactor is not None:
                 self.compactor.compact_inplace(messages, self._current_keywords())
+
+            # 捕获本轮请求(供「查看 prompt」调试):System Prompt + 触发本轮的最近输入。
+            # 不存完整历史(多份快照过重),只取改 prompt 最需要看的两段。
+            current_prompt = self._snapshot_prompt(messages)
 
             try:
                 resp = await self.llm.chat(messages, tools=self.tools)
@@ -302,6 +310,7 @@ class ReActLoop:
                         tool_input=tc.arguments,
                         reasoning=reasoning,
                         intent=intent,
+                        prompt=current_prompt,
                         tool_result=outcome.text,
                         screenshot=shot,
                         url=outcome.url,
@@ -338,6 +347,16 @@ class ReActLoop:
 
         return result
 
+    @staticmethod
+    def _snapshot_prompt(messages: list[dict]) -> str:
+        """把本轮发给 LLM 的请求拼成可读文本:System Prompt + 最近一条输入。"""
+        system = messages[0]["content"] if messages else ""
+        last_user = next(
+            (m.get("content", "") for m in reversed(messages) if m.get("role") == "user"),
+            "",
+        )
+        return f"### System Prompt\n{system}\n\n### 最近输入(本轮触发)\n{last_user}"
+
     def _current_keywords(self) -> list[str]:
         """当前步骤的关键词,供 L2 相关度截断。"""
         cur = self.step_plan.current
@@ -362,8 +381,24 @@ class ReActLoop:
         if not snapshot_text:
             return [], ""
 
+        # 词汇表优先(规格 §5.4):按业务词查到真实页面名 → 作为 P1 命中候选喂给 healer
+        vocabulary: dict | None = None
+        if self.vocab_resolver is not None:
+            try:
+                snap = parse_snapshot(snapshot_text)
+                entry = await self.vocab_resolver.resolve(
+                    str(target), url=snap.url, title=snap.title
+                )
+                if isinstance(entry, dict) and entry.get("name"):
+                    vocabulary = {str(target): str(entry["name"])}
+            except Exception as e:  # noqa: BLE001 — 查词失败不影响自愈兜底
+                logger.warning("自愈查词汇表失败:%s", e)
+
         heal = await self.healer.relocate(
-            intent=intent or tc.name, target=str(target), snapshot_text=snapshot_text
+            intent=intent or tc.name,
+            target=str(target),
+            snapshot_text=snapshot_text,
+            vocabulary=vocabulary,
         )
         attempt = {
             "tool": tc.name,

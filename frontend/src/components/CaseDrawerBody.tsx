@@ -41,6 +41,7 @@ interface StepDetail {
   model_output: {
     reasoning: string;
     intent?: string;
+    prompt?: string;
     tool_name: string;
     tool_input: Record<string, unknown>;
   };
@@ -394,6 +395,7 @@ interface DisplayStep {
   reasoning?: string;
   toolResult?: string;
   url?: string;
+  prompt?: string;
 }
 
 export default function CaseDrawerBody({
@@ -414,6 +416,7 @@ export default function CaseDrawerBody({
   const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState<Selection>({ kind: "info" });
   const [rightTab, setRightTab] = useState<"preview" | "code">("preview");
+  const [showPrompt, setShowPrompt] = useState(false);
 
   const isRunning = status === "running" || status === "healing";
   // 进行中的结果请求:重新加载时先 abort 上一次,避免 /result+/code 在 HTTP/1.1
@@ -492,6 +495,7 @@ export default function CaseDrawerBody({
           reasoning: s.model_output.reasoning,
           toolResult: s.action_result.tool_result,
           url: s.action_result.url,
+          prompt: s.model_output.prompt,
         }));
     }
     if (liveState?.steps?.length) {
@@ -506,6 +510,7 @@ export default function CaseDrawerBody({
           // 一律假设有图会去取不存在的 step_NNN.png 报 404 显示「无截图」
           hasShot: !!s.screenshot,
           state: s.status === "done" ? ("done" as const) : ("running" as const),
+          prompt: s.prompt ?? undefined,
         }));
     }
     return caseInfo.steps.map((s, i) => ({
@@ -615,7 +620,10 @@ export default function CaseDrawerBody({
                 return (
                   <button
                     key={`${s.no}-${s.label}`}
-                    onClick={() => setSel({ kind: "step", no: s.no })}
+                    onClick={() => {
+                      setSel({ kind: "step", no: s.no });
+                      setShowPrompt(false); // 切步骤时收起 prompt,避免串味
+                    }}
                     className={`w-full text-left rounded-lg border p-2.5 flex items-start gap-2 cursor-pointer transition-colors ${
                       active
                         ? "border-brand-300 bg-brand-50/60"
@@ -687,6 +695,38 @@ export default function CaseDrawerBody({
                   <pre className="text-xs bg-white border border-gray-200 rounded-md p-3 whitespace-pre-wrap text-gray-600 max-h-48 overflow-auto">
                     {selStep.toolResult}
                   </pre>
+                </div>
+              )}
+              {selStep.prompt && (
+                <div>
+                  <div className="flex items-center justify-between mb-1">
+                    <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
+                      请求 Prompt
+                    </h4>
+                    <div className="flex items-center gap-3">
+                      {showPrompt && (
+                        <button
+                          onClick={() =>
+                            navigator.clipboard?.writeText(selStep.prompt ?? "")
+                          }
+                          className="text-[11px] text-gray-400 hover:text-gray-600"
+                        >
+                          复制
+                        </button>
+                      )}
+                      <button
+                        onClick={() => setShowPrompt((v) => !v)}
+                        className="text-xs font-medium text-brand-700 hover:text-brand-800"
+                      >
+                        {showPrompt ? "收起" : "查看 prompt"}
+                      </button>
+                    </div>
+                  </div>
+                  {showPrompt && (
+                    <pre className="text-xs bg-surface-900 text-gray-100 border border-gray-800 rounded-md p-3 whitespace-pre-wrap max-h-96 overflow-auto leading-relaxed">
+                      {selStep.prompt}
+                    </pre>
+                  )}
                 </div>
               )}
             </div>

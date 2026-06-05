@@ -13,6 +13,7 @@ export interface StepStatus {
   status: string;
   description: string;
   screenshot?: string | null; // 该步真实截图文件名(None=无图,如快照/失败步)
+  prompt?: string | null; // 本轮发给 LLM 的请求(供执行中「查看 prompt」)
 }
 
 export interface PhaseStatus {
@@ -133,6 +134,7 @@ export function useSuiteRun(suiteId: string | undefined) {
                 status: d.status as string,
                 description: d.description as string,
                 screenshot: (d.screenshot as string | null) ?? null,
+                prompt: (d.prompt as string | null) ?? null,
               },
             ],
           }));
