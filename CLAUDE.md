@@ -42,7 +42,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `harness/precondition.py` — 预置条件 LLM 三分类(state_hook/action_step/ambiguous),低置信/无映射降级 ambiguous。
 - `harness/skills.py` — Skill 体系:DomainSkill(常注入)/ PageSkill(按 URL 动态加载卸载)/ ToolSkill(关键词相关度);Agent 按当前 URL+步骤关键词动态注入。
 - `harness/permission.py` — 高危词 + prod 环境锁;Reason 后 Act 前拦截;trust_mode / 可注入 approver;无 approver 默认拒绝。
-- `harness/orchestrator.py` — Suite 调度:**串行**执行用例、用例间隔离(异常→FAIL 不拖垮他人)、suite 级 hooks、结果汇总。
+- `harness/orchestrator.py` — Suite 调度:`parallelism` **可配并发**(`asyncio.Semaphore` + `gather`,默认 1=串行;>1 需 `agent_factory` 让每用例自带独立 MCP/浏览器)、用例间隔离(异常→FAIL 不拖垮他人)、suite 级 hooks、结果汇总。
 - `harness/tools.py` — Custom Tool 注册:`@tool` 装饰器 + YAML `command`;LLM 按需调用;Agent 路由(控制→StepPlan / 自定义→Registry / 其余→MCP)。
 
 ### 工程化界面(阶段四)
@@ -50,7 +50,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `api/server.py` — FastAPI 应用入口,挂载 5 个路由子模块 + SSE 推送。
 - `api/repository.py` — **Repository 抽象层**。`SuiteRepo` / `RunRepo` / `VocabRepo` 三个抽象基类 + SQLModel 实现(`SQLModelSuiteRepo` 等),业务代码面向抽象、存储可替换。
 - `api/routers/suites.py` — Suite CRUD(创建/列表/详情/删除)。
-- `api/routers/execution.py` — 执行控制:**SSE 实时推送**执行进度,同步调用 Orchestrator 串行跑。
+- `api/routers/execution.py` — 执行控制:**SSE 实时推送**执行进度;执行**搬离 API 事件循环**(见 `api/execution_worker.py`:每 run 一守护线程 + 独立 loop + 独立 Store),按 Suite 设置的 `parallelism` 跑 Orchestrator。
+- `api/execution_worker.py` — **执行线程隔离工具**:`spawn_run`(每 run 一线程跑自己的 loop)、`make_sse_bridge`(worker→API 经 `call_soon_threadsafe` 桥接 SSE)、权限走 `threading.Event`(跨线程审批)。根治「执行期所有 HTTP 接口 pending」(单事件循环被执行的同步活儿占住)。
 - `api/routers/permission.py` — 权限审批(approve/deny)。
 - `api/routers/results.py` — 执行结果查询(用例列表/断言详情/代码查看)。
 - `api/routers/vocabulary.py` — 词汇表 CRUD + scan 触发。
@@ -94,10 +95,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **接入 BDD 代码生成** — `BDDGenerator` 此前是孤立模块、执行链从未调用。`agent.run` 在**断言通过后**生成并写 `record.generated_code`(随 run 持久化)+ 落盘 `storage/generated/`;`/code` 端点优先返回 per-run 的 generated_code。
   - **框架无关定位器解析层(`codegen/locators.py`)** — `LocatorStrategy`(ROLE>TEST_ID>LABEL>PLACEHOLDER>TEXT>CSS,**按稳健度**)+ `Locator` 模型 + `resolve_locators`(词汇表来源,role+name>selector>name);解析放在 generator **之外**,各 CodeGenerator 只渲染自身语法(BDD 只是一种实现)。未命中词汇表回退文本启发式 + 前置 TODO 注释。
   - **前后端边界 + 皮肤** — `api/server.py` **移除 `frontend/dist` 静态挂载**,`:8000` 纯 API、前端一律 `:5173`(根除"改了前端但 :8000 服务旧构建"的反复混乱);brand 主色改 TestSprite 沙绿 `#478d54` + 新增 `canvas` 灰底白卡背景;代码区浅色主题+行号+限高滚动+复制。
+- **执行中实时反馈(已做,修执行期抽屉空白)** — 根因:`agent.run` 原把 `step_callback` 放在 `loop.run()` **返回之后**一次性补发,执行期间(占满几乎全部耗时)SSE 只有 `case_start`、抽屉拿不到任何 live 数据。修:① `ReActLoop` 加 `on_step` 回调,每步落定**即时**推送 `step_change`(去掉事后补发);② `agent.run` 发**生命周期阶段**事件 `phase`(spec 翻译 / executing / asserting / codegen),orchestrator 的 `sse_callback` 透传;③ 前端 `useSuiteRun` 收 `phase` 入 `CaseRunState.phases`,`CaseDrawerBody` 加 `RunningView`(阶段清单:末项转圈、其余打勾 + 实时步骤),`case_start` 时右栏默认切到该视图;用例在本次会话内跑完(running→passed/failed)**重新拉结果**,免得抽屉停在"执行中"。参考 TestSprite 的运行态交互。
 - **下一步候选:**
-  - **[TODO] 执行期捕获真实 a11y role+name → ActionStep** — 操作元素时(ref=eNN)从当前快照查 `(role, name)` 记到 ActionStep;codegen 解析层据此对**未录入词汇表**的目标也产出稳健 `get_by_role` 定位(覆盖面 > 仅词汇表)。优先级:执行捕获 > test-id > 词汇表 > 文本兜底。
+  - **执行期捕获真实 a11y role+name → ActionStep(已做)** — `page_probe` 解析快照里每个节点的 `ref`(`A11yNode.ref` + `build_ref_index(text)→{ref:node}`);`react_loop` 在操作元素时(`browser_click/type/...` 带 `ref`)从**上一份观察快照**的 ref 索引回查真实 `(role, name)`,连同当前业务步骤 `target` 记到 `ActionStep`(`element_role`/`element_name`/`step_target`)。`codegen/locators.py::locators_from_steps` 据此对**未录入词汇表**的目标也产出稳健 `get_by_role` 定位;`agent.run` 把它 overlay 到词汇表解析结果之上(**执行捕获优先**:`{**vocab, **captured}`)。仅 role+name 齐备才采纳(role 无 name 过宽,反不如词汇表)。
   - 阶段五(用例管理平台集成,规格"现在不做");ReAct 早停护栏 / 真实内网用例 live 验证。
-- 单测数量以 `python -m pytest -q` 实跑为准(当前约 321;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
+- 单测数量以 `python -m pytest -q` 实跑为准(当前约 325;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
 
 T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规格)与 §6(实施计划)。
 
@@ -125,6 +127,10 @@ T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规
 - **per-run 数据别按 case_id 落平文件**:会被后续 run 覆盖、抽屉串味;优先存进 `ExecutionRecord`。
 - **误判结论要随证据回收**:文档里写过的根因,拿到新证据(如引号 bug)要更新,别让旧判断误导后人。
 - **本工具 bash cwd 跨调用保持**:`cd frontend` 后下一条命令仍在 frontend,git 操作记得回根目录。
+- **单事件循环会被同步活儿饿死**:uvicorn 默认单进程/单 loop/单线程,无锁、协作式(只在 `await` 让出)。长任务(用例执行)跑在 API 共用 loop 上时,链路里**任何不让出的同步代码**(快照解析、库的同步开销、CPU)都会让**所有 HTTP 请求 pending**——表象像"DB 锁/崩溃",实为 loop 被占。诊断要点:**连无 DB 的接口也 pending = loop 阻塞**(非 DB 锁)。根治不是逐行挪线程(打地鼠),而是把执行**整体搬出 API loop**(独立线程+独立 loop+独立 Store;SSE 经 `call_soon_threadsafe` 桥接)。SQLAlchemy async engine **绑定创建它的 loop**,跨 loop 必须各用各的 Store。
+- **SQLite WAL 必须在事务外、连接级设**:`PRAGMA journal_mode=WAL` 在 `engine.begin()`(事务)里会被**静默忽略**;要用 connect 监听器逐连接设,否则默认 rollback-journal 下写阻塞读。
+- **本机 Python 是 embeddable 版**:`~/python/python`,`sys.path` 锁定(有 `._pth`),跑临时脚本需 `sys.path.insert(0, os.getcwd())`;pytest 正常(自带 rootdir 注入)。
+- **`--reload` 不能监视运行时产物目录**:codegen 执行通过后写 `storage/generated/*.py`,默认 `uvicorn --reload` 监视项目目录 → **检测到这些写入就重启整个后端**,后果是打断正在跑的 run、SSE 断开、重启窗口内**所有 HTTP 请求 pending**(曾被误判成事件循环/DB/GIL/代理问题,绕了一大圈)。用 `scripts/serve.py`(`reload_dirs` 只限源码)。诊断启发:**"一批请求 pending 后又集中恢复" + 日志里有 `Shutting down`/`Started server process` = 服务在重启**,不是 handler 慢。`--reload-exclude "storage/*"` 在 Windows 上 `Path.match` 不一定命中,用 `reload_dirs` 白名单更稳。
 
 ## 常用命令
 
@@ -148,8 +154,10 @@ python cli/run_case.py --excel examples/saucedemo_cases.xlsx --case-id TC101 --b
 python cli/run_case.py --excel <用例.xlsx> --case-id <ID> --spec-only   # 只生成并打印 TestSpec
 python cli/run_case.py --check-llm                                       # LLM 连通性自检
 
-# 启动 API 服务
-uvicorn api.server:app --reload --port 8000
+# 启动 API 服务(dev 启动器:--reload 只监视源码目录)
+python scripts/serve.py
+# ⚠️ 别直接 `uvicorn api.server:app --reload`:codegen 执行通过后写 storage/generated/*.py,
+#    默认 reload 监视项目目录会因此重启后端、打断正在跑的 run、令所有请求 pending。
 
 # 启动前端开发服务器
 cd frontend && npm install && npm run dev

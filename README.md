@@ -20,7 +20,7 @@
 | 四: 工程化界面 | T-23~T-27(FastAPI 后端/React 前端/SSE/Repository 抽象层) | ✅ 完成 |
 | 五: 用例管理集成 | 预留 `external_id` | 🔜 待定 |
 
-**测试: 321 passed / 1 skipped**(另 2 个 Windows 平台预存在失败:截图目录 / 命令替换)
+**测试: 334 passed / 1 skipped**(另 2 个 Windows 平台预存在失败:截图目录 / 命令替换)
 
 ## 实现原则(务必遵守)
 
@@ -64,7 +64,9 @@ python -m pytest -q
 
 ```bash
 # API 服务
-uvicorn api.server:app --reload --port 8000
+# 用 dev 启动器(--reload 只监视源码;直接 uvicorn --reload 会因 codegen 写
+# storage/generated/*.py 触发重启、打断正在跑的 run)
+python scripts/serve.py
 
 # 前端开发服务器
 cd frontend && npm run dev
@@ -97,7 +99,7 @@ T-agent/
 │       ├── components/ # RootLayout/SuiteLayout/IconRail/Drawer/CaseDrawerBody/Sidebar/...
 │       └── api/      #   client.ts(API 封装)
 ├── cli/              # 命令行入口
-├── tests/            # 单元测试(321 passed)
+├── tests/            # 单元测试(334 passed)
 ├── examples/         # 验收入口 + saucedemo 用例
 ├── 实现规格说明书.md  # 唯一真相源:所有模块详细规格
 └── 产品设计文档_v2.0.md # 产品设计原文
