@@ -502,8 +502,9 @@ export default function CaseDrawerBody({
           // index 即后端全局 step_no(与截图文件名 step_NNN.png 一致),不能 +1
           no: s.index,
           label: prettyLive(s.description),
-          // 非 NOISE 的浏览器动作执行时已逐帧落盘截图;取不到时 <Shot> 回退占位
-          hasShot: true,
+          // 用后端回传的真实截图字段判断有无图:失败/重试步、快照步并不落图,
+          // 一律假设有图会去取不存在的 step_NNN.png 报 404 显示「无截图」
+          hasShot: !!s.screenshot,
           state: s.status === "done" ? ("done" as const) : ("running" as const),
         }));
     }
@@ -664,13 +665,13 @@ export default function CaseDrawerBody({
               <h3 className="text-sm font-medium text-surface-900">
                 {selStep.label}
               </h3>
-              {runId ? (
+              {runId && selStep.hasShot ? (
                 <div className="max-w-xl">
                   <Shot src={shotUrl(selStep.no)} alt={selStep.label} />
                 </div>
               ) : (
                 <p className="text-sm text-gray-400">
-                  该步骤无截图（执行后生成）
+                  {runId ? "该步骤无截图（快照/失败步不落图）" : "该步骤无截图（执行后生成）"}
                 </p>
               )}
               {selStep.url && (

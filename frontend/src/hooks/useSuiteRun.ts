@@ -12,6 +12,7 @@ export interface StepStatus {
   index: number;
   status: string;
   description: string;
+  screenshot?: string | null; // 该步真实截图文件名(None=无图,如快照/失败步)
 }
 
 export interface PhaseStatus {
@@ -131,6 +132,7 @@ export function useSuiteRun(suiteId: string | undefined) {
                 index: d.step_index as number,
                 status: d.status as string,
                 description: d.description as string,
+                screenshot: (d.screenshot as string | null) ?? null,
               },
             ],
           }));

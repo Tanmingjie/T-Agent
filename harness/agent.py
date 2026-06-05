@@ -200,6 +200,9 @@ class TestCaseAgent:
                         "step_index": step.step_no,
                         "status": "done",
                         "description": desc,
+                        # 真实截图文件名(None=该步未截图,如快照/失败步)→ 前端据此判断有无图,
+                        # 不再一律假设有图(否则失败/重试步会去取不存在的 step_NNN.png 报 404)
+                        "screenshot": step.screenshot,
                     },
                 )
             except Exception:  # noqa: BLE001
