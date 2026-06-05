@@ -34,6 +34,7 @@ from harness.step_plan import StepPlan
 from harness.tools import ToolRegistry
 from input.models import Assertion, ExecutionRecord, TestCase, TestSpec
 from intelligence.pre_analysis import SpecGenerator
+from intelligence.scanner import Scanner
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +60,10 @@ _CONTROL_TOOLS = {"mark_step_done"}
 _NO_SHOT_TOOLS = {"browser_snapshot", "browser_take_screenshot"}
 # 截图开关:默认开,env MCP_SCREENSHOT=0 关闭
 _CAPTURE_SCREENSHOTS = os.getenv("MCP_SCREENSHOT", "1") != "0"
+
+# 词汇表增量扫描(策略C)开关:默认开,env VOCAB_SCAN=0 关闭。
+# 执行结束后复用执行期已捕获的 a11y 快照(无需额外开浏览器),独立 context 提炼并库。
+_INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "1") != "0"
 
 # 生成代码落盘目录(与 api/routers/results.py 的 GENERATED_ROOT 一致)
 _GENERATED_ROOT = "storage/generated"
@@ -352,6 +357,9 @@ class TestCaseAgent:
             except Exception as e:  # noqa: BLE001 — 代码生成失败不影响用例结果
                 logger.warning("用例 %s 代码生成失败:%s", case.id, e)
 
+        # —— 词汇表增量扫描(策略C):执行结束后复用已见快照提炼业务词→元素映射并库 ——
+        await self._incremental_scan(result, emit_phase)
+
         logger.info(
             "用例 %s 执行完毕:%s(LLM 自报=%s,停因=%s)",
             case.id,
@@ -360,6 +368,40 @@ class TestCaseAgent:
             result.stop_reason.value,
         )
         return record
+
+    async def _incremental_scan(self, result, emit_phase) -> None:
+        """执行期增量扫描(策略C):复用 ReAct 期间已捕获的 a11y 快照,独立 context 提炼
+        「业务词 → UI 元素」映射并入词汇表(手动条目优先,不被覆盖)。
+
+        不额外开浏览器、不污染主 Agent;best-effort,失败只告警不影响用例结果。
+        仅当注入了带 VocabularyManager 的 resolver(即真正接了词汇表持久化)时才扫描。
+        """
+        if not _INCREMENTAL_SCAN or self.vocab_resolver is None:
+            return
+        manager = getattr(self.vocab_resolver, "manager", None)
+        if manager is None:
+            return
+
+        # 收集执行期见过的页面快照(tool_result 里含 a11y ref 即为快照),按 URL 去重取最丰富一份
+        by_url: dict[str, str] = {}
+        for s in result.action_steps:
+            txt = s.tool_result or ""
+            if "[ref=" not in txt:
+                continue
+            url = s.url or ""
+            if len(txt) > len(by_url.get(url, "")):
+                by_url[url] = txt
+        if not by_url:
+            return
+
+        await emit_phase("scanning", "提炼页面词汇表")
+        login_role = getattr(self.vocab_resolver, "login_role", "") or ""
+        scanner = Scanner(self.llm)
+        for snapshot_text in by_url.values():
+            try:
+                await scanner.scan_and_save(snapshot_text, login_role=login_role, manager=manager)
+            except Exception as e:  # noqa: BLE001 — 扫描失败不影响用例结果
+                logger.warning("词汇表增量扫描失败:%s", e)
 
     def _token_usage(self) -> int:
         fn = getattr(self.llm, "usage_summary", None)

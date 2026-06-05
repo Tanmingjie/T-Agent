@@ -207,6 +207,72 @@ async def test_scanner_bad_json_empty_vocab():
     assert vocab.vocabulary == {}
 
 
+# ── 策略C:执行期增量扫描接入 agent ─────────────────────────
+
+
+async def test_agent_incremental_scan_persists_from_run(store):
+    """agent._incremental_scan 复用执行期快照(action_steps.tool_result)增量并库。"""
+    from harness.agent import TestCaseAgent
+    from harness.react_loop import ReActResult
+    from input.models import ActionStep
+    from intelligence.vocabulary import VocabularyManager, VocabularyResolver
+
+    llm = _FakeLLM(
+        json.dumps({"提交": {"role": "button", "name": "保存并提交"}}, ensure_ascii=False)
+    )
+    resolver = VocabularyResolver(VocabularyManager(store), login_role="admin")
+    agent = TestCaseAgent(llm=llm, mcp=None, vocab_resolver=resolver)
+
+    result = ReActResult(
+        action_steps=[
+            # 非快照步(无 ref)→ 忽略
+            ActionStep(step_no=1, tool_name="mark_step_done", tool_result="已完成第 1 步"),
+            # 快照步(含 ref)→ 提炼并库
+            ActionStep(
+                step_no=2,
+                tool_name="browser_snapshot",
+                tool_result=SNAPSHOT,
+                url="https://intranet/order/9",
+            ),
+        ]
+    )
+
+    async def _noop_phase(phase, label):
+        pass
+
+    await agent._incremental_scan(result, _noop_phase)
+
+    got = await resolver.manager.resolve(
+        "提交", url="https://intranet/order/9", page_title="订单详情", login_role="admin"
+    )
+    assert got is not None and got["name"] == "保存并提交"
+    assert got.get("source") == "ai"
+
+
+async def test_agent_incremental_scan_skips_without_snapshots(store):
+    """无任何带 ref 的快照时,不调用 LLM、不写库(best-effort 早退)。"""
+    from harness.agent import TestCaseAgent
+    from harness.react_loop import ReActResult
+    from input.models import ActionStep
+    from intelligence.vocabulary import VocabularyManager, VocabularyResolver
+
+    class _BoomLLM(LLMClient):
+        async def chat(self, messages, tools=None, **kwargs):
+            raise AssertionError("无快照不应触发 LLM 提炼")
+
+    resolver = VocabularyResolver(VocabularyManager(store))
+    agent = TestCaseAgent(llm=_BoomLLM(), mcp=None, vocab_resolver=resolver)
+    result = ReActResult(
+        action_steps=[ActionStep(step_no=1, tool_name="mark_step_done", tool_result="x")]
+    )
+
+    async def _noop_phase(phase, label):
+        pass
+
+    await agent._incremental_scan(result, _noop_phase)  # 不应抛
+    assert await store.list_vocabularies() == []
+
+
 # ── 注入增强:用词汇表改写 TestSpec 目标 ────────────────────
 
 

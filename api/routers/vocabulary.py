@@ -66,13 +66,20 @@ async def delete_vocabulary(
 
 
 @router.post("/vocabulary/scan")
-async def trigger_scan(repo=Depends(get_repo), store=Depends(lambda: None)):
-    """触发页面扫描(调用 intelligence/scanner.py)。
+async def trigger_scan():
+    """说明扫描策略(策略C:执行期增量)。
 
-    注意:扫描需要浏览器连接,本路由目前返回提示;实际扫描在 Agent 执行时由
-    intelligence/scanner.py 的 scan_and_save 完成。
+    页面扫描需要一个**已登录、已导航到目标页的活浏览器**取 A11y 快照,孤立的本接口
+    没有浏览器上下文,无法独立扫描。实际扫描在 **Suite 执行时自动进行**:
+    ``harness/agent.py`` 执行结束后复用 ReAct 期间捕获的快照,调用
+    ``intelligence/scanner.py`` 的 ``scan_and_save`` 增量并库(AI 来源,手动条目优先)。
+    可用环境变量 ``VOCAB_SCAN=0`` 关闭。
     """
     return {
         "ok": True,
-        "message": "扫描已触发,词汇表将在执行过程中增量更新。请执行 Suite 以触发实际扫描。",
+        "scanned": False,
+        "message": (
+            "页面扫描在执行 Suite 时自动进行:用例跑完后会复用执行期的页面快照,"
+            "自动提炼业务词→元素映射并入词汇表。请执行一个 Suite,完成后回此页刷新查看新增词条。"
+        ),
     }

@@ -28,6 +28,7 @@ export default function VocabularyPage() {
   const [items, setItems] = useState<Vocab[]>([]);
   const [query, setQuery] = useState("");
   const [scanning, setScanning] = useState(false);
+  const [scanMsg, setScanMsg] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [newPage, setNewPage] = useState<Vocab | null>(null);
 
@@ -47,9 +48,13 @@ export default function VocabularyPage() {
 
   async function scan() {
     setScanning(true);
+    setScanMsg(null);
     try {
-      await apiPost("/vocabulary/scan");
+      const r = await apiPost<{ message?: string }>("/vocabulary/scan");
       await load();
+      setScanMsg(r.message ?? "已触发。词汇表在执行 Suite 时自动增量更新。");
+    } catch (e) {
+      setScanMsg(`扫描请求失败:${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setScanning(false);
     }
@@ -114,6 +119,19 @@ export default function VocabularyPage() {
           </button>
         </div>
       </div>
+
+      {scanMsg && (
+        <div className="mb-4 flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
+          <span className="mt-0.5">ℹ️</span>
+          <span className="flex-1">{scanMsg}</span>
+          <button
+            onClick={() => setScanMsg(null)}
+            className="text-blue-400 hover:text-blue-600"
+          >
+            ✕
+          </button>
+        </div>
+      )}
 
       <div className="flex items-center gap-2 mb-3">
         <input
