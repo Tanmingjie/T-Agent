@@ -137,3 +137,21 @@ def async_event_approver(event: asyncio.Event, result_holder: dict) -> Approver:
         return result_holder.get("approved", False)
 
     return _wait_for_approval
+
+
+def threading_event_approver(event, result_holder: dict, timeout: float = 300.0) -> Approver:
+    """基于 ``threading.Event`` 的 approver(**跨线程**:执行在 worker loop,审批在 API loop)。
+
+    asyncio.Event 不能跨事件循环 set;改用 threading.Event:worker 侧用
+    ``run_in_executor`` 等待(不占事件循环),API 的审批端点在另一线程 ``event.set()``。
+    """
+
+    async def _wait(req: PermissionRequest) -> bool:
+        loop = asyncio.get_running_loop()
+        got = await loop.run_in_executor(None, event.wait, timeout)
+        if not got:
+            logger.warning("Permission 超时 %ss, 自动拒绝: %s", timeout, req.reason)
+            return False
+        return result_holder.get("approved", False)
+
+    return _wait

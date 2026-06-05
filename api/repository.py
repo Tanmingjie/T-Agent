@@ -300,14 +300,21 @@ async def get_suite_settings(store: Store, suite_id: str) -> dict:
     async with store._sf() as s:
         row = await s.get(SuiteSettingsRow, suite_id)
         if row is None:
-            return {"suite_id": suite_id, "permission_mode": "trust"}
-        return {"suite_id": row.suite_id, "permission_mode": row.permission_mode}
+            return {"suite_id": suite_id, "permission_mode": "trust", "parallelism": 1}
+        return {
+            "suite_id": row.suite_id,
+            "permission_mode": row.permission_mode,
+            "parallelism": row.parallelism,
+        }
 
 
-async def set_suite_settings(store: Store, suite_id: str, permission_mode: str) -> None:
+async def set_suite_settings(
+    store: Store, suite_id: str, permission_mode: str, parallelism: int = 1
+) -> None:
     row = SuiteSettingsRow(
         suite_id=suite_id,
         permission_mode=permission_mode,
+        parallelism=max(1, int(parallelism)),
         updated_at=time.time(),
     )
     async with store._sf() as s:

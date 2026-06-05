@@ -19,7 +19,7 @@ import asyncio
 import logging
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Coroutine
+from typing import Any, AsyncContextManager, Callable, Coroutine
 
 from harness.hooks import AFTER_SUITE, BEFORE_SUITE, ExecutionContext, HookManager
 from input.models import ExecutionRecord, Suite, TestCase
@@ -27,6 +27,8 @@ from input.models import ExecutionRecord, Suite, TestCase
 logger = logging.getLogger(__name__)
 
 SSECallback = Callable[[str, dict[str, Any]], Coroutine[Any, Any, None]] | None
+# 每条用例产出独立 agent(自带独立 MCP)的工厂:`async with agent_factory() as agent`
+AgentFactory = Callable[[], AsyncContextManager[Any]]
 
 
 @dataclass
@@ -52,8 +54,16 @@ class SuiteResult:
 class Orchestrator:
     """Suite 调度器。"""
 
-    def __init__(self, agent, hooks: HookManager | None = None) -> None:
+    def __init__(
+        self,
+        agent=None,
+        hooks: HookManager | None = None,
+        agent_factory: "AgentFactory | None" = None,
+    ) -> None:
+        # agent:共享单实例(串行,向后兼容)。agent_factory:每条用例产出**自带独立 MCP**
+        # 的 agent(async context manager),并发执行的前提(各用例各自浏览器、各自收尾)。
         self.agent = agent
+        self.agent_factory = agent_factory
         self.hooks = hooks
 
     async def run_suite(
@@ -62,10 +72,18 @@ class Orchestrator:
         suite: Suite | None = None,
         sse_callback: SSECallback = None,
         run_id: str | None = None,
+        on_record: Callable[[ExecutionRecord], Coroutine[Any, Any, None]] | None = None,
+        parallelism: int = 1,
     ) -> SuiteResult:
         suite_id = suite.id if suite else None
         result = SuiteResult(suite_id=suite_id)
         suite_ctx = ExecutionContext(suite=suite)
+
+        # 并发需 agent_factory(各用例独立 MCP);无工厂时只能串行,clamp 到 1 并告警。
+        parallelism = max(1, int(parallelism))
+        if parallelism > 1 and self.agent_factory is None:
+            logger.warning("parallelism=%d 但未提供 agent_factory,降级为串行", parallelism)
+            parallelism = 1
 
         # before_suite:失败则中止整个 Suite
         if self.hooks is not None:
@@ -84,30 +102,41 @@ class Orchestrator:
                 "suite_start", {"run_id": run_id or "pending", "total_cases": len(cases)}
             )
 
-        # 串行执行用例,逐个隔离
-        case_idx = 0
-        for case in cases:
-            case_idx += 1
-            if sse_callback:
-                await sse_callback(
-                    "case_start",
-                    {"case_id": case.id, "title": case.name, "index": case_idx},
-                )
+        sem = asyncio.Semaphore(parallelism)
 
-            record = await self._run_one(case, suite, sse_callback=sse_callback, run_id=run_id)
+        async def _run_case(case: TestCase, case_idx: int) -> ExecutionRecord:
+            async with sem:  # 并发上限:同时最多 parallelism 条用例在跑
+                if sse_callback:
+                    await sse_callback(
+                        "case_start",
+                        {"case_id": case.id, "title": case.name, "index": case_idx},
+                    )
+                record = await self._run_one(case, suite, sse_callback=sse_callback, run_id=run_id)
+                record.suite_id = suite_id
 
-            if sse_callback:
-                await sse_callback(
-                    "case_result",
-                    {
-                        "case_id": case.id,
-                        "verdict": "PASS" if record.passed else "FAIL",
-                        "index": case_idx,
-                    },
-                )
+                # 先持久化该用例结果,**再**发 case_result —— 前端收到完成事件会立即回拉
+                # 结果,若此时尚未落库就会 404(抽屉"看不到执行完成的数据")。
+                if on_record is not None:
+                    try:
+                        await on_record(record)
+                    except Exception as e:  # noqa: BLE001
+                        logger.warning("用例 %s 结果持久化失败:%s", case.id, e)
 
-            record.suite_id = suite_id
-            result.records.append(record)
+                if sse_callback:
+                    await sse_callback(
+                        "case_result",
+                        {
+                            "case_id": case.id,
+                            "verdict": "PASS" if record.passed else "FAIL",
+                            "index": case_idx,
+                        },
+                    )
+                return record
+
+        # gather 保留输入顺序;用例间隔离由 _run_one 的 try/except 保证(A 异常不拖累 B)。
+        result.records = list(
+            await asyncio.gather(*(_run_case(c, i) for i, c in enumerate(cases, start=1)))
+        )
 
         if self.hooks is not None:
             await self.hooks.run(AFTER_SUITE, suite_ctx)
@@ -148,13 +177,13 @@ class Orchestrator:
             if sse_callback is not None:
                 await sse_callback(event, data)
 
+        cb = _step_cb if sse_callback else None
         try:
-            return await self.agent.run(
-                case,
-                ctx=ctx,
-                step_callback=_step_cb if sse_callback else None,
-                run_id=run_id,
-            )
+            # agent_factory:每条用例独立 agent + MCP(并发隔离);否则用共享 agent(串行)。
+            if self.agent_factory is not None:
+                async with self.agent_factory() as agent:
+                    return await agent.run(case, ctx=ctx, step_callback=cb, run_id=run_id)
+            return await self.agent.run(case, ctx=ctx, step_callback=cb, run_id=run_id)
         except Exception as e:  # noqa: BLE001 — 用例间隔离:A 的异常不拖垮 B
             logger.warning("用例 %s 执行异常,记为 FAIL:%s", case.id, e)
             return ExecutionRecord(

@@ -9,6 +9,8 @@ venv/
 
 # 本地数据 / 产物
 *.db
+*.db-wal
+*.db-shm
 *.sqlite3
 storage/screenshots/*
 storage/generated/*
@@ -22,6 +24,8 @@ storage/generated/*
 # 系统
 .DS_Store
 .env
+.env.local
+frontend/.env.local
 
 # 前端
 frontend/node_modules/
@@ -43,5 +47,6 @@ frontend/dist/
 # UI 研究产物 (参考截图/快照)
 storage/ui_research/
 
-# 开发辅助脚本
-scripts/
+# 开发辅助脚本(serve.py 是文档化的官方启动器,需纳入版本控制)
+scripts/*
+!scripts/serve.py

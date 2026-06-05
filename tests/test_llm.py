@@ -115,13 +115,15 @@ def _patch_completion(monkeypatch, responses):
     """responses: list 依次返回;记录每次调用的 messages。"""
     calls = {"count": 0, "messages": []}
 
-    async def fake_acompletion(**kwargs):
+    # 现在 _complete 走 asyncio.to_thread(litellm.completion, ...)(同步调用挪线程,
+    # 不占事件循环),故 patch 同步 completion。
+    def fake_completion(**kwargs):
         calls["messages"].append(kwargs.get("messages"))
         idx = min(calls["count"], len(responses) - 1)
         calls["count"] += 1
         return responses[idx]
 
-    monkeypatch.setattr(llm_mod.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_mod.litellm, "completion", fake_completion)
     return calls
 
 
@@ -216,11 +218,11 @@ async def test_api_base_key_passed_through(monkeypatch):
     resp = _resp(_msg(content="ok"))
     captured = {}
 
-    async def fake_acompletion(**kwargs):
+    def fake_completion(**kwargs):
         captured.update(kwargs)
         return resp
 
-    monkeypatch.setattr(llm_mod.litellm, "acompletion", fake_acompletion)
+    monkeypatch.setattr(llm_mod.litellm, "completion", fake_completion)
     client = LiteLLMClient(model="m", api_base="http://h", api_key="k")
     await client.chat([{"role": "user", "content": "a"}], tools=[{"t": 1}])
     assert captured["model"] == "m"

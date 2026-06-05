@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -281,7 +282,11 @@ class LiteLLMClient(LLMClient):
         if tools:
             call_kwargs["tools"] = tools
         call_kwargs["timeout"] = 120
-        return await litellm.acompletion(**call_kwargs)
+        # 关键:用同步 litellm.completion + to_thread 把整次调用(含 litellm 的同步开销:
+        # tiktoken 计数 / 日志 / 回调,会随快照历史增大而变重)挪到**工作线程**,不占用
+        # uvicorn 的事件循环。否则执行期间 LLM 调用会周期性冻结单一事件循环,导致所有
+        # HTTP 接口在用例执行中/收尾时 pending(实测现象)。串行执行,单次仅一线程。
+        return await asyncio.to_thread(litellm.completion, **call_kwargs)
 
     def _parse(self, resp: Any) -> "_Parsed":
         """从 litellm 响应解析出规范化结果 + 容错。"""

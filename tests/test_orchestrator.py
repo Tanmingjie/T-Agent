@@ -6,6 +6,9 @@ TDD:先定义调度/隔离/汇总行为,再实现 harness/orchestrator.py。
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import asynccontextmanager
+
 from harness.hooks import AFTER_SUITE, BEFORE_SUITE, HookError, HookManager
 from harness.orchestrator import Orchestrator, SuiteResult
 from input.models import ExecutionRecord, Suite, TestCase
@@ -94,6 +97,71 @@ async def test_before_after_suite_hooks_run_once():
         _cases("A", "B"), suite=Suite(id="S", name="s", base_url="http://x")
     )
     assert events == ["before", "after"]
+
+
+# ── 并发执行(agent_factory + parallelism) ──────────────────
+
+
+class _ConcAgent:
+    """并发用 fake agent:run 时记录瞬时并发数,sleep 制造重叠窗口。"""
+
+    def __init__(self, tracker, fail_ids=None, raise_ids=None):
+        self.tracker = tracker
+        self.fail_ids = set(fail_ids or [])
+        self.raise_ids = set(raise_ids or [])
+
+    async def run(self, case, spec=None, ctx=None, step_callback=None, run_id=None):
+        self.tracker["cur"] += 1
+        self.tracker["max"] = max(self.tracker["max"], self.tracker["cur"])
+        self.tracker["calls"].append(case.id)
+        try:
+            await asyncio.sleep(0.02)  # 制造并发重叠
+            if case.id in self.raise_ids:
+                raise RuntimeError(f"用例 {case.id} 炸了")
+            return ExecutionRecord(
+                exec_id=f"e{case.id}",
+                case_id=case.id,
+                passed=case.id not in self.fail_ids,
+                start_time=0.0,
+            )
+        finally:
+            self.tracker["cur"] -= 1
+
+
+def _factory(tracker, **kw):
+    """返回一个 agent_factory(每次产出独立 _ConcAgent,模拟各用例独立 MCP)。"""
+
+    @asynccontextmanager
+    async def make():
+        yield _ConcAgent(tracker, **kw)
+
+    return make
+
+
+async def test_parallel_runs_respect_semaphore_cap():
+    tracker = {"cur": 0, "max": 0, "calls": []}
+    orch = Orchestrator(agent_factory=_factory(tracker))
+    result = await orch.run_suite(_cases("A", "B", "C", "D"), parallelism=2)
+    assert result.total == 4
+    assert [r.case_id for r in result.records] == ["A", "B", "C", "D"]  # gather 保序
+    assert tracker["max"] == 2  # 并发上限严格不超过 2,且确实并发(>1)
+
+
+async def test_parallel_isolation_with_factory():
+    tracker = {"cur": 0, "max": 0, "calls": []}
+    orch = Orchestrator(agent_factory=_factory(tracker, raise_ids=["B"]))
+    result = await orch.run_suite(_cases("A", "B", "C"), parallelism=3)
+    assert {r.case_id for r in result.records} == {"A", "B", "C"}  # B 炸不拖累 A、C
+    rec_b = [r for r in result.records if r.case_id == "B"][0]
+    assert rec_b.passed is False and "炸了" in rec_b.final_result
+
+
+async def test_parallelism_clamped_without_factory():
+    # parallelism>1 但只有共享 agent(无 factory)→ 降级串行,不报错
+    agent = _FakeAgent()
+    result = await Orchestrator(agent).run_suite(_cases("A", "B"), parallelism=4)
+    assert result.total == 2
+    assert agent.calls == ["A", "B"]
 
 
 async def test_before_suite_failure_aborts_suite():
