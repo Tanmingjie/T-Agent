@@ -151,6 +151,22 @@ async def test_chat_plain_content_no_tools(monkeypatch):
     assert not out.has_tool_calls
 
 
+async def test_chat_no_tools_json_content_not_misparsed(monkeypatch):
+    """未传 tools 时,含 "name" 子串的正常 JSON 内容**不得**被误判成坏工具调用而抛错。
+
+    回归:Scanner 要的是纯 JSON({"提交": {"role":"button","name":"保存并提交"}}),
+    内容里的 "name" 曾触发 _looks_like_tool_call → had_error → LLMToolCallError。
+    """
+    content = '{"提交": {"role": "button", "name": "保存并提交"}}'
+    resp = _resp(_msg(content=content))
+    calls = _patch_completion(monkeypatch, [resp])
+    client = LiteLLMClient(model="test/model")
+    out = await client.chat([{"role": "user", "content": "提炼"}])  # 无 tools
+    assert out.content == content
+    assert not out.has_tool_calls
+    assert calls["count"] == 1  # 不重试、不抛错
+
+
 async def test_chat_lenient_repair_bad_args(monkeypatch):
     # tool_calls 字段在,但 arguments 是带尾逗号的坏 JSON → 宽松修复,不重试
     resp = _resp(_msg(content="", tool_calls=[_tc("click", "{'ref': 'btn1',}")]))

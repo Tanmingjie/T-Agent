@@ -21,7 +21,12 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
 
-import litellm
+# 内网无法访问 GitHub:LiteLLM 默认在 import 时联网拉模型价目表(成本估算用),
+# 握手超时后回退本地备份并刷 warning。强制用包内自带的本地备份,既消 warning
+# 又免去每次启动的握手等待。需在 import litellm **之前**设置。(用户已显式可覆盖)
+os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
+
+import litellm  # noqa: E402
 
 # ── 数据结构 ────────────────────────────────────────────────────────
 
@@ -228,8 +233,9 @@ class LiteLLMClient(LLMClient):
         **kwargs: Any,
     ) -> LLMResponse:
         """一次对话。tools 非空时启用 tool-calling 并做格式容错。"""
+        expect_tools = bool(tools)
         resp = await self._complete(messages, tools, **kwargs)
-        parsed = self._parse(resp)
+        parsed = self._parse(resp, expect_tools)
 
         # 仅当「模型疑似尝试调用工具但格式坏了」时才重试
         attempts = 0
@@ -241,7 +247,7 @@ class LiteLLMClient(LLMClient):
                 {"role": "user", "content": _RETRY_NUDGE},
             ]
             resp = await self._complete(convo, tools, **kwargs)
-            parsed = self._parse(resp)
+            parsed = self._parse(resp, expect_tools)
 
         if parsed.error:
             raise LLMToolCallError(parsed.error, raw=resp)
@@ -288,8 +294,13 @@ class LiteLLMClient(LLMClient):
         # HTTP 接口在用例执行中/收尾时 pending(实测现象)。串行执行,单次仅一线程。
         return await asyncio.to_thread(litellm.completion, **call_kwargs)
 
-    def _parse(self, resp: Any) -> "_Parsed":
-        """从 litellm 响应解析出规范化结果 + 容错。"""
+    def _parse(self, resp: Any, expect_tools: bool = True) -> "_Parsed":
+        """从 litellm 响应解析出规范化结果 + 容错。
+
+        ``expect_tools=False``(调用方未传 tools,如 Scanner / SpecGenerator 要的是
+        纯文本/JSON 内容)时**跳过 content 里的 tool_call 兜底与报错**——否则正常
+        内容里只要含 ``"name"`` 子串就会被误判成坏掉的工具调用而抛错。
+        """
         usage = _extract_usage(resp)
         self.total_usage.add(usage)
 
@@ -325,8 +336,8 @@ class LiteLLMClient(LLMClient):
                     continue
             calls.append(ToolCall(name=name, arguments=args, id=getattr(tc, "id", "") or ""))
 
-        # ② 标准字段没拿到调用 → 尝试从 content 兜底提取
-        if not calls and content:
+        # ② 标准字段没拿到调用 → 尝试从 content 兜底提取(仅当调用方期望工具调用)
+        if expect_tools and not calls and content:
             for c in extract_tool_calls_from_content(content):
                 calls.append(ToolCall(name=c["name"], arguments=c["arguments"]))
             # content 里确实像工具调用却没提取出来,记为错误以触发重试
