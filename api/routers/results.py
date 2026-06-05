@@ -65,6 +65,7 @@ def _build_history(record):
                 "model_output": {
                     "reasoning": s.reasoning,
                     "intent": s.intent,
+                    "prompt": s.prompt,  # 供步骤详情「查看 prompt」(执行完成后仍可看)
                     "tool_name": s.tool_name,
                     "tool_input": s.tool_input,
                 },

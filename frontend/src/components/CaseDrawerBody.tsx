@@ -687,16 +687,6 @@ export default function CaseDrawerBody({
                   URL: {selStep.url}
                 </p>
               )}
-              {selStep.toolResult && (
-                <div>
-                  <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1">
-                    执行结果
-                  </h4>
-                  <pre className="text-xs bg-white border border-gray-200 rounded-md p-3 whitespace-pre-wrap text-gray-600 max-h-48 overflow-auto">
-                    {selStep.toolResult}
-                  </pre>
-                </div>
-              )}
               {selStep.prompt && (
                 <div>
                   <div className="flex items-center justify-between mb-1">
