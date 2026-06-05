@@ -49,7 +49,7 @@ const STATUS_META: Record<
   running: {
     label: "执行中",
     icon: <Loader2 size={14} className="animate-spin" />,
-    cls: "text-brand-600",
+    cls: "text-blue-600",
   },
   passed: { label: "通过", icon: <CheckCircle size={14} />, cls: "text-brand-700" },
   failed: { label: "失败", icon: <XCircle size={14} />, cls: "text-red-600" },
@@ -226,7 +226,9 @@ export default function SuiteCasesPage() {
           </div>
           <div className="h-1.5 bg-gray-100 rounded-full overflow-hidden">
             <div
-              className="h-full bg-brand-600 transition-all duration-300"
+              className={`h-full transition-all duration-300 ${
+                run.done ? "bg-brand-600" : "bg-blue-500"
+              }`}
               style={{
                 width: `${cases.length ? (completed / cases.length) * 100 : 0}%`,
               }}

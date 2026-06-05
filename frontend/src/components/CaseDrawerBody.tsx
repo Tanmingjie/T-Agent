@@ -135,7 +135,7 @@ const STATUS_PILL: Record<
   running: {
     label: "执行中",
     icon: <Loader2 size={15} className="animate-spin" />,
-    cls: "text-brand-600",
+    cls: "text-blue-600",
   },
   passed: {
     label: "通过",
@@ -342,7 +342,7 @@ function RunningView({
 }) {
   return (
     <div className="p-6 space-y-5 max-w-2xl">
-      <div className="flex items-center gap-2 text-brand-600">
+      <div className="flex items-center gap-2 text-blue-600">
         <Loader2 size={18} className="animate-spin" />
         <span className="text-sm font-medium">
           {status === "healing" ? "自愈中…" : "测试运行中…"}
@@ -354,7 +354,7 @@ function RunningView({
       <ul className="space-y-2.5">
         {phases.length === 0 && (
           <li className="flex items-center gap-2.5 text-sm text-gray-500">
-            <Loader2 size={15} className="text-brand-600 animate-spin" />
+            <Loader2 size={15} className="text-blue-600 animate-spin" />
             正在准备执行环境…
           </li>
         )}
@@ -365,7 +365,7 @@ function RunningView({
               {active ? (
                 <Loader2
                   size={15}
-                  className="text-brand-600 animate-spin shrink-0"
+                  className="text-blue-600 animate-spin shrink-0"
                 />
               ) : (
                 <CheckCircle size={15} className="text-brand-600 shrink-0" />
@@ -571,7 +571,7 @@ export default function CaseDrawerBody({
               className={`w-full text-left rounded-lg border p-3 transition-colors ${
                 sel.kind === "result"
                   ? !result
-                    ? "border-brand-300 bg-brand-50/60"
+                    ? "border-blue-300 bg-blue-50/60"
                     : result.passed
                       ? "border-brand-300 bg-brand-50/60"
                       : "border-red-300 bg-red-50/60"
@@ -582,7 +582,7 @@ export default function CaseDrawerBody({
                 {!result ? (
                   <Loader2
                     size={16}
-                    className="text-brand-600 shrink-0 animate-spin"
+                    className="text-blue-600 shrink-0 animate-spin"
                   />
                 ) : result.passed ? (
                   <CheckCircle size={16} className="text-brand-600 shrink-0" />
@@ -625,7 +625,7 @@ export default function CaseDrawerBody({
                       {s.state === "running" ? (
                         <Loader2
                           size={14}
-                          className="text-gray-400 animate-spin"
+                          className="text-blue-600 animate-spin"
                         />
                       ) : s.state === "done" ? (
                         <CheckCircle size={14} className="text-brand-600" />
