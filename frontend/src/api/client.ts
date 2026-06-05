@@ -1,15 +1,12 @@
-// API/SSE 根路径。默认走 Vite 代理(同源 /api,免 CORS)。
-// dev 下 SSE 经 node-http-proxy 长连接会阻塞并发请求(实测单开抽屉仍 pending)——
-// 设 VITE_API_BASE=http://localhost:8000/api 即**直连后端**,把代理移出流路径。
-// 生产由真实反代统一服务,无需设置。
-const BASE = import.meta.env?.VITE_API_BASE || "/api";
+// API/SSE 根路径:dev 走 Vite 代理(同源 /api,免 CORS),生产由反代统一服务。
+const BASE = "/api";
 const TIMEOUT_MS = 30000;
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
   // 调用方传入的 signal(用于取消被取代的请求)→ 触发内部 controller.abort,
-  // 让被取代的 /result、/code 立刻释放连接,避免在 HTTP/1.1 连接池上堆积 pending。
+  // 让被取代的 /result、/code 立刻释放连接,避免在 HTTP/1.1 连接池上堆积。
   if (init?.signal) {
     if (init.signal.aborted) controller.abort();
     else init.signal.addEventListener("abort", () => controller.abort());

@@ -452,19 +452,26 @@ export default function CaseDrawerBody({
     [suiteId, runId, caseInfo.id],
   );
 
-  // 打开抽屉 / 切换 run:复位并拉一次结果(执行中拿不到则为 null,走 running 视图)
+  // 打开抽屉 / 切换 run:复位并拉一次结果。执行中**不请求** /result、/code——
+  // 记录要等用例跑完才落库,执行中请求必然 404(无效请求);改走 running 视图,
+  // 待 status→passed/failed 时由下方 effect 拉取。
   useEffect(() => {
     setResult(null);
     setCode(null);
     setRightTab("preview");
     setSel(isRunning ? { kind: "result" } : { kind: "info" });
-    loadResult(true);
+    if (!isRunning) loadResult(true);
     return () => reqRef.current?.abort(); // 关抽屉/切换时取消在途请求
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [suiteId, runId, caseInfo.id]);
 
-  // 用例在本次会话内跑完(running→passed/failed):重新拉结果,免得抽屉停在"执行中"
+  // 用例在本次会话内跑完(running→passed/failed):重新拉结果,免得抽屉停在"执行中"。
+  // 只在**状态真正变化**时响应:跳过初次挂载,否则会与上面的挂载 effect 重复请求一次。
+  const prevStatus = useRef<CaseRunStatus | null>(null);
   useEffect(() => {
+    const prev = prevStatus.current;
+    prevStatus.current = status;
+    if (prev === null) return; // 初次挂载由上面的 effect 处理,这里不重复拉
     if (status === "passed" || status === "failed") loadResult(true);
     if (isRunning) setSel({ kind: "result" }); // 执行中默认停在结果栏(running 视图)
     // eslint-disable-next-line react-hooks/exhaustive-deps
