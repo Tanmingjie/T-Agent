@@ -91,6 +91,55 @@ async def test_react_loop_captures_real_role_name():
     assert snap.element_role == "" and snap.element_name == ""
 
 
+async def test_capture_survives_mark_step_done_between_ops():
+    """一次快照后连做两步(操作→mark_step_done→操作),中间无新快照:
+
+    回归 last_snapshot_text 被 mark_step_done 非快照输出覆盖的 bug——若覆盖,
+    第二步操作的 ref 索引会空、捕获漏采。两步都应拿到真实 role+name。
+    """
+    plan = StepPlan(
+        [
+            SpecStep(action="type", target="用户名输入框"),
+            SpecStep(action="click", target="登录按钮"),
+        ]
+    )
+
+    async def execute(name, arguments):
+        from harness.react_loop import ToolOutcome
+
+        handled = plan.apply_tool_call(name, arguments)
+        if handled is not None:
+            return ToolOutcome(text=handled)  # mark_step_done:无 ref
+        if name == "browser_snapshot":
+            return ToolOutcome(text=_SNAPSHOT, url="http://x/login")
+        return ToolOutcome(text="已操作", url="http://x/login")  # 操作回执:无 ref
+
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_snapshot", {})]),
+            _resp(calls=[("browser_type", {"ref": "e3", "text": "admin"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(calls=[("browser_click", {"ref": "e5"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 2})]),
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=execute,
+        step_plan=plan,
+        build_system=lambda p: "SYS",
+        max_steps=8,
+    )
+    result = await loop.run()
+
+    typed = next(s for s in result.action_steps if s.tool_name == "browser_type")
+    clicked = next(s for s in result.action_steps if s.tool_name == "browser_click")
+    assert (typed.element_role, typed.element_name) == ("textbox", "用户名")
+    # 关键:第二步操作在 mark_step_done 之后仍能回查到首份快照的 ref
+    assert (clicked.element_role, clicked.element_name) == ("button", "登录")
+
+
 def test_locators_from_steps_builds_role_and_skips_incomplete():
     steps = [
         ActionStep(step_no=1, tool_name="browser_snapshot"),  # 无捕获

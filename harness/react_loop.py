@@ -323,8 +323,10 @@ class ReActLoop:
 
                 # 观察回灌(含自愈建议)
                 messages.append({"role": "user", "content": f"[观察] {outcome.text}{obs_suffix}"})
-                # 记下本次观察快照,供下一轮 ref 回查(浏览器工具结果自带新快照)
-                if outcome.text:
+                # 记下本次观察快照,供下一轮 ref 回查。仅当观察里**真的带 ref**(浏览器工具
+                # 的 a11y 快照)才更新——否则「操作→mark_step_done」这种常见序列会用
+                # mark_step_done 的非快照输出覆盖掉快照,令下一轮 ref 索引为空、捕获漏采。
+                if outcome.text and "[ref=" in outcome.text:
                     last_snapshot_text = outcome.text
 
             # 所有步骤已落定 → 完成(交由外层跑断言裁决)
