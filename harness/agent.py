@@ -26,13 +26,21 @@ from harness.hooks import AFTER_CASE, BEFORE_CASE, ON_FAILURE, ExecutionContext,
 from harness.llm import LLMClient
 from harness.page_probe import MCPPageProbe, parse_snapshot
 from harness.permission import PermissionChecker
+from harness.precondition import (
+    ACTION_STEP,
+    AMBIGUOUS,
+    STATE_HOOK,
+    PreconditionClassifier,
+    needs_confirmation,
+    to_given_steps,
+)
 from harness.prompt import PromptBuilder
 from harness.react_loop import ReActLoop, ToolExecutor, ToolOutcome
 from harness.recorder import Recorder
 from harness.skills import SkillManager
 from harness.step_plan import StepPlan
 from harness.tools import ToolRegistry
-from input.models import Assertion, ExecutionRecord, TestCase, TestSpec
+from input.models import Assertion, ExecutionRecord, PreconditionItem, TestCase, TestSpec
 from intelligence.pre_analysis import SpecGenerator
 from intelligence.scanner import Scanner
 from intelligence.vocabulary import enhance_targets
@@ -68,6 +76,15 @@ _INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "1") != "0"
 
 # 生成代码落盘目录(与 api/routers/results.py 的 GENERATED_ROOT 一致)
 _GENERATED_ROOT = "storage/generated"
+
+# 预置条件「状态声明」关键词 → Hook 名 的默认映射(用户可在构造时覆盖)。
+# 命中即把该状态声明标为对应 Hook 负责(如「已登录」→ LoginHook,由 before_case 保证)。
+DEFAULT_HOOK_MAP = {
+    "已登录": "LoginHook",
+    "登录系统": "LoginHook",
+    "登陆": "LoginHook",
+    "登录": "LoginHook",
+}
 
 
 def _step_keywords(step_plan: StepPlan) -> list[str]:
@@ -134,6 +151,7 @@ class TestCaseAgent:
         context: str = "",
         max_steps: int = 30,
         spec_generator: SpecGenerator | None = None,
+        precondition_classifier: PreconditionClassifier | None = None,
         hooks: HookManager | None = None,
         skills: SkillManager | None = None,
         permission: PermissionChecker | None = None,
@@ -146,16 +164,74 @@ class TestCaseAgent:
         self.context = context
         self.max_steps = max_steps
         self.spec_generator = spec_generator or SpecGenerator(llm)
+        # 预置条件三分类器:默认自带一个(始终接通,不靠调用方手动注入)。
+        # 传 False 可显式关闭(纯翻译,不分类);传实例可自定义 hook_map/阈值。
+        if precondition_classifier is None:
+            self.precondition_classifier = PreconditionClassifier(llm, hook_map=DEFAULT_HOOK_MAP)
+        elif precondition_classifier is False:
+            self.precondition_classifier = None
+        else:
+            self.precondition_classifier = precondition_classifier
         self.hooks = hooks
         self.skills = skills
         self.permission = permission
         self.tools_registry = tools_registry
         self.step_callback = step_callback
         self.vocab_resolver = vocab_resolver
+        # 最近一次分类结果(供 run() 写入 ctx / 日志;generate_spec 与 run 解耦时复用)
+        self._last_precondition_items: list[PreconditionItem] = []
 
     async def generate_spec(self, case: TestCase) -> TestSpec:
-        """仅生成 TestSpec(供 CLI 先打印给用户审查)。"""
-        return await self.spec_generator.generate(case)
+        """生成 TestSpec(供 CLI 先打印给用户审查)。
+
+        含预置条件三分类(规格 §5.1/§5.2):先分类 → 把分类结果下发给翻译器
+        (引导 given 只收 action_step)→ 再**确定性**地把 action_step 合入 given,
+        避免 LLM 漏放。state_hook / ambiguous 记到 ``_last_precondition_items``。
+        """
+        items = await self._classify_preconditions(case)
+        spec = await self.spec_generator.generate(case, precondition_items=items or None)
+        if items:
+            spec = self._merge_given_from_preconditions(spec, items)
+        return spec
+
+    async def _classify_preconditions(self, case: TestCase) -> list[PreconditionItem]:
+        """对 case.preconditions 做三分类;无分类器/无预置条件时返回空列表。"""
+        self._last_precondition_items = []
+        if self.precondition_classifier is None or not case.preconditions:
+            return []
+        try:
+            items = await self.precondition_classifier.classify(case.preconditions)
+        except Exception as e:  # noqa: BLE001 — 分类失败不阻断翻译,降级为不分类
+            logger.warning("预置条件分类失败(%s):%s,降级为不分类", case.id, e)
+            return []
+        self._last_precondition_items = items
+        for it in items:
+            if it.type == STATE_HOOK:
+                logger.info("预置条件[状态声明]→ %s 负责:%s", it.hook_ref, it.text)
+        pending = needs_confirmation(items)
+        if pending:
+            logger.warning(
+                "用例 %s 有 %d 条模糊预置条件需用户确认:%s",
+                case.id,
+                len(pending),
+                "; ".join(p.text for p in pending),
+            )
+        return items
+
+    @staticmethod
+    def _merge_given_from_preconditions(spec: TestSpec, items: list[PreconditionItem]) -> TestSpec:
+        """把 action_step 类预置条件确定性合入 spec.given(按 target 去重,放在最前)。
+
+        LLM 已被引导把 action_step 放进 given,这里兜底补齐 LLM 漏放的,避免前置操作丢失。
+        """
+        derived = to_given_steps(items)
+        if not derived:
+            return spec
+        existing_targets = {g.target for g in spec.given}
+        missing = [g for g in derived if g.target not in existing_targets]
+        if not missing:
+            return spec
+        return spec.model_copy(update={"given": [*missing, *spec.given]})
 
     async def run(
         self,
@@ -233,6 +309,21 @@ class TestCaseAgent:
             # 词汇表增强(规格 §5.2):用页面真实文案改写模糊业务词("提交"→"保存并提交")。
             # 仅当本次自动生成 spec 时增强;调用方显式传入(如 CLI 审查后)的 spec 不动。
             spec = await self._enhance_spec_with_vocab(spec, case)
+
+        # 预置条件分类结果入 ctx:state_hook 要求的 Hook 名供 before_case 侧参考(P2)。
+        if self._last_precondition_items:
+            required_hooks = sorted(
+                {
+                    it.hook_ref
+                    for it in self._last_precondition_items
+                    if it.type == STATE_HOOK and it.hook_ref
+                }
+            )
+            ctx.set("required_hooks", required_hooks)
+            ctx.set(
+                "ambiguous_preconditions",
+                [it.text for it in needs_confirmation(self._last_precondition_items)],
+            )
 
         recorder.set_spec(spec)  # 存档翻译产物,供前端可视化
         await emit_spec(spec)  # 实时推送给抽屉(执行中也能看执行规格)
@@ -325,7 +416,8 @@ class TestCaseAgent:
         await emit_phase("asserting", "结构化断言裁决")
         probe = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
         await probe.refresh()  # 用例结束后抓一次终态快照
-        engine = AssertionEngine(probe, healer=healer)
+        # 数据断言(custom_tool)经 ToolRegistry 取业务真值;未注入则该类断言 skipped
+        engine = AssertionEngine(probe, healer=healer, tool_registry=self.tools_registry)
         # 聚合用例级 + 步骤级 expect 断言,避免 LLM 把断言放在 step.expect 时被漏验
         a_results = await engine.verify_all(collect_assertions(spec))
         recorder.set_case_assertions([r.to_dict() for r in a_results])

@@ -1,0 +1,43 @@
+# Custom Tool 配置示例(规格 §5.4)。
+#
+# 用途:
+#   1) 执行期 LLM 按需调用(区别于 Hook 强制执行)——如建数据、调接口准备前置。
+#   2) custom_tool 数据断言:从数据库/接口取业务真值,确定性比较(规格 §5.3#4)。
+#
+# 加载方式:
+#   CLI :  python cli/run_case.py ... --tools examples/custom_tools.yaml
+#   API :  设置环境变量 CUSTOM_TOOLS_YAML=examples/custom_tools.yaml 再启动后端
+#
+# custom_tool 断言约定(见 harness/assertion.py):
+#   target   = 工具名(下方 name)
+#   selector = 调用参数(JSON 对象字符串,可空)
+#   expected = 期望子串(给定则要求工具结果包含它;为空则结果非空且非错误即通过)
+#
+# 字段:name(必填)/ command(必填,shell,{arg} 占位用调用参数替换)/ description /
+#       parameters(JSON Schema)/ when_to_use / timeout_seconds。
+# 注:函数型工具(@registry.tool 装饰器)无法用 YAML 表达,只能在代码里注册。
+
+tools:
+  - name: db_order_status
+    description: 按订单号查询订单状态(数据断言用,返回状态文本)
+    when_to_use: 当预期是“订单状态变为X”且页面不可靠时,用本工具取库里真值
+    command: 'echo "已审批"'   # 演示用;真实环境替换为查库命令,如:psql ... -c "select status from orders where id={order_id}"
+    parameters:
+      type: object
+      properties:
+        order_id:
+          type: string
+          description: 订单号
+      required: [order_id]
+    timeout_seconds: 15
+
+  - name: http_health
+    description: 探活某 HTTP 接口,返回 HTTP 状态码
+    command: 'curl -s -o /dev/null -w "%{http_code}" {url}'
+    parameters:
+      type: object
+      properties:
+        url:
+          type: string
+      required: [url]
+    timeout_seconds: 10

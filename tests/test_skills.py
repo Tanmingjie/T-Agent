@@ -5,7 +5,14 @@ TDD:先写这些行为期望,再实现 harness/skills.py。
 
 from __future__ import annotations
 
-from harness.skills import DomainSkill, PageSkill, SkillManager, ToolSkill
+from harness.skills import (
+    DEFAULT_DOMAIN_SKILLS,
+    DomainSkill,
+    PageSkill,
+    SkillManager,
+    ToolSkill,
+    build_skill_manager,
+)
 
 # ── DomainSkill:Suite 级,始终注入 ──────────────────────────
 
@@ -94,6 +101,38 @@ def test_select_order_domain_page_tool():
     mgr.register(DomainSkill(name="D", content="d"))
     names = [s.name for s in mgr.select(url="https://x/order", keywords=["上传"])]
     assert names == ["D", "P", "T"]
+
+
+# ── build_skill_manager:基础 DomainSkill + Suite custom_prompt 接通(P3) ──
+
+
+def test_build_skill_manager_injects_defaults():
+    mgr = build_skill_manager()
+    text = mgr.render(url="http://x", keywords=[])
+    # 内置基础 DomainSkill 始终注入
+    assert text
+    for s in DEFAULT_DOMAIN_SKILLS:
+        assert s.content in text
+
+
+def test_build_skill_manager_wires_custom_prompt():
+    mgr = build_skill_manager(custom_prompt="订单状态: 待审批/已审批")
+    text = mgr.render(url="http://x", keywords=[])
+    assert "订单状态: 待审批/已审批" in text
+
+
+def test_build_skill_manager_can_skip_defaults():
+    mgr = build_skill_manager(include_defaults=False)
+    assert mgr.render(url="http://x", keywords=[]) == ""
+
+
+def test_build_skill_manager_accepts_extra_skills():
+    mgr = build_skill_manager(
+        include_defaults=False,
+        extra=[PageSkill(name="订单页", content="PAGE_X", url_pattern="/order")],
+    )
+    assert "PAGE_X" in mgr.render(url="http://x/order/1", keywords=[])
+    assert "PAGE_X" not in mgr.render(url="http://x/home", keywords=[])
 
 
 # ── 与 Agent 集成:注入 Prompt + 随 URL 动态生效 ──────────────

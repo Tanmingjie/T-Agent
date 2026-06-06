@@ -107,3 +107,42 @@ class SkillManager:
         for s in skills:
             lines.append(f"- [{s.name}] {s.content}")
         return "\n".join(lines)
+
+
+# 内置基础 DomainSkill(始终注入):通用业务测试常识,精炼克制不喧宾夺主。
+# 工具机制类提示见 agent.PLAYWRIGHT_MCP_HINT,这里只放「业务语义/判定」层面的常识。
+DEFAULT_DOMAIN_SKILLS: list[DomainSkill] = [
+    DomainSkill(
+        name="表单操作",
+        content="填写表单先把所有必填项填完再提交;提交后留意页面是否出现校验错误提示,有则说明未真正提交成功。",
+    ),
+    DomainSkill(
+        name="结果定位",
+        content="业务操作的结果通常体现为:状态文字变化、列表新增一行、或出现成功/失败提示(toast/alert);"
+        "优先依据这些确定性信号判断,而非仅凭页面跳转。",
+    ),
+]
+
+
+def build_skill_manager(
+    custom_prompt: str = "",
+    *,
+    include_defaults: bool = True,
+    extra: "list | None" = None,
+) -> SkillManager:
+    """组装一个 SkillManager(把基础 DomainSkill 与 Suite 自定义提示词接进执行链)。
+
+    - ``custom_prompt``:Suite 维护的业务提示词(此前是孤儿字段,从不被使用)→ 作为
+      始终注入的 DomainSkill 接通。
+    - ``include_defaults``:是否注入内置基础 DomainSkill(``DEFAULT_DOMAIN_SKILLS``)。
+    - ``extra``:额外 Skill(DomainSkill/PageSkill/ToolSkill)列表。
+    """
+    mgr = SkillManager()
+    if include_defaults:
+        for s in DEFAULT_DOMAIN_SKILLS:
+            mgr.register(s)
+    if custom_prompt and custom_prompt.strip():
+        mgr.register(DomainSkill(name="套件提示", content=custom_prompt.strip()))
+    for s in extra or []:
+        mgr.register(s)
+    return mgr

@@ -93,7 +93,14 @@ class SessionManager:
 
 
 class LoginHook:
-    """before_case hook:Cookie 复用 / 过期重登。"""
+    """before_case hook:Cookie 复用 / 过期重登。
+
+    ``optional``:无 ``login_runner``(未接 login_aw)且 Cookie 失效时的行为开关。
+    - False(默认,贴合规格 §5.4):抛 ``HookError`` → before_case 失败 → 用例 FAIL。
+    - True(无 login_aw 的「Cookie 复用」模式):**不报错、不重登**,仅 log 后放行,
+      让 Agent 用例步骤自行登录;配合 ``CaptureSessionHook`` 在登录成功后落盘 Cookie,
+      使后续用例复用。这样不接 login_aw 也能做到「跨用例 Cookie 复用」。
+    """
 
     def __init__(
         self,
@@ -103,12 +110,14 @@ class LoginHook:
         login_runner: LoginRunner | None = None,
         cookie_injector: CookieInjector | None = None,
         ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        optional: bool = False,
     ) -> None:
         self.profile = profile
         self.manager = manager or SessionManager()
         self.login_runner = login_runner
         self.cookie_injector = cookie_injector
         self.ttl_seconds = ttl_seconds
+        self.optional = optional
 
     __name__ = "LoginHook"  # 便于 HookResult.failed_hook 可读
 
@@ -123,6 +132,13 @@ class LoginHook:
 
         # 过期/缺失 → 重登
         if self.login_runner is None:
+            if self.optional:
+                logger.info(
+                    "Session %s:无有效 Cookie 且未接 login_aw,Agent 将自行登录(复用模式)",
+                    self.profile.name,
+                )
+                ctx.set("login_via", "agent")
+                return
             raise HookError(
                 f"Session {self.profile.name}:Cookie 失效且未配置 login_runner(login_aw),无法登录"
             )
@@ -138,6 +154,83 @@ class LoginHook:
         ctx.set("cookies", cookies)  # 始终放进上下文,供下游/调试
         if self.cookie_injector is not None:
             await _maybe_await(self.cookie_injector(ctx, cookies))
+
+
+class CaptureSessionHook:
+    """after_case hook:用例(成功登录)后从浏览器抓 Cookie 落盘,供后续用例复用。
+
+    这是「不接 login_aw 也能跨用例复用」的另一半:LoginHook(optional)放行让 Agent
+    自行登录,本 hook 在之后把浏览器里的 Cookie 持久化。已有有效 Cookie 时跳过(免churn)。
+
+    ``cookie_capturer(ctx) -> CookieList``:从浏览器读取当前 Cookie(环境相关,可注入)。
+    默认实现见 ``make_mcp_cookie_capturer``(依赖运行时浏览器,不在单测覆盖)。
+    """
+
+    def __init__(
+        self,
+        profile: SessionProfile,
+        manager: SessionManager | None = None,
+        *,
+        cookie_capturer: "Callable[[ExecutionContext], CookieList | Awaitable[CookieList]] | None" = None,
+        ttl_seconds: int = DEFAULT_TTL_SECONDS,
+        only_on_pass: bool = True,
+    ) -> None:
+        self.profile = profile
+        self.manager = manager or SessionManager()
+        self.cookie_capturer = cookie_capturer
+        self.ttl_seconds = ttl_seconds
+        self.only_on_pass = only_on_pass
+
+    __name__ = "CaptureSessionHook"
+
+    async def __call__(self, ctx: ExecutionContext) -> None:
+        if self.cookie_capturer is None:
+            return
+        if self.manager.is_valid(self.profile):
+            return  # 已有有效 Cookie,无需重复抓取
+        if self.only_on_pass and not ctx.get("passed", False):
+            return  # 仅在用例通过(通常意味着登录成功)后才落盘
+        try:
+            cookies = await _maybe_await(self.cookie_capturer(ctx))
+        except Exception as e:  # noqa: BLE001 — 抓 Cookie 失败不影响用例结果
+            logger.warning("Session %s:抓取 Cookie 失败:%s", self.profile.name, e)
+            return
+        if not cookies:
+            return
+        self.manager.save_cookies(self.profile, cookies, self.ttl_seconds)
+        logger.info(
+            "Session %s:已捕获并落盘 %d 条 Cookie,供后续用例复用", self.profile.name, len(cookies)
+        )
+
+
+def make_mcp_cookie_capturer(mcp):
+    """构造基于 playwright-mcp 的 Cookie 抓取器(``context.cookies()``)。
+
+    通过 ``browser_run_code_unsafe`` 读取当前上下文 Cookie 并解析成列表。注:依赖运行时
+    浏览器,不在单测覆盖范围(解析逻辑见 ``_parse_cookies_result``,可单测)。
+    """
+
+    async def capture(ctx: ExecutionContext) -> CookieList:
+        code = "async (page) => { return JSON.stringify(await page.context().cookies()); }"
+        result = await mcp.call_tool("browser_run_code_unsafe", {"code": code})
+        text = mcp.result_to_text(result) if hasattr(mcp, "result_to_text") else str(result)
+        return _parse_cookies_result(text)
+
+    return capture
+
+
+def _parse_cookies_result(text: str) -> CookieList:
+    """从工具返回文本里宽松解析出 Cookie 列表(找到第一个 JSON 数组)。"""
+    if not text:
+        return []
+    i, j = text.find("["), text.rfind("]")
+    if i == -1 or j <= i:
+        return []
+    try:
+        data = json.loads(text[i : j + 1])
+    except (json.JSONDecodeError, ValueError):
+        return []
+    return [c for c in data if isinstance(c, dict)] if isinstance(data, list) else []
 
 
 def make_mcp_cookie_injector(mcp, base_url: str) -> CookieInjector:

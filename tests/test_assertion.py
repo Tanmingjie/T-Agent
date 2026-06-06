@@ -155,6 +155,90 @@ async def test_unsupported_types_skipped():
         assert r.status == AssertionStatus.SKIPPED
 
 
+# ── custom_tool 数据断言(经 ToolRegistry 取业务真值) ──────────
+
+
+def _registry_with(name: str, result: str):
+    from harness.tools import ToolRegistry
+
+    reg = ToolRegistry()
+
+    @reg.tool(name=name, description="d")
+    def _t(**kwargs):
+        return result
+
+    return reg
+
+
+async def test_custom_tool_pass_when_expected_substring_present():
+    reg = _registry_with("db_order_status", "已审批")
+    eng = AssertionEngine(DictProbe(), tool_registry=reg)
+    r = await eng.verify(Assertion(type="custom_tool", target="db_order_status", expected="已审批"))
+    assert r.status == AssertionStatus.PASS
+    assert r.actual == "已审批"
+
+
+async def test_custom_tool_fail_when_expected_missing():
+    reg = _registry_with("db_order_status", "待审批")
+    eng = AssertionEngine(DictProbe(), tool_registry=reg)
+    r = await eng.verify(Assertion(type="custom_tool", target="db_order_status", expected="已审批"))
+    assert r.status == AssertionStatus.FAIL
+
+
+async def test_custom_tool_skipped_when_tool_not_registered():
+    reg = _registry_with("other", "x")
+    eng = AssertionEngine(DictProbe(), tool_registry=reg)
+    r = await eng.verify(Assertion(type="custom_tool", target="missing", expected="x"))
+    assert r.status == AssertionStatus.SKIPPED
+
+
+async def test_custom_tool_passes_args_from_selector_json():
+    from harness.tools import ToolRegistry
+
+    reg = ToolRegistry()
+    seen = {}
+
+    @reg.tool(name="echo_id", description="d")
+    def _t(order_id=None):
+        seen["order_id"] = order_id
+        return f"id={order_id}"
+
+    eng = AssertionEngine(DictProbe(), tool_registry=reg)
+    r = await eng.verify(
+        Assertion(
+            type="custom_tool",
+            target="echo_id",
+            selector='{"order_id": "A100"}',
+            expected="id=A100",
+        )
+    )
+    assert r.status == AssertionStatus.PASS
+    assert seen["order_id"] == "A100"
+
+
+async def test_custom_tool_fail_when_tool_errors():
+    from harness.tools import ToolRegistry
+
+    reg = ToolRegistry()
+
+    @reg.tool(name="boom", description="d")
+    def _t(**kwargs):
+        raise RuntimeError("db down")
+
+    eng = AssertionEngine(DictProbe(), tool_registry=reg)
+    r = await eng.verify(Assertion(type="custom_tool", target="boom", expected="ok"))
+    assert r.status == AssertionStatus.FAIL
+    assert "执行失败" in r.reason
+
+
+async def test_llm_judge_still_skipped_even_with_registry():
+    # 铁律2:llm_judge 不做确定性验证,永远 skipped(不让 LLM 眼判 PASS/FAIL)
+    reg = _registry_with("x", "y")
+    eng = AssertionEngine(DictProbe(), tool_registry=reg)
+    r = await eng.verify(Assertion(type="llm_judge", target="x", confidence="low"))
+    assert r.status == AssertionStatus.SKIPPED
+
+
 # ── 裁决 / 聚合 ───────────────────────────────────────────────
 
 

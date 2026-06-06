@@ -144,3 +144,63 @@ async def test_agent_routes_custom_tool_call():
     assert step0.is_custom_tool is True
     # 自定义工具不应走 MCP
     assert ("query_status", {}) not in mcp.tool_calls
+
+
+# ── YAML 加载(load_tool_registry_from_yaml) ──────────────────
+
+
+def test_load_tool_registry_from_yaml_tools_key(tmp_path):
+    from harness.tools import load_tool_registry_from_yaml
+
+    f = tmp_path / "tools.yaml"
+    f.write_text(
+        "tools:\n"
+        "  - name: db_status\n"
+        "    description: 查状态\n"
+        "    command: echo ok\n"
+        "  - name: ping\n"
+        "    command: echo pong\n",
+        encoding="utf-8",
+    )
+    reg = load_tool_registry_from_yaml(f)
+    assert set(reg.names) == {"db_status", "ping"}
+    assert reg.has("db_status")
+
+
+def test_load_tool_registry_from_yaml_top_level_list(tmp_path):
+    from harness.tools import load_tool_registry_from_yaml
+
+    f = tmp_path / "tools.yaml"
+    f.write_text("- name: t1\n  command: echo a\n", encoding="utf-8")
+    reg = load_tool_registry_from_yaml(f)
+    assert reg.names == ["t1"]
+
+
+def test_load_tool_registry_rejects_missing_command(tmp_path):
+    import pytest
+
+    from harness.tools import load_tool_registry_from_yaml
+
+    f = tmp_path / "tools.yaml"
+    f.write_text("tools:\n  - name: no_cmd\n    description: x\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="name\\+command"):
+        load_tool_registry_from_yaml(f)
+
+
+def test_load_tool_registry_missing_file():
+    import pytest
+
+    from harness.tools import load_tool_registry_from_yaml
+
+    with pytest.raises(ValueError, match="不存在"):
+        load_tool_registry_from_yaml("/no/such/file.yaml")
+
+
+async def test_loaded_command_tool_executes(tmp_path):
+    from harness.tools import load_tool_registry_from_yaml
+
+    f = tmp_path / "tools.yaml"
+    f.write_text("tools:\n  - name: greet\n    command: echo hello-{who}\n", encoding="utf-8")
+    reg = load_tool_registry_from_yaml(f)
+    out = await reg.call("greet", {"who": "world"})
+    assert "hello-world" in out

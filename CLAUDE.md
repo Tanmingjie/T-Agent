@@ -127,10 +127,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **LiteLLM 封装两修** — ① 未传 tools 时 `_parse` 不再对 content 做 tool_call 兜底/报错
     (正常 JSON 含 `"name"` 子串曾被误判成坏调用而抛错,连累 Scanner/SpecGen);
     ② import 前 `LITELLM_LOCAL_MODEL_COST_MAP=True`,内网免去联网拉价目表的握手超时 + warning。
+- **空壳模块接通(2026-06-06,已做)** — 排查出一批「有模块、单测绿,但执行链从不调用」的孤儿,本轮接通三处:
+  - **P1 预置条件分类器接通** — `TestCaseAgent` 默认自带 `PreconditionClassifier`(`DEFAULT_HOOK_MAP`,传 `precondition_classifier=False` 关闭);`generate_spec` 先三分类 → 把结果按类分组下发给翻译器(`build_spec_messages`/`SpecGenerator.generate` 新增 `precondition_items`,引导 given 只收 action_step)→ 再**确定性**把 action_step 合入 `spec.given`(按 target 去重,兜底 LLM 漏放);state_hook 的 hook_ref 写入 `ctx.required_hooks`、ambiguous 记 warning。CLI/API 两条路径都经 `generate_spec`,均接通。
+  - **P2 Hooks/Session 接通 API** — `Suite.session_profile`(名称引用)→ `Store.get_session_profile` → `harness/hook_builder.py::build_session_hooks` 组装 HookManager,经 `make_agent` 注入每个用例 agent(`hooks=`)。`LoginHook` 新增 `optional` 模式:无 login_aw 且 Cookie 失效时**不报错、放行**让 Agent 自行登录(避免「Cookie 缺失→全 FAIL」回归);新增 `CaptureSessionHook`(after_case,用例通过后抓浏览器 Cookie 落盘)+ `make_mcp_cookie_capturer`,实现**不接 login_aw 也能跨用例 Cookie 复用**(首例 Agent 登录→落盘,后续注入复用)。接了真实 login_aw 时传 `login_runner` 即恢复规格 §5.4「过期重登」。
+  - **P3 基础 DomainSkill + custom_prompt 接通** — `harness/skills.py::build_skill_manager`:注入内置 `DEFAULT_DOMAIN_SKILLS`(表单操作 / 结果定位等业务常识)+ 把此前孤儿字段 `Suite.custom_prompt` 作为 DomainSkill 接通;经 `make_agent`(API,带 custom_prompt)与 CLI(`--no-skills` 可关)注入 agent。
+  - **P4 更复杂开源验证素材** — `examples/make_automation_exercise_xlsx.py` 生成 Automation Exercise(https://automationexercise.com,公开发布 26 条业务用例)的注册/下单/搜索三条用例(`automation_exercise_cases.xlsx` + `automation_exercise_vocab.json`);比 saucedemo 复杂(多字段表单、结算流程、混合 state_hook/状态声明的预置条件,压测翻译/断言/词汇表/P1 分类)。尚需真实 LLM+浏览器 live 跑一轮。
+- **Custom Tool + 数据断言接通(2026-06-06,已做)** — 继续填空壳,接通 `ToolRegistry` 与 `custom_tool` 断言:
+  - **ToolRegistry 从 YAML 接入执行链** — `harness/tools.py::load_tool_registry_from_yaml`(顶层 `tools:` 列表或直接数组,每条需 `name`+`command`);CLI 加 `--tools <yaml>`、API 读 env `CUSTOM_TOOLS_YAML`,经 `make_agent` 注入每个用例 agent(`tools_registry=`)。示例 `examples/custom_tools.yaml`。此前 `ToolRegistry` 完整但 API/CLI 从不实例化。
+  - **`custom_tool` 数据断言执行(规格 §5.3#4/§5.4)** — `AssertionEngine(tool_registry=...)` 实现 `_check_custom_tool`:**约定** `target`=已注册工具名、`selector`=JSON 参数、`expected`=期望子串(空则结果非空且非错误即通过);工具失败→FAIL;未接 registry 或工具名未注册→skipped(不静默放过)。`agent.run` 把 `self.tools_registry` 传入引擎。
+  - **`llm_judge` 仍保持 skipped(铁律2)** — 即便接了 registry 也**不执行 LLM 眼判**,标 skipped 待人工复核;裁决全 skipped 不算可信通过。
+  - **action_map 不动(有意)** — `PageVocabulary.action_map` 规格里只有一行声明、无任何语义定义;「填」它=凭空发明 Phase 5 设计(违反「不过度设计未来阶段」),故保留为显式预留字段。`ExecutionRecord.generated_code` 的 `# TODO: Phase 5` 是**误导性 stale 注释**(其实早已接通)→ 已清理。`/vocabulary/scan` 是有意的 no-op(真扫描在执行期增量做)。
 - **下一步候选:**
   - **执行期捕获真实 a11y role+name → ActionStep(已做)** — `page_probe` 解析快照里每个节点的 `ref`(`A11yNode.ref` + `build_ref_index(text)→{ref:node}`);`react_loop` 在操作元素时(`browser_click/type/...` 带 `ref`)从**上一份观察快照**的 ref 索引回查真实 `(role, name)`,连同当前业务步骤 `target` 记到 `ActionStep`(`element_role`/`element_name`/`step_target`)。`codegen/locators.py::locators_from_steps` 据此对**未录入词汇表**的目标也产出稳健 `get_by_role` 定位;`agent.run` 把它 overlay 到词汇表解析结果之上(**执行捕获优先**:`{**vocab, **captured}`)。仅 role+name 齐备才采纳(role 无 name 过宽,反不如词汇表)。
   - 阶段五(用例管理平台集成,规格"现在不做");ReAct 早停护栏 / 真实内网用例 live 验证。
-- 单测数量以 `python -m pytest -q` 实跑为准(当前约 342;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
+- 单测数量以 `python -m pytest -q` 实跑为准(当前约 370;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
 
 T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规格)与 §6(实施计划)。
 

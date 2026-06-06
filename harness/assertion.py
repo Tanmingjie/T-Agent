@@ -8,7 +8,9 @@
 - ``text_equals`` / ``text_contains`` —— **限定具体元素内**匹配(非全页搜)
 - ``url_contains`` / ``url_equals`` —— URL/导航断言
 
-``custom_tool``(阶段二)/ ``llm_judge``(兜底)阶段一标记为 skipped,**不静默放过**。
+``custom_tool`` —— 数据断言:接入 ``ToolRegistry`` 后经 Custom Tool 取业务真值并确定性
+比较(未接入则 skipped)。``llm_judge`` —— **不执行**(铁律2:判定不让 LLM 眼判),标
+skipped 待人工复核。skipped **不静默放过**(裁决时全 skipped 不算可信通过)。
 
 断言失败的两种归因(§5.3):
 - 真失败:元素在、值不对 → FAIL(``healable=False``)。
@@ -20,11 +22,15 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
 from input.models import Assertion
+
+logger = logging.getLogger(__name__)
 
 # 阶段一支持的确定性断言类型
 _SUPPORTED = {
@@ -94,9 +100,12 @@ class AssertionResult:
 class AssertionEngine:
     """确定性断言验证引擎。可选接入 Healing Subagent 做断言目标重定位。"""
 
-    def __init__(self, probe: PageProbe, healer=None) -> None:
+    def __init__(self, probe: PageProbe, healer=None, *, tool_registry=None) -> None:
         self.probe = probe
         self.healer = healer
+        # 数据断言(custom_tool)经 ToolRegistry 取业务真值(规格 §5.3#4/§5.4)。
+        # 未接入时 custom_tool 断言保持 skipped(不静默放过)。
+        self.tool_registry = tool_registry
 
     async def verify(self, a: Assertion) -> AssertionResult:
         res = await self._verify_once(a)
@@ -108,14 +117,57 @@ class AssertionEngine:
         return res
 
     async def _verify_once(self, a: Assertion) -> AssertionResult:
-        if a.type not in _SUPPORTED:
+        if a.type in _SUPPORTED:
+            handler = getattr(self, f"_check_{a.type}")
+            return await handler(a)
+        if a.type == "custom_tool":
+            return await self._check_custom_tool(a)
+        # llm_judge 等:**不执行 LLM 眼判**(铁律2:判定必须确定性,不让 LLM 裁 PASS/FAIL)。
+        # 标 skipped 而非静默放过;裁决时全 skipped 不算可信通过。
+        return AssertionResult(
+            assertion=a,
+            status=AssertionStatus.SKIPPED,
+            reason=f"断言类型 {a.type} 不做确定性验证(llm_judge 由铁律2 排除,需人工复核)",
+        )
+
+    async def _check_custom_tool(self, a: Assertion) -> AssertionResult:
+        """数据断言(规格 §5.3#4):经 Custom Tool 取业务真值并确定性比较。
+
+        约定:``target`` = 已注册的工具名;``selector`` = 调用参数(JSON 对象,可空);
+        ``expected`` = 期望子串(给定则要求结果包含它;为空则结果非空且非错误即视为通过)。
+        未接 ToolRegistry 或工具名未注册 → skipped(不静默放过)。
+        """
+        if self.tool_registry is None or not self.tool_registry.has(a.target):
             return AssertionResult(
                 assertion=a,
                 status=AssertionStatus.SKIPPED,
-                reason=f"阶段一不支持断言类型 {a.type}(custom_tool/llm_judge 留待后续阶段)",
+                reason=f"custom_tool 断言未接入工具「{a.target}」→ skipped",
             )
-        handler = getattr(self, f"_check_{a.type}")
-        return await handler(a)
+        args: dict = {}
+        if a.selector:
+            try:
+                parsed = json.loads(a.selector)
+                if isinstance(parsed, dict):
+                    args = parsed
+            except (json.JSONDecodeError, ValueError):
+                logger.warning("custom_tool 断言 selector 非合法 JSON,按无参调用:%r", a.selector)
+        result = await self.tool_registry.call(a.target, args)
+        # ToolRegistry.call 把工具内部失败/超时/非零退出转成 "[工具 ...]" 文本
+        if result.startswith("[工具 "):
+            return AssertionResult(
+                assertion=a,
+                status=AssertionStatus.FAIL,
+                actual=result,
+                reason="custom_tool 执行失败",
+            )
+        expected = (a.expected or "").strip()
+        ok = (expected in result) if expected else bool(result.strip())
+        return AssertionResult(
+            assertion=a,
+            status=_st(ok),
+            actual=result,
+            reason="" if ok else f"工具结果未满足期望 {expected!r}",
+        )
 
     async def _try_heal(self, a: Assertion, original: AssertionResult) -> AssertionResult | None:
         """用自愈重定位断言目标,再复验。成功返回新结果;不成功返回 None(保留原失败)。"""

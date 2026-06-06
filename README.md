@@ -75,6 +75,11 @@ cd frontend && npm run dev
 python cli/run_case.py --excel examples/saucedemo_cases.xlsx --case-id TC101 --base-url https://www.saucedemo.com
 python cli/run_case.py --excel <用例.xlsx> --case-id <ID> --spec-only   # 只生成并打印 TestSpec
 python cli/run_case.py --check-llm                                       # LLM 连通性自检
+
+# 更复杂的开源验证用例(Automation Exercise:注册/下单/搜索,含多字段表单与结算流程)
+python examples/make_automation_exercise_xlsx.py                          # 生成 xlsx(首次)
+python cli/run_case.py --excel examples/automation_exercise_cases.xlsx \
+    --case-id AE01 --base-url https://automationexercise.com --isolated --headless
 ```
 
 ## 目录结构

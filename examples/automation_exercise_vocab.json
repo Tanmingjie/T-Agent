@@ -1,0 +1,9 @@
+{
+  "购物车数量": {"selector": ".cart_info tr"},
+  "Add to cart": {"role": "link", "name": "Add to cart"},
+  "View Cart": {"role": "link", "name": "View Cart"},
+  "Proceed To Checkout": {"role": "link", "name": "Proceed To Checkout"},
+  "Place Order": {"role": "link", "name": "Place Order"},
+  "Signup / Login": {"role": "link", "name": "Signup / Login"},
+  "Products": {"role": "link", "name": "Products"}
+}

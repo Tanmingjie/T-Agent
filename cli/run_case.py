@@ -42,6 +42,8 @@ _load_dotenv(_ROOT / ".env")
 from harness.agent import TestCaseAgent  # noqa: E402
 from harness.llm import LiteLLMClient  # noqa: E402
 from harness.page_probe import DictVocabResolver  # noqa: E402
+from harness.skills import build_skill_manager  # noqa: E402
+from harness.tools import load_tool_registry_from_yaml  # noqa: E402
 from input.excel_parser import parse_excel  # noqa: E402
 from input.models import TestCase, TestSpec  # noqa: E402
 from mcp_client.client import MCPClient  # noqa: E402
@@ -165,8 +167,21 @@ async def _run(args: argparse.Namespace) -> int:
 
     llm = LiteLLMClient(model=args.model, api_base=args.api_base, api_key=args.api_key)
     resolver = _load_vocab_resolver(args.vocab)
+    # 基础 DomainSkill(可 --no-skills 关闭)。--context 已作为 prompt context 注入,
+    # 这里只注入内置基础 DomainSkill,避免重复。
+    skills = None if args.no_skills else build_skill_manager()
+    # Custom Tool(--tools <yaml>):LLM 按需调用 + custom_tool 数据断言取业务真值
+    tools_registry = load_tool_registry_from_yaml(args.tools) if args.tools else None
+    if tools_registry is not None:
+        print(f"已加载 Custom Tool:{tools_registry.names}")
     agent = TestCaseAgent(
-        llm, None, context=args.context, max_steps=args.max_steps, vocab_resolver=resolver
+        llm,
+        None,
+        context=args.context,
+        max_steps=args.max_steps,
+        vocab_resolver=resolver,
+        skills=skills,
+        tools_registry=tools_registry,
     )  # mcp 稍后注入
 
     # 先生成并打印 TestSpec 供审查
@@ -216,6 +231,12 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--headless", action="store_true", help="playwright-mcp 无头模式(后台运行,不弹窗)"
+    )
+    p.add_argument("--no-skills", action="store_true", help="不注入内置基础 DomainSkill(默认注入)")
+    p.add_argument(
+        "--tools",
+        default=None,
+        help="Custom Tool YAML 配置路径(LLM 按需调用 + custom_tool 数据断言)",
     )
     p.add_argument("--spec-only", action="store_true", help="只生成并打印 TestSpec,不执行")
     p.add_argument("--check-llm", action="store_true", help="只做 LLM 连通性自检,不跑用例")

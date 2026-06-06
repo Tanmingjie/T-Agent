@@ -20,6 +20,7 @@ import asyncio
 import inspect
 import logging
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Callable
 
 logger = logging.getLogger(__name__)
@@ -163,3 +164,35 @@ class ToolRegistry:
         if proc.returncode != 0:
             return f"[工具 {tool.name} 退出码 {proc.returncode}] {stderr.decode().strip()}"
         return stdout.decode().strip()
+
+
+def load_tool_registry_from_yaml(path: str | Path) -> ToolRegistry:
+    """从 YAML 配置文件加载 Custom Tool(规格 §5.4「也支持 YAML 配置接入」),组装成
+    ``ToolRegistry``,供执行链按需调用 + 数据断言(custom_tool)使用。
+
+    支持两种顶层结构:
+    - ``{"tools": [ {name, description, command, parameters?, when_to_use?, ...}, ... ]}``
+    - 直接是工具配置数组 ``[ {...}, ... ]``
+
+    每个工具必须含 ``name`` 与 ``command``(命令型;函数型只能用 ``@registry.tool`` 装饰器,
+    不经 YAML)。缺字段/解析失败抛 ``ValueError``。
+    """
+    import yaml
+
+    p = Path(path)
+    if not p.is_file():
+        raise ValueError(f"Custom Tool 配置文件不存在:{p}")
+    data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    if isinstance(data, dict):
+        configs = data.get("tools", [])
+    elif isinstance(data, list):
+        configs = data
+    else:
+        raise ValueError(f"Custom Tool 配置应为 dict 或 list,得到 {type(data).__name__}")
+    reg = ToolRegistry()
+    for cfg in configs:
+        if not isinstance(cfg, dict) or "name" not in cfg or "command" not in cfg:
+            raise ValueError(f"非法工具配置(需含 name+command):{cfg!r}")
+        reg.register_yaml(cfg)
+    logger.info("从 %s 加载 %d 个 Custom Tool:%s", p, len(reg.names), reg.names)
+    return reg

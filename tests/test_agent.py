@@ -7,9 +7,10 @@
 from __future__ import annotations
 
 from harness.agent import TestCaseAgent, collect_assertions, make_executor
+from harness.hooks import ExecutionContext
 from harness.llm import LLMClient, LLMResponse, ToolCall
 from harness.step_plan import StepPlan
-from input.models import Assertion, SpecStep, TestCase, TestSpec
+from input.models import Assertion, PreconditionItem, SpecStep, TestCase, TestSpec
 
 SNAPSHOT_OK = """\
 ### Page
@@ -243,6 +244,92 @@ async def test_run_records_steps():
     record = await agent.run(_case(), spec=_spec())
     assert [s.tool_name for s in record.steps] == ["browser_click", "mark_step_done"]
     assert record.exec_id
+
+
+# ── 预置条件分类接通(P1) ──────────────────────────────────────
+
+
+class _FakeClassifier:
+    def __init__(self, items):
+        self._items = items
+        self.calls: list[list[str]] = []
+
+    async def classify(self, preconditions):
+        self.calls.append(list(preconditions))
+        return list(self._items)
+
+
+_SPEC_JSON_EMPTY_GIVEN = (
+    '{"given": [], '
+    '"steps": [{"action": "click", "target": "提交按钮", "expect": []}], '
+    '"assertions": [{"type": "url_contains", "target": "URL", "expected": "/order/list"}]}'
+)
+
+
+def test_precondition_classifier_default_on_and_disablable():
+    # 默认自带分类器(始终接通);传 False 显式关闭
+    agent = TestCaseAgent(_ScriptedLLM([]), _FakeMCP(SNAPSHOT_OK))
+    assert agent.precondition_classifier is not None
+    off = TestCaseAgent(_ScriptedLLM([]), _FakeMCP(SNAPSHOT_OK), precondition_classifier=False)
+    assert off.precondition_classifier is None
+
+
+async def test_generate_spec_merges_action_step_precondition_into_given():
+    # 翻译器产出的 given 为空;分类器把预置条件判为 action_step → 确定性合入 given
+    llm = _ScriptedLLM([_resp(content=_SPEC_JSON_EMPTY_GIVEN)])
+    clf = _FakeClassifier(
+        [PreconditionItem(text="新建一条草稿订单", type="action_step", confidence=0.9)]
+    )
+    case = TestCase(
+        id="TC",
+        name="x",
+        preconditions=["新建一条草稿订单"],
+        steps=["点击提交"],
+        base_url="http://x",
+    )
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), precondition_classifier=clf)
+    spec = await agent.generate_spec(case)
+    assert clf.calls == [["新建一条草稿订单"]]
+    assert any(g.target == "新建一条草稿订单" for g in spec.given)
+
+
+async def test_generate_spec_skips_classifier_without_preconditions():
+    llm = _ScriptedLLM([_resp(content=_SPEC_JSON_EMPTY_GIVEN)])
+    clf = _FakeClassifier([])
+    case = TestCase(id="TC", name="x", steps=["点"], base_url="http://x")  # 无预置条件
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), precondition_classifier=clf)
+    await agent.generate_spec(case)
+    assert clf.calls == []  # 无预置条件不调分类器
+
+
+async def test_run_records_state_hook_into_ctx():
+    # state_hook 预置条件 → ctx.required_hooks(供 before_case 侧 P2 参考)
+    llm = _ScriptedLLM(
+        [
+            _resp(content=_SPEC_JSON_EMPTY_GIVEN),  # generate_spec
+            _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
+            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(content="TEST_RESULT: PASS"),
+        ]
+    )
+    clf = _FakeClassifier(
+        [
+            PreconditionItem(
+                text="已登录系统", type="state_hook", hook_ref="LoginHook", confidence=0.95
+            )
+        ]
+    )
+    case = TestCase(
+        id="TC",
+        name="x",
+        preconditions=["已登录系统"],
+        steps=["点击提交"],
+        base_url="https://intranet",
+    )
+    ctx = ExecutionContext(case=case)
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), precondition_classifier=clf)
+    await agent.run(case, ctx=ctx)
+    assert ctx.get("required_hooks") == ["LoginHook"]
 
 
 async def test_live_progress_streams_phases_and_steps_in_order():

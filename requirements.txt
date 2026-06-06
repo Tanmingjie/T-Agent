@@ -9,6 +9,8 @@ sqlmodel>=0.0.22
 aiosqlite>=0.20.0
 # Excel 容错解析
 openpyxl>=3.1.5
+# Custom Tool / 配置 YAML 解析(litellm 已传递依赖,显式声明)
+pyyaml>=6.0
 
 # ── 输出层 / 代码生成(阶段三起用) ─────────────────────────────
 pytest-bdd>=8.1.0

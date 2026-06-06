@@ -95,6 +95,29 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
         vocab_resolver = VocabularyResolver(VocabularyManager(worker_store))
         mcp_args = _mcp_args()
 
+        # Custom Tool 注册表:env CUSTOM_TOOLS_YAML 指向 YAML 配置时加载(LLM 按需调用
+        # + custom_tool 数据断言)。无配置则为 None,该类工具/断言不生效(skipped)。
+        tools_registry = None
+        tools_yaml = os.getenv("CUSTOM_TOOLS_YAML")
+        if tools_yaml:
+            try:
+                from harness.tools import load_tool_registry_from_yaml
+
+                tools_registry = load_tool_registry_from_yaml(tools_yaml)
+            except Exception as e:  # noqa: BLE001 — 配置坏不应阻断整个 run
+                logger.warning("加载 Custom Tool 配置失败(%s):%s", tools_yaml, e)
+
+        # Session/Login Hooks(P2):Suite 绑定了 SessionProfile 才接通,实现跨用例 Cookie 复用。
+        session_profile = None
+        if suite.session_profile:
+            session_profile = await worker_store.get_session_profile(suite.session_profile)
+            if session_profile is None:
+                logger.warning(
+                    "Suite %s 绑定的 SessionProfile %r 不存在,跳过 Session 复用",
+                    suite_id,
+                    suite.session_profile,
+                )
+
         async def _perm_approver(req):
             event_id = uuid.uuid4().hex[:8]
             ev = threading.Event()
@@ -118,8 +141,27 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
         # 每条用例独立 agent + MCP(各自 Chrome 子进程):并发隔离 + 各自收尾,无全局卡顿
         @asynccontextmanager
         async def make_agent():
+            from harness.hook_builder import build_session_hooks
+            from harness.skills import build_skill_manager
+
+            # Skill 体系(P3):基础 DomainSkill + Suite 自定义提示词(custom_prompt)接通
+            skills = build_skill_manager(custom_prompt=suite.custom_prompt)
+
             async with MCPClient(args=mcp_args) as mcp:
-                agent = TestCaseAgent(llm=LiteLLMClient(), mcp=mcp, vocab_resolver=vocab_resolver)
+                # Session Hooks 需绑定本用例的 mcp(注入/抓取 Cookie 都走它)
+                hooks = (
+                    build_session_hooks(session_profile, mcp)
+                    if session_profile is not None
+                    else None
+                )
+                agent = TestCaseAgent(
+                    llm=LiteLLMClient(),
+                    mcp=mcp,
+                    vocab_resolver=vocab_resolver,
+                    hooks=hooks,
+                    skills=skills,
+                    tools_registry=tools_registry,
+                )
                 if approve_mode:
                     agent.permission_approver = _perm_approver
                 yield agent

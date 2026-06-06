@@ -126,7 +126,7 @@ class ExecutionRecord(BaseModel):
     # 本次执行使用的 TestSpec(LLM 翻译产物)。存档以便前端可视化 + 发现翻译偏差。
     spec: TestSpec | None = None
     final_result: str = ""
-    generated_code: str = ""  # TODO: Phase 5
+    generated_code: str = ""  # 断言通过后生成的 pytest-bdd 代码(随 run 持久化)
     token_usage: int = 0
     heal_count: int = 0
     start_time: float = Field(default_factory=time.time)
