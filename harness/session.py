@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable
@@ -220,17 +221,40 @@ def make_mcp_cookie_capturer(mcp):
 
 
 def _parse_cookies_result(text: str) -> CookieList:
-    """从工具返回文本里宽松解析出 Cookie 列表(找到第一个 JSON 数组)。"""
+    """从工具返回文本里宽松解析出 Cookie 列表。
+
+    兼容两种形态:
+    - **双重编码**(playwright-mcp 实测):返回值被再 ``JSON.stringify`` 一次 → 文本里是
+      带引号的 JSON 字符串字面量,如 ``"[{\\"name\\":...}]"``。需先 loads 外层字符串、
+      再 loads 内层数组。
+    - 直接 JSON 数组 ``[{...}]``。
+    """
     if not text:
         return []
+
+    def _ok(data) -> CookieList:
+        return [c for c in data if isinstance(c, dict)] if isinstance(data, list) else []
+
+    # 1) 双重编码:带引号的 JSON 字符串字面量 → loads 两次
+    m = re.search(r'"\[.*?\]"', text, re.DOTALL)
+    if m:
+        try:
+            inner = json.loads(m.group(0))
+            data = json.loads(inner) if isinstance(inner, str) else inner
+            cookies = _ok(data)
+            if cookies:
+                return cookies
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # 2) 直接数组
     i, j = text.find("["), text.rfind("]")
-    if i == -1 or j <= i:
-        return []
-    try:
-        data = json.loads(text[i : j + 1])
-    except (json.JSONDecodeError, ValueError):
-        return []
-    return [c for c in data if isinstance(c, dict)] if isinstance(data, list) else []
+    if i != -1 and j > i:
+        try:
+            return _ok(json.loads(text[i : j + 1]))
+        except (json.JSONDecodeError, ValueError):
+            return []
+    return []
 
 
 def make_mcp_cookie_injector(mcp, base_url: str) -> CookieInjector:

@@ -141,10 +141,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **根因**:弱模型抓完快照后**只回文字、不发工具调用**(落入 `react_loop` 的 `not resp.tool_calls` 哑火分支),原因是 Context Compact 只留最近 2 条观察、且按**中文步骤关键词**截断快照(页面文案常是英文,如「登录按钮」命不中 `Login` → 目标行连同 ref 被丢)→ 模型手里没 ref 只能叙述 → 哑火超 `max_idle_nudges` 被终止 → 卡在「点登录」FAIL。
   - **修法**(`harness/react_loop.py`):哑火且仍有未完成步骤时,**主动抓一份最新完整快照**(`_safe_snapshot`)作为**普通 user 消息**(不加 `[观察]` 前缀 → 不被 Compact 折叠/截断)喂回,配强指令「立即只调用一个工具,用快照里的 ref 操作当前步骤」。给具体 ref + 逼出动作,治叙述退化。无 `get_snapshot` 时退回纯文字催促(向后兼容)。
   - **live 实证(5 轮)**:修复前 1 轮卡在点登录 FAIL;修复后 TC101 ×3 全 PASS(其中 2 轮**真实再现哑火并被快照续推拉回完成**,非靠运气)、TC102 PASS(且 live 跑出 1 次成功**自愈**)。终态断言 `url_contains inventory.html` + `text_equals 购物车角标==1` 均 live 绿。
+- **公开站点验证战役 + 真 bug 修复(2026-06-07,已做)** — 内网用例阻塞,改用公开站点把**未 live 验过的路径**逐条跑通(都用 saucedemo + 真 DeepSeek + 真 Chrome):
+  - **API+SSE 端到端**(此前只有单测)— 起 `uvicorn` → API 建 suite/传 Excel/触发 run → 收 SSE → 拉结果。两用例经 worker 线程路径 PASS 2/2,SSE 事件全到(`suite_start/case_start/phase/spec_ready/step_change/case_result/suite_done`),落库 status=completed。**整条阶段四生产路径(前端走的那条)首次真跑通**。
+  - **复杂多步流程** — saucedemo 完整结算(登录→加购→购物车→Checkout→填 First/Last/Zip→Continue→Finish)11 业务步 PASS,终态 `text_equals "Thank you for your order!"` + `url_contains checkout-complete.html` 双绿,过程 2 次自愈。素材 `examples/saucedemo_checkout.xlsx`。
+  - **custom_tool 数据断言** — 接 `examples/custom_tools.yaml` 真跑外部命令:`http_health` curl saucedemo→`200` PASS、期望 `500`→FAIL、未注册工具→skipped,确定性比较全对。
+  - **P2 跨用例 Cookie 复用 + 抓出真 bug** ★ — 走 API 路径(hooks 只在 API 接通)2 用例 suite。**首跑两用例都"绿"但 cookie 文件根本没生成 → 功能其实没接通**(典型「看着绿实则空转」,幸亏走真实端到端到产物)。根因:`browser_run_code_unsafe` 把返回值**双重 JSON 编码**(cookies 是带引号的 JSON 字符串字面量 `"[{\"name\":...}]"`),`_parse_cookies_result` 只 loads 一次 → 0 条 → `CaptureSessionHook` 从没存过。修:`_parse_cookies_result` 兼容双重编码(先 loads 外层字符串再 loads 内层数组)。修后:cookie 文件生成、TCB 步数 7→3(省了登录);**铁证**(无 agent 干扰的直接注入回放):捕获 cookie→全新浏览器注入→直达 `inventory.html` 免登录可达(6 个商品)= True。教训复刻:**saucedemo 账号太有名,agent 可能自己重登 → 用例"绿"会掩盖复用失效;验证复用要看产物(cookie 文件)+ 隔离注入回放,别只看用例 PASS**。
+- **codegen 闭环验证 + 导航修复(2026-06-07,已做)** — 真把生成的 pytest-bdd 用 Playwright 跑了一遍。发现并修:用例把"打开页面"写在预置条件(被 P1 归 state_hook 不进 steps)→ 生成代码缺 `page.goto`、回放不开页面。修:`agent.ensure_navigation_step` codegen 前置注入隐式导航。闭环实证:含正确定位器的 spec→生成 BDD→pytest-playwright 真打 saucedemo 1 passed。遗留:spec target 与词汇表/捕获键不一致时定位器退化文本兜底(待对齐)。**附:此前怀疑的"step-def 命名 bug"是 `ls|head` 截断误判,不存在**(`test_<case>.py` 本就按用例命名)。
 - **下一步候选:**
   - **执行期捕获真实 a11y role+name → ActionStep(已做)** — `page_probe` 解析快照里每个节点的 `ref`(`A11yNode.ref` + `build_ref_index(text)→{ref:node}`);`react_loop` 在操作元素时(`browser_click/type/...` 带 `ref`)从**上一份观察快照**的 ref 索引回查真实 `(role, name)`,连同当前业务步骤 `target` 记到 `ActionStep`(`element_role`/`element_name`/`step_target`)。`codegen/locators.py::locators_from_steps` 据此对**未录入词汇表**的目标也产出稳健 `get_by_role` 定位;`agent.run` 把它 overlay 到词汇表解析结果之上(**执行捕获优先**:`{**vocab, **captured}`)。仅 role+name 齐备才采纳(role 无 name 过宽,反不如词汇表)。
   - 阶段五(用例管理平台集成,规格"现在不做");**真实内网用例** live 验证(saucedemo 已 live 绿,内网真实业务系统待跑)。
-- 单测数量以 `python -m pytest -q` 实跑为准(当前约 371;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
+- 单测数量以 `python -m pytest -q` 实跑为准(当前约 374;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
 
 T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规格)与 §6(实施计划)。
 

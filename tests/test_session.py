@@ -195,6 +195,25 @@ def test_parse_cookies_result_extracts_array():
     assert _parse_cookies_result("") == []
 
 
+def test_parse_cookies_result_double_encoded():
+    """playwright-mcp browser_run_code_unsafe 把返回值再 stringify 一次 →
+    cookies 是带引号的 JSON 字符串字面量,需 loads 两次(实测 bug 回归)。"""
+    txt = (
+        "### Result\n"
+        '"[{\\"name\\":\\"session-username\\",\\"value\\":\\"standard_user\\",'
+        '\\"domain\\":\\"www.saucedemo.com\\"}]"\n'
+        "### Ran Playwright code\n```js\n...\n```\n"
+    )
+    cookies = _parse_cookies_result(txt)
+    assert cookies == [
+        {
+            "name": "session-username",
+            "value": "standard_user",
+            "domain": "www.saucedemo.com",
+        }
+    ]
+
+
 async def test_mcp_cookie_capturer_builds_call_and_parses():
     class _FakeMCP:
         async def call_tool(self, name, arguments=None):
