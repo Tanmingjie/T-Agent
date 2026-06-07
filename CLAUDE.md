@@ -88,7 +88,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **真实环境验证加固(进行中)** — 用 DeepSeek(代 Qwen3)+ 真实浏览器跑 saucedemo TC101,暴露并修复:① `collect_assertions` 断言去重(LLM 常把同一断言既放用例级又放 step.expect);② page_probe 后缀循环剥离 + **精确优先匹配**(短目标 '1' 子串会误中长描述);③ **词汇表接入断言侧(方案A)** — `MCPPageProbe(resolver=...)` 运行时按真实 role+name 解析跨语言/图标类目标,healing 同步接通 vocab,CLI 加 `--vocab` 手动词汇表入口(见 `examples/saucedemo_vocab.json`)。
   - ④ **selector 型词汇表(已做)** — 词条/`Assertion.selector` 给 CSS 时,`MCPPageProbe.query` 走 `browser_evaluate` DOM 求值(返回 `{found,visible,count,text}`),对计数角标稳健(2 件→text='2',不像 name 型写死)。解析优先级:显式 selector > 词汇表 selector > 词汇表 role+name a11y 精确 > 原始 a11y。saucedemo vocab 已改 selector 型。
   - ⑤ **词汇表落 DB + 前端维护(已做)** — `execution.py` 构造 `VocabularyResolver(VocabularyManager(store))` 注入 agent,闭合"维护词汇表→执行真正用上"的环;`find_page` 对空 `page_title`/`login_role` 宽松匹配(运行时 role 常未知也能命中手动词条);`VocabularyResolver` 支持 selector-only 词条;前端 `VocabularyPage` 从只读改为可维护(展开看词条、增改删、selector 字段、新建/删除页面词汇表)。
-  - **未决发现(均非断言层,实证确认):** (b-1) **密码泄露弹框** — Chrome 原生 UI,**不在 a11y 快照里**,自愈(只读快照)无法识别/关闭;robust 解只能靠启动参数,故 CLI 加了 `--isolated`/`--headless`。(b-2) **ReAct 早停**(已修)— 根因是 `react_loop` 在模型自报 `TEST_RESULT` 时即终止(`all_resolved() or maybe_result`),DeepSeek 登录后提前吐一句就停在中途;已改为**有未完成步骤时不采信自报结果、改哑火续推**(贯彻铁律4 到执行层)。(b-3) **saucedemo 加购不生效** — 经 playwright-mcp(headless)点击 add-to-cart 后角标/Remove 均不出现(`.shopping_cart_badge` 求值 found=false),属 mcp/浏览器交互环境问题。**以上三者叠加导致 saucedemo 终态断言始终拿不到 live 绿,但与本轮加固的断言/词汇表层无关**(该层已单测覆盖)。
+  - **未决发现(均非断言层,实证确认):** (b-1) **密码泄露弹框** — Chrome 原生 UI,**不在 a11y 快照里**,自愈(只读快照)无法识别/关闭;robust 解只能靠启动参数,故 CLI 加了 `--isolated`/`--headless`。(b-2) **ReAct 早停**(已修)— 根因是 `react_loop` 在模型自报 `TEST_RESULT` 时即终止(`all_resolved() or maybe_result`),DeepSeek 登录后提前吐一句就停在中途;已改为**有未完成步骤时不采信自报结果、改哑火续推**(贯彻铁律4 到执行层)。(b-3) ~~**saucedemo 加购不生效**~~ **【已证伪,2026-06-07】** — 此前判断是 mcp/浏览器问题,实为**误判**:真实 live 跑(DeepSeek+真 Chrome)TC101 加购**完全生效**,角标 `.shopping_cart_badge=1`、按钮变 Remove,终态断言拿到 live 绿。旧"加购不生效"其实是 ReAct **卡在点登录**(见下「ReAct 卡死修复」)根本没走到加购步骤的连带误判。**b-1 仍有效**(密码泄露弹框靠 `--isolated/--headless` 规避);b-2 见下已彻底修。
 - **抽屉可观测性 + 产物落地 + UI 收口(已做)** — 围绕"点开用例能看到全过程"补齐数据链:
   - **TestSpec 存档可视化** — `ExecutionRecord.spec`(+DB 列)每次执行存档 LLM 翻译产物;抽屉左栏纯导航(用例信息/测试结果/步骤),长内容(预置/预期/TestSpec/断言)移右侧宽栏滚动;断言视图聚合步骤级 expect(与 `collect_assertions` 一致)。
   - **截图捕获管线** — 此前 `ToolOutcome.screenshot` 空有字段从未落盘。补:`MCPClient.result_to_image_bytes` 取 base64;`ReActLoop.capture_screenshot` 回调每个浏览器动作后落 `step_NNN.png`;`agent.run` 接 `run_id` → Recorder 用**真实 run_id** 建目录(原 `norun` 与前端取图路径不一致);orchestrator 透传 run_id;env `MCP_SCREENSHOT=0` 可关。
@@ -137,10 +137,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **`custom_tool` 数据断言执行(规格 §5.3#4/§5.4)** — `AssertionEngine(tool_registry=...)` 实现 `_check_custom_tool`:**约定** `target`=已注册工具名、`selector`=JSON 参数、`expected`=期望子串(空则结果非空且非错误即通过);工具失败→FAIL;未接 registry 或工具名未注册→skipped(不静默放过)。`agent.run` 把 `self.tools_registry` 传入引擎。
   - **`llm_judge` 仍保持 skipped(铁律2)** — 即便接了 registry 也**不执行 LLM 眼判**,标 skipped 待人工复核;裁决全 skipped 不算可信通过。
   - **action_map 不动(有意)** — `PageVocabulary.action_map` 规格里只有一行声明、无任何语义定义;「填」它=凭空发明 Phase 5 设计(违反「不过度设计未来阶段」),故保留为显式预留字段。`ExecutionRecord.generated_code` 的 `# TODO: Phase 5` 是**误导性 stale 注释**(其实早已接通)→ 已清理。`/vocabulary/scan` 是有意的 no-op(真扫描在执行期增量做)。
+- **ReAct 卡死修复 + 首轮真实 live 验证(2026-06-07,已做)** — 用 DeepSeek(`deepseek-v4-flash`)+ 真 Chrome(playwright-mcp,`--isolated --headless`)live 跑 saucedemo,**端到端首次拿到 live 绿**。
+  - **根因**:弱模型抓完快照后**只回文字、不发工具调用**(落入 `react_loop` 的 `not resp.tool_calls` 哑火分支),原因是 Context Compact 只留最近 2 条观察、且按**中文步骤关键词**截断快照(页面文案常是英文,如「登录按钮」命不中 `Login` → 目标行连同 ref 被丢)→ 模型手里没 ref 只能叙述 → 哑火超 `max_idle_nudges` 被终止 → 卡在「点登录」FAIL。
+  - **修法**(`harness/react_loop.py`):哑火且仍有未完成步骤时,**主动抓一份最新完整快照**(`_safe_snapshot`)作为**普通 user 消息**(不加 `[观察]` 前缀 → 不被 Compact 折叠/截断)喂回,配强指令「立即只调用一个工具,用快照里的 ref 操作当前步骤」。给具体 ref + 逼出动作,治叙述退化。无 `get_snapshot` 时退回纯文字催促(向后兼容)。
+  - **live 实证(5 轮)**:修复前 1 轮卡在点登录 FAIL;修复后 TC101 ×3 全 PASS(其中 2 轮**真实再现哑火并被快照续推拉回完成**,非靠运气)、TC102 PASS(且 live 跑出 1 次成功**自愈**)。终态断言 `url_contains inventory.html` + `text_equals 购物车角标==1` 均 live 绿。
 - **下一步候选:**
   - **执行期捕获真实 a11y role+name → ActionStep(已做)** — `page_probe` 解析快照里每个节点的 `ref`(`A11yNode.ref` + `build_ref_index(text)→{ref:node}`);`react_loop` 在操作元素时(`browser_click/type/...` 带 `ref`)从**上一份观察快照**的 ref 索引回查真实 `(role, name)`,连同当前业务步骤 `target` 记到 `ActionStep`(`element_role`/`element_name`/`step_target`)。`codegen/locators.py::locators_from_steps` 据此对**未录入词汇表**的目标也产出稳健 `get_by_role` 定位;`agent.run` 把它 overlay 到词汇表解析结果之上(**执行捕获优先**:`{**vocab, **captured}`)。仅 role+name 齐备才采纳(role 无 name 过宽,反不如词汇表)。
-  - 阶段五(用例管理平台集成,规格"现在不做");ReAct 早停护栏 / 真实内网用例 live 验证。
-- 单测数量以 `python -m pytest -q` 实跑为准(当前约 370;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
+  - 阶段五(用例管理平台集成,规格"现在不做");**真实内网用例** live 验证(saucedemo 已 live 绿,内网真实业务系统待跑)。
+- 单测数量以 `python -m pytest -q` 实跑为准(当前约 371;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
 
 T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规格)与 §6(实施计划)。
 
@@ -162,7 +166,13 @@ T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规
   浏览器缓存,都比代码更会骗人。(已根除:`:8000` 不再挂前端,前端只走 `:5173`。)
 - **Tailwind 产物是 `rgb()` 不是 hex**:在编译 CSS 里 grep 颜色要按 `rgb(...)` 找。
 - **a11y 快照是 YAML**:纯数字/特殊文本会被加引号(`: "1"`),解析须剥字面引号,
-  否则 `text_equals "1" != 1` 误判(saucedemo 终态拿不到 live 绿的真因,非"加购不生效")。
+  否则 `text_equals "1" != 1` 误判(已修;saucedemo 终态现已 live 绿)。
+- **弱模型会"抓完快照只叙述不行动"**:DeepSeek 等拿到快照后可能只回文字、不发 tool_call
+  (落入哑火分支),叠加 Context Compact 按中文关键词截断英文页面快照丢了 ref → 卡死终止。
+  解法:哑火时**主动喂最新完整快照 + 强指令逼出单个工具调用**(见 `react_loop._safe_snapshot`)。
+  教训:weak-model live 跑要给「具体 ref + 强制动作」,不能只靠文字催促。
+- **单跑一次绿 ≠ 修复生效**:live 有 LLM 波动,bug 可能本轮没复现。验证护栏类修复要
+  **多跑几轮**、并确认**真复现了问题且被恢复**(看日志里护栏路径是否触发),否则可能是运气。
 - **稳健定位在语义层**:role+可及名/test-id 不随样式/布局/class 变;CSS/文本脆弱。
   定位逻辑要与具体测试框架解耦(模型+解析层 / 渲染层分离)。
 - **per-run 数据别按 case_id 落平文件**:会被后续 run 覆盖、抽屉串味;优先存进 `ExecutionRecord`。

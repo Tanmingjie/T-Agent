@@ -192,6 +192,54 @@ async def test_idle_nudge_pushes_model_to_continue():
     assert plan.all_done()  # 哑火没有让它提前结束,最终做完了
 
 
+async def test_idle_nudge_feeds_fresh_snapshot_and_recovers():
+    # 哑火时主动喂最新快照 + 强指令,逼出动作(修 DeepSeek 抓完快照后退化叙述卡死)
+    plan = _plan(1)
+    snaps: list[int] = []
+
+    async def get_snap():
+        snaps.append(1)
+        return '### Snapshot\n- button "Login" [ref=e9]'
+
+    seen_nudge: dict = {}
+
+    class _CapturingLLM(LLMClient):
+        def __init__(self):
+            self._i = 0
+
+        async def chat(self, messages, tools=None, **kwargs) -> LLMResponse:
+            self._i += 1
+            if self._i == 1:
+                return _resp(content="我先想想")  # 哑火:无 tool_call
+            # 第二轮:记录收到的最近 user 消息(应含喂回的快照),然后点击完成
+            seen_nudge["last_user"] = messages[-1]["content"]
+            return _resp(content="点登录", calls=[("browser_click", {"ref": "e9"})])
+
+    plan2 = _plan(1)
+
+    async def execute(name, arguments):
+        handled = plan2.apply_tool_call(name, arguments)
+        if handled is not None:
+            return ToolOutcome(text=handled)
+        # 点击后标记完成,使循环收敛
+        plan2.apply_tool_call("mark_step_done", {"step_no": 1})
+        return ToolOutcome(text="已执行 " + name, url="http://x")
+
+    loop = ReActLoop(
+        _CapturingLLM(),
+        tools=[],
+        execute=execute,
+        step_plan=plan2,
+        build_system=_build_system,
+        get_snapshot=get_snap,
+    )
+    result = await loop.run()
+    assert snaps, "哑火时应主动抓取快照"
+    assert "[当前页面快照]" in seen_nudge["last_user"]
+    assert "Login" in seen_nudge["last_user"]  # 快照内容被喂回
+    assert plan2.all_done()
+
+
 async def test_idle_nudge_cap_terminates():
     # 模型持续哑火,超过 max_idle_nudges 后兜底结束(不空转)
     plan = _plan(2)

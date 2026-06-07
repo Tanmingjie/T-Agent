@@ -241,20 +241,28 @@ class ReActLoop:
                     if maybe_result is not None
                     else ""
                 )
+                # 主动抓一份**最新完整快照**塞回去再催促。模型"只回文字不调工具"多因手里
+                # 没有可用 ref——上下文压缩把旧快照折叠/按中文关键词截断了(页面文案常是英文,
+                # 关键词命不中 → 目标行连同 ref 被丢)。直接喂当前页面 + 强制只发一个工具调用,
+                # 比单纯文字催促更能逼出动作(实测 DeepSeek 抓完快照后退化成叙述、卡死至终止)。
+                fresh = await self._safe_snapshot()
                 messages.append({"role": "assistant", "content": reasoning})
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"你还没有完成所有步骤,当前应执行{cur_desc}。{premature}"
-                            "请**立即调用工具**继续:若不确定当前页面有哪些可操作元素,"
-                            "先调用 browser_snapshot 取最新快照(每个元素带 ref),再用 "
-                            "browser_click/browser_type 等操作该元素;完成该步后调用 "
-                            "mark_step_done。所有步骤都完成后再输出 TEST_RESULT。"
-                            "不要只输出文字而不调用工具,也不要提前停止。"
-                        ),
-                    }
+                nudge = (
+                    f"你还没有完成所有步骤,现在必须执行{cur_desc}。{premature}"
+                    "请**立即只调用一个工具**(如 browser_click / browser_type / "
+                    "browser_select_option),用快照里对应元素的 ref 操作该步骤目标;"
+                    "完成该步后调用 mark_step_done。所有步骤完成后才输出 TEST_RESULT。"
+                    "禁止只回复文字而不调用工具,也不要提前停止。"
                 )
+                if fresh:
+                    # 作为**普通** user 消息附快照(不加 [观察] 前缀 → 不被 Context Compact
+                    # 折叠/截断),确保模型下一轮能看到完整 ref 去操作。
+                    nudge += f"\n\n[当前页面快照]\n{fresh}"
+                    if "[ref=" in fresh:
+                        last_snapshot_text = fresh
+                else:
+                    nudge += "若不确定页面元素,先调用 browser_snapshot 获取带 ref 的快照,再操作。"
+                messages.append({"role": "user", "content": nudge})
                 continue
             idle_nudges = 0  # 本轮有工具调用,重置哑火计数
 
@@ -368,6 +376,16 @@ class ReActLoop:
         # target 里的分词也加入(中文按整体,英文/空格切分)
         kws += [w for w in cur.target.replace("(", " ").replace(")", " ").split() if w]
         return [k for k in kws if k]
+
+    async def _safe_snapshot(self) -> str:
+        """安全地取一份当前页面快照(无 get_snapshot 或失败时返回空串)。"""
+        if self.get_snapshot is None:
+            return ""
+        try:
+            return await self.get_snapshot() or ""
+        except Exception as e:  # noqa: BLE001 — 取快照失败不应炸循环
+            logger.warning("idle 续推取快照失败:%s", e)
+            return ""
 
     async def _heal_action(self, tc: ToolCall, intent: str) -> tuple[list[dict], str]:
         """工具失败时调自愈重定位,返回 (heal_attempts, 回灌给 LLM 的建议后缀)。"""
