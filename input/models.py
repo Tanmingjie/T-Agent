@@ -104,6 +104,9 @@ class ActionStep(BaseModel):
     # 让未录入词汇表的目标也能在 codegen 拿到稳健 get_by_role 定位(覆盖面 > 仅词汇表)。
     element_role: str = ""
     element_name: str = ""
+    # 实际执行的 Playwright 定位表达式(从 tool_result「Ran Playwright code」抓取,ground truth)。
+    # 比快照重建的 role+name 更可靠(它真跑通过、必然唯一可用),供 codegen 对齐定位器。
+    element_selector: str = ""
     step_target: str = ""  # 该操作所属业务步骤的语义 target(供 codegen 按 target 回填定位)
     heal_attempts: list[dict] = []
     assertion_results: list[dict] = []

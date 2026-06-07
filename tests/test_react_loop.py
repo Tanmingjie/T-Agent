@@ -521,3 +521,27 @@ async def test_intent_parsed_into_actionstep():
     )
     result = await loop.run()
     assert result.action_steps[0].intent == "点击登录按钮以进入系统"
+
+
+# ── 定位器对齐捕获:ref 别名 + 实际执行定位器抽取 ──────────────
+
+
+def test_ref_alias_recovers_ref_from_target():
+    from harness.react_loop import _ref_alias
+
+    assert _ref_alias({"ref": "e11"}) == "e11"
+    # 模型把 ref 放进 target(实测 DeepSeek)
+    assert _ref_alias({"element": "用户名", "target": "e13"}) == "e13"
+    # target 不像 ref(是普通文本)→ 不误认
+    assert _ref_alias({"target": "提交按钮"}) is None
+    assert _ref_alias({}) is None
+
+
+def test_extract_executed_locator():
+    from harness.react_loop import extract_executed_locator
+
+    t1 = "### Ran Playwright code\n```js\nawait page.locator('[data-test=\"username\"]').fill('x');\n```"
+    assert extract_executed_locator(t1) == "page.locator('[data-test=\"username\"]')"
+    t2 = "await page.getByRole('button', { name: 'Login' }).click();"
+    assert extract_executed_locator(t2) == "page.getByRole('button', { name: 'Login' })"
+    assert extract_executed_locator("no code here") == ""

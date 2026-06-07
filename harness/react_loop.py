@@ -36,6 +36,32 @@ logger = logging.getLogger(__name__)
 
 _TEST_RESULT_RE = re.compile(r"TEST_RESULT\s*[:：]\s*(PASS|FAIL)", re.IGNORECASE)
 _INTENT_RE = re.compile(r"(?:INTENT|意图)\s*[:：]\s*(.+)")
+# playwright-mcp 的 ref 形如 e11 / e123;模型有时把它放在 ref 之外的别名参数里(实测 DeepSeek
+# 放进 target)。据此从别名回收 ref,恢复「执行期捕获真实 role+name」。
+_REF_RE = re.compile(r"^e\d+$")
+# 从 tool_result 的「Ran Playwright code」块抓**实际执行的定位表达式**(ground truth):
+# 形如 page.locator('[data-test="username"]') / page.getByRole('button', { name: 'Login' })。
+_EXEC_LOCATOR_RE = re.compile(r"page\.(?:locator|getBy[A-Za-z]+)\([^()]*\)")
+
+
+def _ref_alias(arguments: dict) -> str | None:
+    """从 tool_call 参数里取 ref:优先 ``ref``,否则看 ``target``/``element_ref`` 等是否像 ref。"""
+    direct = arguments.get("ref")
+    if direct:
+        return str(direct)
+    for k in ("target", "element_ref", "ref_id"):
+        v = arguments.get(k)
+        if v and _REF_RE.match(str(v).strip()):
+            return str(v).strip()
+    return None
+
+
+def extract_executed_locator(text: str) -> str:
+    """从工具结果文本里抽取首个实际执行的 Playwright 定位表达式(无则空串)。"""
+    if not text:
+        return ""
+    m = _EXEC_LOCATOR_RE.search(text)
+    return m.group(0) if m else ""
 
 
 @dataclass
@@ -307,11 +333,13 @@ class ReActLoop:
                     except Exception as e:  # noqa: BLE001 — 截图失败不影响执行
                         logger.warning("步骤 %d 截图失败:%s", step_no, e)
 
-                # 执行期捕获:从操作回传的 ref 回查上一份快照,拿被操作元素真实 role+name
+                # 执行期捕获:从操作回传的 ref(含 target 等别名)回查上一份快照,拿真实 role+name;
+                # 同时抓**实际执行的定位表达式**(ground truth,优先于快照重建,见 codegen 对齐)。
                 el_role, el_name = "", ""
-                ref = tc.arguments.get("ref")
+                ref = _ref_alias(tc.arguments)
                 if ref and (node := ref_index.get(str(ref))) is not None:
                     el_role, el_name = node.role, node.name
+                el_selector = extract_executed_locator(outcome.text)
 
                 result.action_steps.append(
                     ActionStep(
@@ -326,6 +354,7 @@ class ReActLoop:
                         url=outcome.url,
                         element_role=el_role,
                         element_name=el_name,
+                        element_selector=el_selector,
                         step_target=cur_target,
                         is_custom_tool=outcome.is_custom_tool,
                         is_hook_action=outcome.is_hook_action,

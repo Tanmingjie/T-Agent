@@ -210,3 +210,56 @@ def test_bdd_unresolved_target_marks_review():
     )
     code = BDDGenerator().generate(spec, _record(), locators={}).step_defs
     assert "TODO 定位器兜底" in code
+
+
+# ── 定位器对齐:解析实际执行的 Playwright 定位表达式 ──────────────
+
+
+def test_locator_from_executed_variants():
+    from codegen.locators import LocatorStrategy, locator_from_executed
+
+    r = locator_from_executed("page.getByRole('button', { name: 'Login' })", "登录")
+    assert r.strategy == LocatorStrategy.ROLE and r.role == "button" and r.name == "Login"
+    assert r.fallback is False
+
+    css = locator_from_executed("page.locator('[data-test=\"username\"]')", "用户名")
+    assert css.strategy == LocatorStrategy.CSS and css.value == '[data-test="username"]'
+
+    tid = locator_from_executed("page.getByTestId('user')", "用户名")
+    assert tid.strategy == LocatorStrategy.TEST_ID and tid.name == "user"
+
+    ph = locator_from_executed("page.getByPlaceholder('Username')", "用户名")
+    assert ph.strategy == LocatorStrategy.PLACEHOLDER and ph.name == "Username"
+
+    assert locator_from_executed("", "x") is None
+    assert locator_from_executed("await page.goto('http://x')", "x") is None
+
+
+def test_locators_from_steps_prefers_executed_over_role_name():
+    from codegen.locators import LocatorStrategy, locators_from_steps
+    from input.models import ActionStep
+
+    steps = [
+        # 实际执行的 CSS(唯一可用)应优先于歧义的 role+name
+        ActionStep(
+            step_no=1,
+            tool_name="browser_click",
+            element_role="button",
+            element_name="Add to cart",
+            element_selector="page.locator('[data-test=\"add-to-cart-sauce-labs-backpack\"]')",
+            step_target="加购背包",
+        ),
+        # 无 executed → 退回 role+name
+        ActionStep(
+            step_no=2,
+            tool_name="browser_click",
+            element_role="button",
+            element_name="Login",
+            step_target="登录按钮",
+        ),
+    ]
+    locs = locators_from_steps(steps)
+    assert locs["加购背包"].strategy == LocatorStrategy.CSS
+    assert "add-to-cart" in locs["加购背包"].value
+    assert locs["登录按钮"].strategy == LocatorStrategy.ROLE
+    assert locs["登录按钮"].name == "Login"
