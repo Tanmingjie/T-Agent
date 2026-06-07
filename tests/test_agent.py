@@ -6,7 +6,12 @@
 
 from __future__ import annotations
 
-from harness.agent import TestCaseAgent, collect_assertions, make_executor
+from harness.agent import (
+    TestCaseAgent,
+    collect_assertions,
+    ensure_navigation_step,
+    make_executor,
+)
 from harness.hooks import ExecutionContext
 from harness.llm import LLMClient, LLMResponse, ToolCall
 from harness.step_plan import StepPlan
@@ -244,6 +249,36 @@ async def test_run_records_steps():
     record = await agent.run(_case(), spec=_spec())
     assert [s.tool_name for s in record.steps] == ["browser_click", "mark_step_done"]
     assert record.exec_id
+
+
+# ── codegen 导航注入(生成的测试可独立回放) ──────────────────
+
+
+def test_ensure_navigation_step_injects_when_absent():
+    spec = TestSpec(
+        case_id="TC",
+        name="x",
+        base_url="https://www.saucedemo.com",
+        steps=[SpecStep(action="fill", target="用户名", data="u")],
+    )
+    out = ensure_navigation_step(spec)
+    assert out.steps[0].action == "navigate"
+    assert out.steps[0].target == "https://www.saucedemo.com"
+    assert len(out.steps) == 2  # 原步骤保留
+
+
+def test_ensure_navigation_step_noop_when_present_or_no_base_url():
+    has_nav = TestSpec(
+        case_id="TC",
+        name="x",
+        base_url="http://x",
+        steps=[SpecStep(action="navigate", target="http://x/login")],
+    )
+    assert ensure_navigation_step(has_nav).steps[0].target == "http://x/login"
+    no_url = TestSpec(
+        case_id="TC", name="x", base_url="", steps=[SpecStep(action="click", target="a")]
+    )
+    assert len(ensure_navigation_step(no_url).steps) == 1
 
 
 # ── 预置条件分类接通(P1) ──────────────────────────────────────

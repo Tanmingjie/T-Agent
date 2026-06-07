@@ -40,7 +40,14 @@ from harness.recorder import Recorder
 from harness.skills import SkillManager
 from harness.step_plan import StepPlan
 from harness.tools import ToolRegistry
-from input.models import Assertion, ExecutionRecord, PreconditionItem, TestCase, TestSpec
+from input.models import (
+    Assertion,
+    ExecutionRecord,
+    PreconditionItem,
+    SpecStep,
+    TestCase,
+    TestSpec,
+)
 from intelligence.pre_analysis import SpecGenerator
 from intelligence.scanner import Scanner
 from intelligence.vocabulary import enhance_targets
@@ -97,6 +104,21 @@ def _step_keywords(step_plan: StepPlan) -> list[str]:
         kws.append(cur.data)
     kws += [w for w in cur.target.replace("(", " ").replace(")", " ").split() if w]
     return [k for k in kws if k]
+
+
+def ensure_navigation_step(spec: TestSpec) -> TestSpec:
+    """codegen 前置:若 spec 无导航步但有 base_url,**注入隐式首步导航**。
+
+    很多用例把"打开页面"写在预置条件(被分类为 state_hook,不进 steps),或干脆默认浏览器
+    已在目标页。这样生成的 pytest-bdd 代码会缺 `page.goto`,**回放时根本不打开页面**而失败。
+    这里在生成前补一个 navigate 步,使产物可独立回放。仅用于 codegen 输入,不影响执行。
+    """
+    if not spec.base_url:
+        return spec
+    if any(s.action == "navigate" for s in spec.steps):
+        return spec
+    nav = SpecStep(action="navigate", target=spec.base_url)
+    return spec.model_copy(update={"steps": [nav, *spec.steps]})
 
 
 def collect_assertions(spec: TestSpec) -> list[Assertion]:
@@ -439,6 +461,8 @@ class TestCaseAgent:
             try:
                 # 把断言聚合进 spec(LLM 常放 step.expect),否则生成的 Then 段为空
                 gen_spec = spec.model_copy(update={"assertions": collect_assertions(spec)})
+                # 无导航步则注入隐式首步导航,使生成的测试可独立回放(否则缺 page.goto)
+                gen_spec = ensure_navigation_step(gen_spec)
                 # 解析层(框架无关):语义 target → 稳健 Locator(词汇表 role+name 优先)
                 targets = [s.target for s in gen_spec.steps] + [
                     a.target for a in gen_spec.assertions
