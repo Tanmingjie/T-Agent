@@ -80,6 +80,15 @@ python cli/run_case.py --check-llm                                       # LLM �
 python examples/make_automation_exercise_xlsx.py                          # 生成 xlsx(首次)
 python cli/run_case.py --excel examples/automation_exercise_cases.xlsx \
     --case-id AE01 --base-url https://automationexercise.com --isolated --headless
+
+# saucedemo 完整结算流程(多页表单 + 终态断言,已 live 绿)
+python cli/run_case.py --excel examples/saucedemo_checkout.xlsx --case-id TC201 \
+    --base-url https://www.saucedemo.com --isolated --headless
+
+# 接入 Custom Tool(LLM 按需调用 + custom_tool 数据断言)
+python cli/run_case.py --excel <用例.xlsx> --case-id <ID> --tools examples/custom_tools.yaml \
+    --base-url <url> --isolated --headless
+# (API 路径用环境变量:CUSTOM_TOOLS_YAML=examples/custom_tools.yaml)
 ```
 
 ## 目录结构
