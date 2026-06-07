@@ -247,12 +247,14 @@ class ReActLoop:
                 # 比单纯文字催促更能逼出动作(实测 DeepSeek 抓完快照后退化成叙述、卡死至终止)。
                 fresh = await self._safe_snapshot()
                 messages.append({"role": "assistant", "content": reasoning})
+                step_no_hint = cur.step_no if cur else "该步"
                 nudge = (
-                    f"你还没有完成所有步骤,现在必须执行{cur_desc}。{premature}"
-                    "请**立即只调用一个工具**(如 browser_click / browser_type / "
-                    "browser_select_option),用快照里对应元素的 ref 操作该步骤目标;"
-                    "完成该步后调用 mark_step_done。所有步骤完成后才输出 TEST_RESULT。"
-                    "禁止只回复文字而不调用工具,也不要提前停止。"
+                    f"你只输出了文字、没有调用任何工具,系统判定为未推进。现在必须执行{cur_desc}。"
+                    f"{premature}请**立即只调用一个工具**:"
+                    f"若该步骤的页面操作其实已经完成,直接调用 mark_step_done(step_no={step_no_hint}) 推进;"
+                    "否则用快照里对应元素的 ref 调用 browser_click / browser_type / "
+                    "browser_select_option 等操作目标元素。"
+                    "所有步骤完成后才输出 TEST_RESULT。禁止只回复文字而不调用工具。"
                 )
                 if fresh:
                     # 作为**普通** user 消息附快照(不加 [观察] 前缀 → 不被 Context Compact
