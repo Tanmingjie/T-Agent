@@ -38,7 +38,8 @@
 
 ## 环境
 
-- Python **3.11**(`uv` 可选,亦支持标准 `venv` + `pip`)
+- Python **3.11+**(下限,无上限;已含 3.14。`uv` 可选,亦支持标准 `venv` + `pip`)
+  - 3.14 上若个别依赖(如 pydantic / uvicorn[standard])无预编译 wheel,**上调该依赖版本**即可,无需降 Python
 - Node.js **18+**(前端 + `npx @playwright/mcp` 浏览器层,stdio)
 - LLM: 本地 Qwen3 / DeepSeek 等,经 Ollama / LiteLLM 接入(可用 `.env` 配置)
 
