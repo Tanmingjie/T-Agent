@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T-Agent 进展汇报</title>
+<style>
+  :root{
+    --brand:#478d54; --brand-d:#356b41; --brand-l:#e8f2ea; --brand-ll:#f3f8f4;
+    --ink:#1f2a24; --ink2:#52605a; --line:#d9e2dc; --canvas:#eef1ee; --card:#ffffff;
+    --amber:#c47f1a; --amber-l:#fdf3e0; --gray:#8a948e;
+  }
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:"Microsoft YaHei","PingFang SC","Segoe UI",sans-serif;
+    background:var(--canvas); color:var(--ink);
+    overflow:hidden;
+  }
+  /* 固定设计画布，按视口等比放大铺满屏幕（图形随之变大） */
+  .deck{
+    width:1280px; height:720px; position:fixed; left:50%; top:50%;
+    transform-origin:center center; transform:translate(-50%,-50%);
+  }
+  .slide{
+    position:absolute; inset:0; display:none; flex-direction:column;
+    padding:46px 64px 64px; background:var(--canvas);
+    animation:fade .35s ease;
+  }
+  .slide.active{ display:flex; }
+  @keyframes fade{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+
+  /* header */
+  .s-kicker{ color:var(--brand); font-size:14px; font-weight:700; letter-spacing:2px; text-transform:uppercase; }
+  .s-title{ font-size:30px; font-weight:800; margin-top:4px; color:var(--ink); }
+  .s-title .star{ color:var(--brand); }
+  .s-sub{ font-size:15px; color:var(--ink2); margin-top:8px; line-height:1.5; }
+  .rule{ height:4px; width:60px; background:var(--brand); border-radius:3px; margin-top:12px; }
+
+  /* generic */
+  .row{ display:flex; gap:18px; }
+  .col{ flex:1; }
+  .card{ background:var(--card); border:1px solid var(--line); border-radius:14px;
+         box-shadow:0 2px 10px rgba(40,70,50,.05); padding:18px 20px; }
+  .muted{ color:var(--ink2); }
+  .small{ font-size:12.5px; }
+  .tiny{ font-size:11.5px; }
+
+  /* page1 signals */
+  .signals{ display:flex; gap:16px; margin:8px 0 4px; }
+  .sig{ flex:1; background:var(--brand-ll); border:1px solid var(--brand-l);
+        border-left:5px solid var(--brand); border-radius:12px; padding:14px 18px; }
+  .sig b{ display:block; font-size:18px; color:var(--brand-d); }
+  .sig span{ font-size:12.5px; color:var(--ink2); }
+
+  /* page1 — compact signal chips */
+  .sigstrip{ display:flex; gap:10px; margin:6px 0 2px; }
+  .sigchip{ flex:1; background:var(--brand-ll); border:1px solid var(--brand-l);
+    border-left:4px solid var(--brand); border-radius:9px; padding:7px 12px; }
+  .sigchip b{ color:var(--brand-d); font-size:13.5px; }
+  .sigchip span{ color:var(--ink2); font-size:11px; margin-left:6px; }
+
+  /* page1 — macro ribbon */
+  .macroflow{ display:grid; grid-template-columns:110px repeat(5,1fr); gap:14px; margin-top:14px; }
+  .mstage{ position:relative; color:#fff; border-radius:9px; padding:9px 6px; text-align:center;
+    font-weight:800; font-size:13.5px; }
+  .mstage small{ display:block; font-weight:500; font-size:9.5px; opacity:.9; margin-top:2px; }
+  .mstage::after{ content:'›'; position:absolute; right:-8px; top:50%; transform:translateY(-50%);
+    color:var(--brand); font-size:20px; font-weight:900; z-index:3; }
+  .mstage:last-child::after{ display:none; }
+  .m1{ background:#6aa676 } .m2{ background:#589162 } .m3{ background:#478d54 }
+  .m4{ background:#3c7848 } .m5{ background:#2f5f39 }
+
+  /* page1 — branched flow with SVG fork, aligned to macro stages */
+  .wf{ display:grid; grid-template-columns:110px repeat(5,1fr); grid-template-rows:1fr 1fr;
+    gap:18px 14px; flex:1; margin-top:14px; min-height:0; position:relative; }
+  .forkzone{ grid-column:1; grid-row:1 / span 2; position:relative; }
+  .startnode{ position:absolute; left:0; top:50%; transform:translateY(-50%);
+    background:var(--ink); color:#fff; font-size:12.5px; font-weight:800; padding:12px 7px;
+    border-radius:10px; writing-mode:vertical-rl; text-orientation:upright; letter-spacing:3px; }
+  .forkzone svg{ position:absolute; inset:0; width:100%; height:100%; overflow:visible; }
+  .tcell{ position:relative; display:flex; flex-direction:column; gap:6px; justify-content:center; }
+  .tcell.arr::after{ content:'›'; position:absolute; right:-12px; top:50%; transform:translateY(-50%);
+    font-size:21px; font-weight:900; color:var(--brand); z-index:2; }
+  .tcell.gray.arr::after{ color:#c2cbc4; }
+  .tlabel{ font-size:11px; font-weight:800; padding:2px 10px; border-radius:20px; align-self:flex-start; }
+  .tlabel.p1{ background:var(--brand); color:#fff; }
+  .tlabel.tgt{ background:#e3e8e4; color:#828d85; }
+  .n{ border-radius:8px; padding:6px 9px; font-size:11px; line-height:1.3; text-align:center; }
+  .n.mvp{ background:#eaf5ec; border:1.5px solid var(--brand); }
+  .n.mvp b{ color:var(--brand-d); }
+  .n.exec{ background:var(--brand); color:#fff; border:1.5px solid var(--brand); font-weight:700; }
+  .n.tgt{ background:#f5f6f5; border:1.5px dashed #bcc5be; color:#76817a; }
+  .n .st{ color:var(--brand); font-weight:800; }
+  .subflow{ background:#f5f6f5; border:1.5px dashed #bcc5be; border-radius:8px; padding:6px 7px; }
+  .subflow .sfh{ font-size:10px; color:#76817a; font-weight:700; text-align:center; }
+  .subflow .sfi{ font-size:10px; color:#6c776f; background:#fff; border:1px solid #e2e7e3;
+    border-radius:5px; padding:2px 5px; margin-top:4px; text-align:center; }
+  .legend{ display:flex; gap:22px; align-items:center; font-size:11.5px; color:var(--ink2); margin-top:9px; }
+  .legend .lg{ display:flex; align-items:center; gap:7px; }
+  .sw{ width:18px; height:12px; border-radius:3px; display:inline-block; }
+  .sw.g{ background:#eaf5ec; border:1.5px solid var(--brand); }
+  .sw.e{ background:var(--brand); }
+  .sw.t{ background:#f5f6f5; border:1.5px dashed #bcc5be; }
+
+  /* flow blocks */
+  .flowwrap{ flex:1; display:flex; gap:18px; margin-top:14px; min-height:0; }
+  .flowcol{ flex:1; display:flex; flex-direction:column; }
+  .flowhd{ font-size:13px; font-weight:800; padding:6px 12px; border-radius:8px 8px 0 0; color:#fff; }
+  .flowbody{ border:1.5px solid var(--line); border-top:none; border-radius:0 0 12px 12px;
+             padding:14px; flex:1; background:var(--card); }
+  .nd{ background:var(--brand-ll); border:1px solid var(--line); border-radius:9px;
+       padding:8px 11px; font-size:12.5px; line-height:1.35; text-align:center; }
+  .nd.start{ background:var(--brand); color:#fff; border-color:var(--brand); font-weight:700; }
+  .nd.ok{ background:#eaf5ec; border-color:#bfe0c6; }
+  .nd.fail{ background:var(--amber-l); border-color:#f0d9a8; }
+  .nd.mvp{ background:#fff; border:1.5px solid var(--brand); }
+  .arrow{ text-align:center; color:var(--brand); font-size:14px; line-height:1; margin:5px 0; }
+  .branch{ display:flex; gap:10px; }
+  .branch .nd{ flex:1; }
+  .badge{ display:inline-block; background:var(--brand); color:#fff; font-size:11px;
+          font-weight:700; padding:2px 9px; border-radius:20px; margin-left:8px; }
+  .note{ font-size:11.5px; color:var(--ink2); margin-top:10px; line-height:1.5;
+         background:var(--brand-ll); padding:9px 12px; border-radius:8px; }
+
+  /* table */
+  table{ width:100%; border-collapse:collapse; font-size:12.8px; }
+  th,td{ border:1px solid var(--line); padding:8px 11px; text-align:left; vertical-align:top; }
+  th{ background:var(--brand); color:#fff; font-weight:700; }
+  tbody tr:nth-child(even){ background:var(--brand-ll); }
+  tr.hl td{ background:#fdf6e6; font-weight:600; }
+  tr.hl td:first-child{ color:var(--amber); }
+  td.dim{ color:var(--ink2); }
+  td.win{ color:var(--brand-d); font-weight:600; }
+
+  .placeholder{ border:2px dashed var(--gray); border-radius:12px; color:var(--gray);
+    display:flex; align-items:center; justify-content:center; font-size:13px; padding:18px; background:#fafbfa; }
+
+  /* section label */
+  .seclabel{ font-size:14px; font-weight:800; color:var(--brand-d); margin-top:12px;
+    padding-left:10px; border-left:4px solid var(--brand); }
+  /* milestones */
+  .msrow{ display:flex; gap:14px; align-items:stretch; }
+  .ms{ flex:none; min-width:170px; background:var(--card); border:1px solid var(--line);
+    border-left:5px solid var(--brand); border-radius:10px; padding:9px 16px;
+    display:flex; flex-direction:column; gap:1px; }
+  .ms.cur{ background:var(--brand-ll); }
+  .ms-tag{ font-size:11px; font-weight:800; color:var(--brand-d); }
+  .ms-date{ font-size:21px; font-weight:800; color:var(--brand); line-height:1.1; }
+  .ms-txt{ font-size:12.5px; color:var(--ink); }
+  .ms.ghost{ flex:1; border:2px dashed var(--gray); color:var(--gray);
+    align-items:center; justify-content:center; flex-direction:row; font-size:12px; background:#fafbfa; }
+
+  /* progress chips */
+  .progstrip{ display:flex; flex-wrap:wrap; gap:7px; }
+  .pchip{ font-size:11.5px; font-weight:700; padding:4px 12px; border-radius:20px; }
+  .pchip.done{ background:var(--brand); color:#fff; }
+  .pchip.doing{ background:var(--amber-l); color:var(--amber); border:1px solid #f0d9a8; }
+  /* findings list */
+  .findlist{ display:flex; flex-direction:column; gap:6px; }
+  .find{ display:flex; align-items:flex-start; gap:9px; font-size:12.5px; line-height:1.35; }
+  .find .fi{ width:18px; height:18px; flex:none; border-radius:50%; color:#fff; font-size:11px;
+    font-weight:800; display:flex; align-items:center; justify-content:center; margin-top:1px; }
+  .find.ok .fi{ background:var(--brand); }
+  .find.no .fi{ background:var(--amber); }
+
+  .quote{ margin-top:12px; background:var(--brand-d); color:#fff; border-radius:12px;
+    padding:12px 18px; font-size:14px; font-weight:600; line-height:1.5; }
+  .quote .q{ color:#bfe7c7; }
+
+  /* page3 pipeline */
+  .pipe{ flex:1; display:flex; gap:14px; margin-top:12px; min-height:0; }
+  .stages{ flex:2.05; display:flex; flex-direction:column; gap:7px; overflow:hidden; }
+  .stage{ display:flex; align-items:stretch; gap:0; }
+  .stage .num{ width:30px; flex:none; background:var(--brand); color:#fff; font-weight:800;
+    font-size:13px; border-radius:8px 0 0 8px; display:flex; align-items:center; justify-content:center; }
+  .stage .body{ flex:1; background:var(--card); border:1px solid var(--line); border-left:none;
+    border-radius:0 8px 8px 0; padding:6px 11px; }
+  .stage .t{ font-size:12.8px; font-weight:700; }
+  .stage .d{ font-size:11px; color:var(--ink2); line-height:1.3; margin-top:1px; }
+  .stage .mods{ font-size:10px; color:var(--brand-d); }
+  .stage.assert .num{ background:var(--amber); }
+  .stage.assert .body{ border-color:#f0d9a8; background:#fffaf0; }
+  .stage.split .body{ display:flex; gap:10px; }
+  .stage.split .half{ flex:1; }
+  .stage.split .half.ok{ border-left:3px solid var(--brand); padding-left:8px; }
+  .stage.split .half.fail{ border-left:3px solid var(--amber); padding-left:8px; }
+  .suitebar{ background:var(--ink); color:#d8e6dc; font-size:10.5px; border-radius:8px;
+    padding:6px 11px; line-height:1.4; }
+  .caps{ flex:1; display:flex; flex-direction:column; gap:10px; }
+  .advcard{ background:var(--card); border:1px solid var(--line); border-left:4px solid var(--brand);
+    border-radius:10px; padding:8px 12px; }
+  .advcard .at{ font-size:12.5px; font-weight:800; color:var(--brand-d);
+    display:flex; justify-content:space-between; align-items:center; gap:6px; }
+  .advcard .at .stg{ font-size:9.5px; font-weight:700; color:#fff; background:var(--brand);
+    border-radius:10px; padding:1px 8px; white-space:nowrap; }
+  .advcard .ad{ font-size:11px; color:var(--ink2); line-height:1.35; margin-top:3px; }
+  .capbox{ background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px 14px; flex:1; }
+  .capbox h4{ font-size:13px; color:var(--brand-d); margin-bottom:7px; display:flex; align-items:center; gap:6px; }
+  .capbox h4 .dot{ width:9px;height:9px;border-radius:50%;background:var(--brand); }
+  .chips{ display:flex; flex-wrap:wrap; gap:5px; }
+  .chip{ font-size:10.8px; background:var(--brand-ll); border:1px solid var(--brand-l);
+    color:var(--ink); padding:3px 8px; border-radius:6px; }
+  .chip.eng{ background:#eef3f7; border-color:#dbe6ef; }
+  .readlines{ font-size:10.5px; color:var(--ink2); margin-top:auto; line-height:1.5;
+    background:var(--brand-ll); border-radius:8px; padding:8px 11px; }
+
+  /* page4 demos */
+  .demos{ flex:1; display:flex; gap:18px; margin-top:14px; min-height:0; }
+  .demolist{ flex:1.25; display:flex; flex-direction:column; gap:9px; }
+  .demo{ display:flex; align-items:center; gap:12px; background:var(--card);
+    border:1px solid var(--line); border-radius:10px; padding:10px 14px; }
+  .demo .ck{ width:24px;height:24px;flex:none;border-radius:50%;background:var(--brand);
+    color:#fff; display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:800; }
+  .demo .txt{ flex:1; font-size:12.8px; line-height:1.35; }
+  .demo .adv{ font-size:11px; color:var(--brand-d); font-weight:700; background:var(--brand-ll);
+    padding:3px 9px; border-radius:20px; white-space:nowrap; }
+  .demoright{ flex:1; display:flex; flex-direction:column; gap:12px; }
+
+  /* page5 */
+  .blankbox{ flex:1; margin-top:18px; }
+
+  /* nav */
+  .nav{ position:fixed; bottom:16px; right:22px; display:flex; align-items:center; gap:12px;
+    font-size:12px; color:var(--ink2); z-index:20; }
+  .nav button{ background:var(--brand); color:#fff; border:none; width:30px; height:30px;
+    border-radius:8px; font-size:15px; cursor:pointer; }
+  .nav button:disabled{ background:#bcc7c0; cursor:default; }
+  .pager{ position:fixed; bottom:18px; left:22px; font-size:11px; color:var(--gray);
+    letter-spacing:1px; z-index:20; }
+  .dots{ position:fixed; top:18px; right:24px; display:flex; gap:7px; z-index:20; }
+  .dots i{ width:8px;height:8px;border-radius:50%;background:#c3cfc7; display:block; cursor:pointer; }
+  .dots i.on{ background:var(--brand); width:20px; border-radius:5px; }
+  .foot{ position:absolute; bottom:20px; left:64px; font-size:11px; color:var(--gray); }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+  <!-- ===================== SLIDE 1 ===================== -->
+  <section class="slide active">
+    <div class="s-kicker">进度汇报</div>
+    <div class="s-title">AI 辅助自动化测试平台 · 进度汇报</div>
+    <div class="s-sub"><b>目的：</b>汇报 T-Agent 研发进度，并回答「为什么自研、与 openclaw 跑自动化的本质区别」。　<b>背景：</b>内网 Web 业务回归长期依赖人工，自动化脚本编写门槛高、随页面改版频繁失效，维护成本压垮收益。</div>
+    <div class="rule"></div>
+
+    <!-- 宏观流 ribbon -->
+    <div class="macroflow">
+      <div></div>
+      <div class="mstage m1">需求文档<small>REQUIREMENTS</small></div>
+      <div class="mstage m2">测试设计<small>测试点 / 用例设计</small></div>
+      <div class="mstage m3">测试执行<small>EXECUTION</small></div>
+      <div class="mstage m4">测试评估<small>报告 / 报表</small></div>
+      <div class="mstage m5">测试资产<small>ASSETS</small></div>
+    </div>
+
+    <!-- 起点 → SVG 分叉 → 1期(绿) / 目标(灰) 两分支，列对齐宏观流 -->
+    <div class="wf">
+      <!-- fork 区：起点 + SVG 分叉连线 -->
+      <div class="forkzone">
+        <div class="startnode">测试需求</div>
+        <svg viewBox="0 0 110 360" preserveAspectRatio="none">
+          <defs>
+            <marker id="agr" markerWidth="7" markerHeight="7" refX="4.5" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#478d54"/></marker>
+            <marker id="atg" markerWidth="7" markerHeight="7" refX="4.5" refY="3" orient="auto"><path d="M0,0 L7,3 L0,6 Z" fill="#c2cbc4"/></marker>
+          </defs>
+          <path d="M30 180 C72 180 72 90 106 90" fill="none" stroke="#478d54" stroke-width="2.5" vector-effect="non-scaling-stroke" marker-end="url(#agr)"/>
+          <path d="M30 180 C72 180 72 270 106 270" fill="none" stroke="#c2cbc4" stroke-width="2.5" stroke-dasharray="6 4" vector-effect="non-scaling-stroke" marker-end="url(#atg)"/>
+        </svg>
+      </div>
+
+      <!-- 1 期计划（绿 · row1）—— Excel 块横跨 需求文档 + 测试设计 -->
+      <div class="tcell arr" style="grid-column:2 / 4; grid-row:1">
+        <span class="tlabel p1">1 期计划（当前项目）</span>
+        <div class="n mvp"><b>Excel 完整用例导入 → 用例预解析</b><br><span style="font-size:10px;color:var(--brand-d)">替代「需求文档 + 测试设计」的方案</span></div>
+      </div>
+      <div class="tcell arr" style="grid-column:4; grid-row:1">
+        <div class="n mvp"><b>playwright-mcp 自动化执行</b><br><span style="font-size:10px">ReAct·护栏·AI自愈 + 确定性断言判定（规则引擎·非眼判）</span></div>
+      </div>
+      <div class="tcell arr" style="grid-column:5; grid-row:1">
+        <div class="n mvp"><b>测试报告 / 报表</b><br><span style="font-size:10px">通过率·断言详情·截图</span></div>
+      </div>
+      <div class="tcell" style="grid-column:6; grid-row:1">
+        <div class="n mvp"><b>转译代码（可回放）</b><br><span style="font-size:10px">pytest-bdd + 词汇表沉淀</span></div>
+      </div>
+
+      <!-- 目标工作流（灰 · row2） -->
+      <div class="tcell gray arr" style="grid-column:2; grid-row:2">
+        <span class="tlabel tgt">目标工作流</span>
+        <div class="n tgt">需求文档 / PRD<br><span style="font-size:10px">baseUrl · 登录aw · api docs</span></div>
+      </div>
+      <div class="tcell gray arr" style="grid-column:3; grid-row:2">
+        <div class="subflow">
+          <div class="sfh">测试点 / 用例设计</div>
+          <div class="sfi">xmind 测试点设计</div>
+          <div class="sfi">测试用例设计 + 审核</div>
+        </div>
+      </div>
+      <div class="tcell gray arr" style="grid-column:4; grid-row:2">
+        <div class="n tgt">接口自动化<br>代码生成 → 下发执行机</div>
+      </div>
+      <div class="tcell gray arr" style="grid-column:5; grid-row:2">
+        <div class="n tgt">结果判定 → 测试报告</div>
+      </div>
+      <div class="tcell gray" style="grid-column:6; grid-row:2">
+        <div class="n tgt">结果回传 / 资产</div>
+      </div>
+    </div>
+
+    <div class="legend">
+      <div class="lg"><span class="sw g"></span><b style="color:var(--brand-d)">1 期计划（当前项目）</b></div>
+      <div class="lg"><span class="sw t"></span>目标工作流（愿景 · 含接口分支 / 需求→测试设计 / 下发执行机）</div>
+      <div class="lg" style="margin-left:auto;color:var(--brand-d);font-weight:700">1 期以 Excel 用例导入替代「需求 + 测试设计」，打通「执行→评估→资产」闭环</div>
+    </div>
+    <div class="foot">T-Agent 进展汇报 · 第 1 页 / 共 4 页</div>
+  </section>
+
+  <!-- ===================== SLIDE 2 ===================== -->
+  <section class="slide">
+    <div class="s-kicker">调研与技术路线</div>
+    <div class="s-title">openclaw 试点效果 & 路线选择</div>
+    <div class="rule"></div>
+
+    <!-- 1. 试点效果 -->
+    <div class="seclabel">① openclaw 试点效果</div>
+    <div class="row" style="margin-top:8px">
+      <div class="col card" style="flex:1.35">
+        <div class="small" style="margin-bottom:7px">
+          <b style="color:var(--brand-d)">openclaw</b>：开源「通用 AI 助手 Agent」（消息/语音/多 Agent 路由 + 浏览器集成），<b>本身不是测试工具</b>。
+          试点方式：用其浏览器能力直接跑 Web 自动化用例。</div>
+        <div class="findlist">
+          <div class="find ok"><span class="fi">✓</span>简单流程能跑通——AI 可自主操作浏览器完成点击/输入</div>
+          <div class="find no"><span class="fi">✕</span>判定靠 AI 自述「我觉得成功了」——结果不稳、<b>不可复现</b></div>
+          <div class="find no"><span class="fi">✕</span>一次性执行，<b>不产出可维护测试代码</b>，回归每次重烧算力</div>
+          <div class="find no"><span class="fi">✕</span>无断言 / 登录态复用 / 权限 / 调度等<b>测试工程能力</b></div>
+          <div class="find no"><span class="fi">✕</span>Node/TS 个人助手架构，<b>内网部署与合规裁剪成本高</b></div>
+        </div>
+      </div>
+      <div class="col placeholder" style="flex:.65">试点录屏（待插入）</div>
+    </div>
+
+    <!-- 2. 二次开发 vs 自研 -->
+    <div class="seclabel" style="margin-top:14px">② 基于 openclaw 二次开发　vs　自研 AI-Agent</div>
+    <table style="margin-top:7px">
+      <thead><tr><th style="width:15%">维度</th><th style="width:43%">基于 openclaw 二次开发</th><th>自研 AI-Agent（T-Agent）</th></tr></thead>
+      <tbody>
+        <tr><td>起步速度</td><td class="win" style="color:var(--ink)">快——复用现成 Agent</td><td class="dim">慢——执行/断言/codegen 从 0 搭</td></tr>
+        <tr class="hl"><td>架构契合</td><td>个人助手框架(消息/语音/多Agent)，与测试场景错配，二开=削足适履</td><td>为测试而生，架构对口</td></tr>
+        <tr class="hl"><td>结果判定</td><td>受其「AI 自述」范式约束，硬塞确定性断言层改造深</td><td>原生规则引擎确定性裁决</td></tr>
+        <tr><td>代码沉淀</td><td class="dim">无此概念，需大改</td><td class="win">原生转译 pytest-bdd 可回放</td></tr>
+        <tr><td>可控 / 合规</td><td class="dim">依赖上游开源 + Node/TS 栈，内网合规裁剪难</td><td class="win">完全自主 · Python 栈 · 内网 stdio</td></tr>
+        <tr><td>维护 / 演进</td><td class="dim">受上游路线牵制，定制易与上游冲突</td><td class="win">自主演进，贴合内网业务</td></tr>
+        <tr><td>长期成本</td><td class="dim">二开包袱 + 持续适配上游</td><td class="win">一次自建、可控</td></tr>
+      </tbody>
+    </table>
+
+    <div class="quote">openclaw 定位错配（个人助手 ≠ 测试平台）：二次开发是<span class="q">在错的地基上盖楼</span>，改造成本高且受制于人。
+      自研虽起步慢，但<span class="q">架构对口、判定与资产沉淀可原生实现、内网可控</span> → <b>选择自研</b>。</div>
+    <div class="foot">T-Agent 进展汇报 · 第 2 页 / 共 4 页</div>
+  </section>
+
+  <!-- ===================== SLIDE 3 ===================== -->
+  <section class="slide">
+    <div class="s-kicker">自研方案</div>
+    <div class="s-title">执行工作流</div>
+    <div class="rule"></div>
+
+    <div class="pipe">
+      <!-- stages -->
+      <div class="stages">
+        <div class="stage"><div class="num">0</div><div class="body">
+          <div class="t">用例输入</div>
+          <div class="d">Excel 完整用例导入 → 统一 TestCase　<span class="mods">工程化：前端上传→API→SQLModel 落库</span></div></div></div>
+        <div class="stage"><div class="num">1</div><div class="body">
+          <div class="t">用例预解析（AI 翻译 · 人工可审）</div>
+          <div class="d">①预置条件三分类 ②TestSpec 生成(自然语言→结构化规格+断言) ③词汇表增强 <span class="mods">[precondition / pre_analysis / intelligence]</span></div></div></div>
+        <div class="stage"><div class="num">2</div><div class="body">
+          <div class="t">执行准备</div>
+          <div class="d">注入 Cookie 复用登录态 · 注入业务 Skill · 启动 playwright-mcp(stdio 内网友好) <span class="mods">[session / skills / mcp_client]</span></div></div></div>
+        <div class="stage"><div class="num">3</div><div class="body">
+          <div class="t">ReAct 自动化执行循环（逐步）</div>
+          <div class="d">分层Prompt→LLM(tool_call容错)→权限校验→执行浏览器动作→抓A11y快照+截图；上下文压缩控token；护栏:循环检测/哑火续推/最大步数；每步实时 SSE 推送 <span class="mods">[react_loop / prompt / llm / permission / page_probe]</span></div></div></div>
+        <div class="stage split"><div class="num">↘</div><div class="body">
+          <div class="half fail"><div class="t" style="color:var(--amber)">动作报错 / 元素找不到 → AI 自愈</div>
+            <div class="d">工具问题→重定位回灌继续 · 业务问题→标记失败 <span class="mods">[healing]</span></div></div>
+          <div class="half ok"><div class="t" style="color:var(--brand-d)">步骤正常完成</div>
+            <div class="d">mark_step_done → 进入断言</div></div></div></div>
+        <div class="stage assert"><div class="num">4★</div><div class="body">
+          <div class="t">确定性断言验证（规则引擎，非 AI 眼判）</div>
+          <div class="d">DOM/文本/URL/数据(custom_tool)确定性比较；找不到→重定位复验；任一 FAIL 即不通过（不取 AI 自报） <span class="mods">[assertion]</span></div></div></div>
+        <div class="stage split"><div class="num">5</div><div class="body">
+          <div class="half ok"><div class="t" style="color:var(--brand-d)">成功 → 转译代码生成</div>
+            <div class="d">执行轨迹→稳健定位器→pytest-bdd Playwright 落盘可回放 + 词汇表回写 <span class="mods">[codegen]</span></div></div>
+          <div class="half fail"><div class="t" style="color:var(--amber)">失败 → 失败留痕</div>
+            <div class="d">断言差异+截图+prompt+自愈过程</div></div></div></div>
+        <div class="stage"><div class="num">6</div><div class="body">
+          <div class="t">结果报告 + 资产沉淀</div>
+          <div class="d">抓 Cookie 落盘供复用 · 执行记录全留痕 · SQLModel 持久化 + SSE + 前端结果抽屉可视化 <span class="mods">[recorder / session]</span></div></div></div>
+        <div class="suitebar"><b>Suite 批量层：</b>orchestrator 并发调度 + 用例间隔离｜execution_worker 每 run 独立线程/事件循环/存储（根治执行期 API 卡顿）</div>
+      </div>
+
+      <!-- 工程化优点 -->
+      <div class="caps">
+        <div class="seclabel" style="margin-top:0;font-size:13px">工程化优点 · 可用 / 可管 / 可沉淀</div>
+        <div class="advcard">
+          <div class="at">登录态复用 <span class="stg">阶段 2 · 6</span></div>
+          <div class="ad">Cookie 跨用例复用，免重复登录；实测步数 <b>7→3</b>。</div>
+        </div>
+        <div class="advcard">
+          <div class="at">项目初始化 AW 复用 <span class="stg">阶段 2</span></div>
+          <div class="ad">登录/前置 action-word 经 Hook <b>跨用例·套件共享</b>，一处定义处处复用。</div>
+        </div>
+        <div class="advcard">
+          <div class="at">自定义工具加载 <span class="stg">阶段 3 · 4</span></div>
+          <div class="ad">YAML 声明外部命令，执行期 LLM <b>按需调用</b> + 作<b>数据断言</b>取业务真值。</div>
+        </div>
+        <div class="advcard">
+          <div class="at">词汇表 <span class="stg">阶段 1 · 3 · 5</span></div>
+          <div class="ad">业务词→真实元素，<b>跨语言/抗改版</b>定位；执行期增量沉淀、可前端维护。</div>
+        </div>
+        <div class="readlines">
+          <b>读图主线</b>：AI 只管翻译/执行/自愈，<b>判定归规则引擎(★)</b>；成功即转译<b>可回放代码</b>；全程 <b>SSE 实时 + 全留痕</b>。
+        </div>
+      </div>
+    </div>
+    <div class="foot">T-Agent 进展汇报 · 第 3 页 / 共 4 页</div>
+  </section>
+
+  <!-- ===================== SLIDE 4 ===================== -->
+  <section class="slide">
+    <div class="s-kicker">效果 · 进展 · 计划</div>
+    <div class="s-title">效果演示 · 当前进展 · 下一步计划</div>
+    <div class="rule"></div>
+
+    <div class="row" style="flex:1; gap:20px; margin-top:12px; min-height:0">
+      <!-- ① 演示录屏 -->
+      <div class="col" style="flex:1; display:flex; flex-direction:column">
+        <div class="seclabel" style="margin-top:0">① 演示录屏</div>
+        <div class="placeholder" style="flex:1; margin-top:8px; flex-direction:column; gap:9px">
+          <div style="font-size:38px; color:var(--brand)">▶</div>
+          <div style="font-size:14px; color:var(--ink2)">演示录屏（待插入）</div>
+          <div class="tiny" style="text-align:center; line-height:1.5">建议：并排 openclaw vs T-Agent 跑同一用例，<br>对比「判定方式」与「有无代码产出」</div>
+        </div>
+      </div>
+
+      <!-- ② 当前进展 -->
+      <div class="col" style="flex:1.05; display:flex; flex-direction:column">
+        <div class="seclabel" style="margin-top:0">② 当前进展</div>
+
+        <div class="progstrip" style="margin-top:8px">
+          <span class="pchip done">执行引擎 ✓</span>
+          <span class="pchip done">Harness 能力 ✓</span>
+          <span class="pchip done">输出层 ✓</span>
+          <span class="pchip done">工程化界面 ✓</span>
+          <span class="pchip doing">内网验证 ⟳</span>
+        </div>
+
+        <div class="small" style="margin-top:10px; font-weight:700; color:var(--brand-d)">真实环境 live 验证（DeepSeek + 真实 Chrome）</div>
+        <div class="findlist" style="margin-top:6px">
+          <div class="find ok"><span class="fi">✓</span>基础流程：登录+加购，断言通过、<b>多轮稳定复现</b></div>
+          <div class="find ok"><span class="fi">✓</span>复杂多步：完整结算 <b>11 步全过</b> + 2 次自动自愈</div>
+          <div class="find ok"><span class="fi">✓</span>代码转译：生成代码 <b>Playwright 真实回放通过</b></div>
+          <div class="find ok"><span class="fi">✓</span>登录态复用：Cookie 注入免登录，<b>步数 7→3</b></div>
+          <div class="find ok"><span class="fi">✓</span>数据断言 + 全链路：custom_tool 确定性比较、<b>API+SSE</b> 端到端跑通</div>
+        </div>
+        <div class="tiny muted" style="margin-top:8px; line-height:1.5">
+          质量基线：约 <b>378</b> 个单元测试。当前转入 <b style="color:var(--ink)">真实内网业务系统</b> 验证。
+        </div>
+      </div>
+    </div>
+
+    <!-- ③ 下一步计划 -->
+    <div class="seclabel" style="margin-top:12px">③ 下一步计划</div>
+    <div class="msrow" style="margin-top:8px">
+      <div class="ms cur">
+        <div class="ms-tag">里程碑 1</div>
+        <div class="ms-date">6 / 30</div>
+        <div class="ms-txt">交付 1 期计划</div>
+      </div>
+      <div class="ms ghost">后续里程碑（待补充）</div>
+    </div>
+    <div class="foot">T-Agent 进展汇报 · 第 4 页 / 共 4 页</div>
+  </section>
+
+
+</div>
+
+<!-- nav -->
+<div class="dots" id="dots"></div>
+<div class="pager" id="pager"></div>
+<div class="nav">
+  <button id="prev">‹</button>
+  <span id="navtxt"></span>
+  <button id="next">›</button>
+</div>
+
+<script>
+  // 等比缩放画布铺满屏幕
+  const deckEl=document.getElementById('deck');
+  function fit(){
+    const s=Math.min(window.innerWidth/1280, window.innerHeight/720);
+    deckEl.style.transform=`translate(-50%,-50%) scale(${s})`;
+  }
+  window.addEventListener('resize',fit);
+  fit();
+
+  const slides=[...document.querySelectorAll('.slide')];
+  const dotsWrap=document.getElementById('dots');
+  let i=0;
+  slides.forEach((_,k)=>{ const d=document.createElement('i'); d.onclick=()=>go(k); dotsWrap.appendChild(d); });
+  const dots=[...dotsWrap.children];
+  function go(n){
+    i=Math.max(0,Math.min(slides.length-1,n));
+    slides.forEach((s,k)=>s.classList.toggle('active',k===i));
+    dots.forEach((d,k)=>d.classList.toggle('on',k===i));
+    document.getElementById('pager').textContent=`T-AGENT · ${i+1} / ${slides.length}`;
+    document.getElementById('navtxt').textContent=`${i+1} / ${slides.length}`;
+    document.getElementById('prev').disabled=i===0;
+    document.getElementById('next').disabled=i===slides.length-1;
+  }
+  document.getElementById('prev').onclick=()=>go(i-1);
+  document.getElementById('next').onclick=()=>go(i+1);
+  document.addEventListener('keydown',e=>{
+    if(['ArrowRight','ArrowDown',' ','PageDown'].includes(e.key)){e.preventDefault();go(i+1);}
+    if(['ArrowLeft','ArrowUp','PageUp'].includes(e.key)){e.preventDefault();go(i-1);}
+    if(e.key==='Home')go(0); if(e.key==='End')go(slides.length-1);
+  });
+  go(0);
+</script>
+</body>
+</html>

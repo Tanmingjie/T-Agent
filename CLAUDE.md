@@ -38,7 +38,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `harness/context.py` — **Context Compact**。发 LLM 前压缩:旧观察折叠成一行(L1)、近期快照按关键词相关度截断(L2),治 token 膨胀。
 - `harness/recorder.py` — 汇总 `ExecutionRecord`;`to_history()` 把 model_output / action_result 分离序列化。
 - `harness/hooks.py` — 生命周期 Hook(before_case 失败→用例 FAIL 不进 Agent)+ 共享 `ExecutionContext`。
-- `harness/session.py` — `SessionManager`(Cookie 存盘+有效期,跨用例共享)+ `LoginHook`(有效复用、过期跑 login_aw 重登)。
+- `harness/hook_builder.py` — **Hook 组装入口**。`build_session_hooks(profile, mcp)` 按 Suite 绑定的 `SessionProfile` 组装含 `LoginHook`(before_case,有效 Cookie 注入/放行)+ `CaptureSessionHook`(after_case,用例通过后抓 Cookie 落盘)的 HookManager;无 `login_aw` 时 `optional=True` 放行让 Agent 自行登录。API 路径(`execution.py`)调用此模块把 Hooks 接进每个用例 agent。
+- `harness/session.py` — `SessionManager`(Cookie 存盘+有效期,跨用例共享)+ `LoginHook`(有效复用、过期跑 login_aw 重登)+ `CaptureSessionHook`(after_case 抓 Cookie)+ `make_mcp_cookie_injector/capturer`(基于 `browser_run_code_unsafe`)。
 - `harness/precondition.py` — 预置条件 LLM 三分类(state_hook/action_step/ambiguous),低置信/无映射降级 ambiguous。
 - `harness/skills.py` — Skill 体系:DomainSkill(常注入)/ PageSkill(按 URL 动态加载卸载)/ ToolSkill(关键词相关度);Agent 按当前 URL+步骤关键词动态注入。
 - `harness/permission.py` — 高危词 + prod 环境锁;Reason 后 Act 前拦截;trust_mode / 可注入 approver;无 approver 默认拒绝。
@@ -221,6 +222,27 @@ python cli/run_case.py --excel examples/saucedemo_cases.xlsx --case-id TC101 --b
 python cli/run_case.py --excel <用例.xlsx> --case-id <ID> --spec-only   # 只生成并打印 TestSpec
 python cli/run_case.py --check-llm                                       # LLM 连通性自检
 
+# 常用 CLI flags
+#   --isolated          playwright-mcp 无持久 profile(防 Chrome 密码泄露弹框,该弹框在 a11y 快照外无法自愈)
+#   --headless          playwright-mcp 无头模式
+#   --vocab <json>      手动词汇表文件(JSON,{业务词: {role,name,selector}})
+#   --tools <yaml>      Custom Tool YAML(LLM 按需调用 + custom_tool 数据断言)
+#   --no-skills         不注入内置基础 DomainSkill(默认注入)
+#   --context <str>     附加业务上下文(注入 Prompt)
+
+# 公开站点验证示例(已 live 绿)
+python cli/run_case.py --excel examples/saucedemo_checkout.xlsx --case-id TC201 \
+    --base-url https://www.saucedemo.com --isolated --headless
+python cli/run_case.py --excel examples/saucedemo_cases.xlsx --case-id TC101 \
+    --base-url https://www.saucedemo.com --vocab examples/saucedemo_vocab.json --isolated --headless
+python cli/run_case.py --excel <用例.xlsx> --case-id <ID> --tools examples/custom_tools.yaml \
+    --base-url <url> --isolated --headless                               # 接 Custom Tool
+
+# Automation Exercise(更复杂开源用例,含多字段表单+结算流程,尚需 live 跑)
+python examples/make_automation_exercise_xlsx.py                         # 生成 xlsx(首次)
+python cli/run_case.py --excel examples/automation_exercise_cases.xlsx \
+    --case-id AE01 --base-url https://automationexercise.com --isolated --headless
+
 # 启动 API 服务(dev 启动器:--reload 只监视源码目录)
 python scripts/serve.py
 # ⚠️ 别直接 `uvicorn api.server:app --reload`:codegen 执行通过后写 storage/generated/*.py,
@@ -232,7 +254,11 @@ cd frontend && npm install && npm run dev
 # LLM 配置:.env(项目根,自动加载) 或 env 或 CLI flag
 #   LLM_MODEL / LLM_API_BASE / LLM_API_KEY；模型名需带 provider 前缀(如 openai/xxx、ollama/xxx)
 
-# 浏览器层:npx @playwright/mcp(stdio);saucedemo 等会触发 Chrome 密码泄露弹框,可加 --isolated --headless 规避
+# API 路径的等价环境变量
+#   CUSTOM_TOOLS_YAML=examples/custom_tools.yaml  → Custom Tool
+#   MCP_ISOLATED=1 / MCP_HEADLESS=1               → playwright-mcp 启动参数
+#   MCP_SCREENSHOT=0                               → 关截图捕获
+#   VOCAB_SCAN=0                                   → 关执行期增量词汇表扫描
 ```
 
 测试配置:`pyproject.toml` 的 `[tool.pytest.ini_options]` 已设 `asyncio_mode = "auto"`(async 测试无需标记)。
@@ -243,6 +269,7 @@ cd frontend && npm install && npm run dev
 ```
 T-agent/
 ├── harness/          # Agent 核心(ReAct/断言/自愈/Prompt/LLM/录制…)
+│   ├── hook_builder.py #   build_session_hooks → HookManager(LoginHook+CaptureSessionHook)
 ├── mcp_client/       # MCP 官方 SDK 封装(stdio 连 playwright-mcp)
 ├── intelligence/     # Page Intelligence(词汇表 / 用例预解析 / TestSpec 生成)
 ├── input/            # 输入层(models 结构体 + Excel 解析)
