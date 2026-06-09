@@ -38,37 +38,90 @@
 
 ## 环境
 
-- Python **3.11** + `uv`
-- Node: `npx @playwright/mcp`(浏览器层,stdio)
-- LLM: 本地 Qwen3 397B,经 Ollama,由 LiteLLM 接入
+- Python **3.11**(`uv` 可选,亦支持标准 `venv` + `pip`)
+- Node.js **18+**(前端 + `npx @playwright/mcp` 浏览器层,stdio)
+- LLM: 本地 Qwen3 / DeepSeek 等,经 Ollama / LiteLLM 接入(可用 `.env` 配置)
+
+> 下面分 **Windows(PowerShell)** 与 **macOS/Linux(bash)** 两套命令;每套又分
+> **uv** 与 **标准 venv + pip(非 uv)** 两种安装方式,按需任选一条路径。
 
 ### 安装
 
+#### Windows(PowerShell)
+
+```powershell
+# ── 方式 A:标准 venv + pip(非 uv,推荐内网/无 uv 环境)──
+py -3.11 -m venv .venv            # 或 python -m venv .venv(需确保是 3.11)
+.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+# ── 方式 B:uv ──
+uv venv --python 3.11
+.venv\Scripts\Activate.ps1
+uv pip install -r requirements.txt
+
+# 前端(两种方式相同)
+cd frontend; npm install; cd ..
+```
+
+> PowerShell 若禁止运行脚本,先放开当前用户策略:
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+
+#### macOS / Linux(bash)
+
 ```bash
-# 后端
+# ── 方式 A:标准 venv + pip(非 uv)──
+python3.11 -m venv .venv && source .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+# ── 方式 B:uv ──
 uv venv --python 3.11 && source .venv/bin/activate
 uv pip install -r requirements.txt
 
-# 前端
-cd frontend && npm install
+# 前端(两种方式相同)
+cd frontend && npm install && cd ..
+```
+
+### LLM 配置
+
+在项目根创建 `.env`(自动加载),或用环境变量 / CLI flag:
+
+```dotenv
+LLM_MODEL=openai/qwen3          # 模型名需带 provider 前缀(openai/xxx、ollama/xxx)
+LLM_API_BASE=http://127.0.0.1:11434/v1
+LLM_API_KEY=sk-xxx
 ```
 
 ### 运行测试
 
+```powershell
+# Windows(PowerShell)
+.venv\Scripts\Activate.ps1
+python -m pytest -q
+```
+
 ```bash
+# macOS / Linux
 source .venv/bin/activate
 python -m pytest -q
 ```
 
+> Windows 上有 2 个平台预存在失败(截图目录 / 命令替换),不影响主干。
+
 ### 启动服务
 
+激活虚拟环境后(Windows: `.venv\Scripts\Activate.ps1`;*nix: `source .venv/bin/activate`),
+以下命令两平台通用:
+
 ```bash
-# API 服务
+# API 服务(:8000,纯 API)
 # 用 dev 启动器(--reload 只监视源码;直接 uvicorn --reload 会因 codegen 写
 # storage/generated/*.py 触发重启、打断正在跑的 run)
 python scripts/serve.py
 
-# 前端开发服务器
+# 前端开发服务器(:5173)
 cd frontend && npm run dev
 
 # CLI 运行单条用例
@@ -90,6 +143,9 @@ python cli/run_case.py --excel <用例.xlsx> --case-id <ID> --tools examples/cus
     --base-url <url> --isolated --headless
 # (API 路径用环境变量:CUSTOM_TOOLS_YAML=examples/custom_tools.yaml)
 ```
+
+> Windows 提示:多行命令的续行符 `\` 是 bash 写法;PowerShell 请改用反引号 `` ` ``,
+> 或直接把参数写在一行。
 
 ## 目录结构
 
