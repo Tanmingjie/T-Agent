@@ -69,6 +69,24 @@ cd frontend; npm install; cd ..
 > PowerShell 若禁止运行脚本,先放开当前用户策略:
 > `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
 
+#### Windows(cmd / 命令提示符)
+
+```bat
+:: ── 方式 A:标准 venv + pip(非 uv,推荐内网/无 uv 环境)──
+py -3.11 -m venv .venv            :: 或 python -m venv .venv(需确保是 3.11)
+.venv\Scripts\activate.bat
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+
+:: ── 方式 B:uv ──
+uv venv --python 3.11
+.venv\Scripts\activate.bat
+uv pip install -r requirements.txt
+
+:: 前端(两种方式相同)
+cd frontend && npm install && cd ..
+```
+
 #### macOS / Linux(bash)
 
 ```bash
@@ -103,6 +121,12 @@ LLM_API_KEY=sk-xxx
 python -m pytest -q
 ```
 
+```bat
+:: Windows(cmd)
+.venv\Scripts\activate.bat
+python -m pytest -q
+```
+
 ```bash
 # macOS / Linux
 source .venv/bin/activate
@@ -113,8 +137,8 @@ python -m pytest -q
 
 ### 启动服务
 
-激活虚拟环境后(Windows: `.venv\Scripts\Activate.ps1`;*nix: `source .venv/bin/activate`),
-以下命令两平台通用:
+激活虚拟环境后(Windows PowerShell: `.venv\Scripts\Activate.ps1`;Windows cmd: `.venv\Scripts\activate.bat`;
+*nix: `source .venv/bin/activate`),以下命令两平台通用:
 
 ```bash
 # API 服务(:8000,纯 API)
