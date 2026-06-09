@@ -223,6 +223,8 @@ class LiteLLMClient(LLMClient):
         self.temperature = temperature
         self.extra_completion_kwargs = extra_completion_kwargs or {}
         self.total_usage = Usage()
+        # 单次 LLM 调用超时(秒)。内网慢模型可经 env 调大。
+        self.timeout = float(os.getenv("LLM_TIMEOUT", "120"))
 
     # —— 公开接口 ——
 
@@ -287,7 +289,7 @@ class LiteLLMClient(LLMClient):
             call_kwargs["api_key"] = self.api_key
         if tools:
             call_kwargs["tools"] = tools
-        call_kwargs["timeout"] = 120
+        call_kwargs["timeout"] = self.timeout
         # 关键:用同步 litellm.completion + to_thread 把整次调用(含 litellm 的同步开销:
         # tiktoken 计数 / 日志 / 回调,会随快照历史增大而变重)挪到**工作线程**,不占用
         # uvicorn 的事件循环。否则执行期间 LLM 调用会周期性冻结单一事件循环,导致所有
