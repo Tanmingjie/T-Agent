@@ -403,3 +403,49 @@ async def test_live_progress_streams_phases_and_steps_in_order():
     # step_change 内容可被前端解析(tool(args) 形式)
     sc = [d for e, d in events if e == "step_change"]
     assert any("browser_click" in d["description"] for d in sc)
+
+
+# ── 页面稳定等待 settle(动作触发加载,治空白快照)──────────────
+
+
+async def test_settle_page_waits_until_stable():
+    """模拟"点登录→页面加载中(空白)→渐稳定":settle 轮询到 ref 节点数稳定才返回。"""
+    from harness.agent import settle_page
+
+    # 前两次空白(加载中,无 ref),之后稳定在 3 个 ref 节点
+    seq = [
+        "### Snapshot\n(loading)",
+        "### Snapshot\n(loading)",
+        "- button [ref=e1]\n- button [ref=e2]\n- textbox [ref=e3]",
+        "- button [ref=e1]\n- button [ref=e2]\n- textbox [ref=e3]",
+    ]
+
+    class _SeqMCP:
+        def __init__(self):
+            self.i = 0
+
+        async def call_tool(self, name, arguments=None):
+            return self.i  # 索引占位
+
+        def result_to_text(self, result):
+            text = seq[min(self.i, len(seq) - 1)]
+            self.i += 1
+            return text
+
+    n = await settle_page(_SeqMCP(), timeout=5.0, interval=0.0)
+    assert n == 3  # 稳定在 3 个 ref 节点(空白态被跨过)
+
+
+async def test_settle_page_times_out_on_persistent_blank():
+    """页面始终空白(无 ref)→ settle 超时返回 0,不死等。"""
+    from harness.agent import settle_page
+
+    class _BlankMCP:
+        async def call_tool(self, name, arguments=None):
+            return None
+
+        def result_to_text(self, result):
+            return "### Snapshot\n(still loading)"
+
+    n = await settle_page(_BlankMCP(), timeout=0.05, interval=0.0)
+    assert n == 0

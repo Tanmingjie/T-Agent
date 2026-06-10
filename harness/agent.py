@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from pathlib import Path
 
 from codegen.bdd import BDDGenerator
@@ -84,6 +85,22 @@ _NO_SHOT_TOOLS = {"browser_snapshot", "browser_take_screenshot"}
 # 截图开关:默认开,env MCP_SCREENSHOT=0 关闭
 _CAPTURE_SCREENSHOTS = os.getenv("MCP_SCREENSHOT", "1") != "0"
 
+# 导航/加载类动作:执行后页面可能在跳转或异步加载,需等稳定再抓快照/截图,
+# 否则会抓到空白 loading 态(如"点登录→页面加载中→快照无 ref→后续步骤卡住")。
+_NAV_TOOLS = {
+    "browser_click",
+    "browser_navigate",
+    "browser_navigate_back",
+    "browser_navigate_forward",
+    "browser_press_key",
+    "browser_file_upload",
+}
+# 页面稳定等待(settle)开关与参数。默认开;env MCP_SETTLE=0 关闭。
+# 机制:导航类动作后轮询 a11y 快照,ref 节点数 >0 且连续两次不变即认为稳定(或超时)。
+_SETTLE_ENABLED = os.getenv("MCP_SETTLE", "1") != "0"
+_SETTLE_TIMEOUT = float(os.getenv("MCP_SETTLE_TIMEOUT_MS", "8000")) / 1000.0
+_SETTLE_INTERVAL = float(os.getenv("MCP_SETTLE_INTERVAL_MS", "400")) / 1000.0
+
 # 词汇表增量扫描(策略C)开关:默认开,env VOCAB_SCAN=0 关闭。
 # 执行结束后复用执行期已捕获的 a11y 快照(无需额外开浏览器),独立 context 提炼并库。
 _INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "1") != "0"
@@ -99,6 +116,29 @@ DEFAULT_HOOK_MAP = {
     "登陆": "LoginHook",
     "登录": "LoginHook",
 }
+
+
+async def settle_page(mcp, *, timeout: float, interval: float) -> int:
+    """等页面加载稳定:轮询 a11y 快照,ref 节点数 >0 且连续两次不变即返回(或超时)。
+
+    治"点登录→页面跳转/异步加载中→紧接着的快照/截图空白→后续步骤无 ref 可用而卡住"。
+    纯只读快照,任何异常都安静返回、不阻断执行。返回最终探到的 ref 节点数(便于观测/测试)。
+    """
+    deadline = time.monotonic() + timeout
+    prev = -1
+    while time.monotonic() < deadline:
+        await asyncio.sleep(interval)
+        try:
+            result = await mcp.call_tool("browser_snapshot", {})
+            text = mcp.result_to_text(result)
+        except Exception as e:  # noqa: BLE001 — 等待失败不阻断执行
+            logger.warning("settle 取快照失败:%s", e)
+            return prev if prev > 0 else 0
+        n = text.count("[ref=")
+        if n > 0 and n == prev:
+            return n  # 连续两次节点数一致且非空 → 稳定
+        prev = n
+    return prev if prev > 0 else 0
 
 
 def _step_keywords(step_plan: StepPlan) -> list[str]:
@@ -393,6 +433,9 @@ class TestCaseAgent:
             outcome = await base_executor(name, arguments)
             if outcome.url:
                 state["url"] = outcome.url
+            # 导航/加载类动作后等页面稳定,避免随后抓到空白 loading 态(快照无 ref → 卡住)
+            if _SETTLE_ENABLED and name in _NAV_TOOLS:
+                await settle_page(self.mcp, timeout=_SETTLE_TIMEOUT, interval=_SETTLE_INTERVAL)
             return outcome
 
         def build_system(step_plan: StepPlan) -> str:
