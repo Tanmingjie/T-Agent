@@ -228,6 +228,10 @@ class LiteLLMClient(LLMClient):
         self.total_usage = Usage()
         # 单次 LLM 调用超时(秒)。内网慢模型可经 env 调大。
         self.timeout = float(os.getenv("LLM_TIMEOUT", "120"))
+        # 底层 SDK 自动重试次数。**默认 0(快速失败)**:本封装已有自己的降级/重试逻辑,
+        # 慢模型下若再叠加 SDK 重试,单次调用会等 (1+num_retries)×timeout,体感卡死。
+        # 确需 SDK 级重试(应对偶发抖动)可经 env 调大。
+        self.num_retries = int(os.getenv("LLM_NUM_RETRIES", "0"))
 
     # —— 公开接口 ——
 
@@ -293,6 +297,10 @@ class LiteLLMClient(LLMClient):
         if tools:
             call_kwargs["tools"] = tools
         call_kwargs["timeout"] = self.timeout
+        # 关掉(或限制)底层重试,避免慢模型下 (1+num_retries)×timeout 的卡死放大。
+        # num_retries:litellm 自身重试;max_retries:转发给 openai 客户端的重试。
+        call_kwargs.setdefault("num_retries", self.num_retries)
+        call_kwargs.setdefault("max_retries", self.num_retries)
         # 请求摘要(DEBUG):便于失败时核对实际打到哪个模型/地址、消息与工具规模。
         # 不打印消息正文(可能很长且含敏感数据),只打印计数。
         logger.debug(
