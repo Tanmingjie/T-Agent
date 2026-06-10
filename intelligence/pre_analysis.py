@@ -74,11 +74,11 @@ _SYSTEM_PROMPT = """\
 【输出格式】只输出一个 JSON 对象,不要任何解释文字,结构如下:
 {
   "given":  [{"action": "...", "target": "...", "data": null}],
-  "steps":  [{"action": "...", "target": "...", "data": "写死的数据或null",
-              "expect": [{"type": "...", "target": "...", "expected": "...", "confidence": "high"}]}],
+  "steps":  [{"action": "...", "target": "...", "data": "写死的数据或null"}],
   "assertions": [{"type": "...", "target": "...", "expected": "...", "confidence": "high"}]
 }
-expect 是该步骤的即时断言(可空数组);assertions 是用例级最终断言(来自预期结果)。
+断言**统一**放进用例级 assertions(执行结束后对终态确定性验证),**不要**把断言分散到
+各步骤里、也不要重复放置——每条预期只写一次。
 """
 
 

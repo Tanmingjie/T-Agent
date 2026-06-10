@@ -71,7 +71,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 本地包名 **`mcp_client`** 而非 `mcp`,避让官方 `mcp` SDK 顶层包名冲突。
 - ReAct 用**文本式观察回灌**,不依赖严格 tool_call_id 配对(本地 Qwen 支持不稳)。
 - `ExecutionRecord.case_assertions` / `spec` 是**有意新增**字段(规格模型没列):前者承载可信 PASS/FAIL 依据,后者存档 LLM 翻译产物供前端可视化 + 发现翻译偏差。
-- 断言**聚合**用例级 `assertions` + 各步 `expect`(`agent.collect_assertions`),因 LLM 放断言位置不稳定。
+- 断言**统一产在用例级 `assertions`**(翻译 prompt 只索取一处,执行后对终态确定性验证)。`SpecStep.expect` 字段**保留**(数据模型不删,给未来「步骤级软校验/B-软」留门),`agent.collect_assertions` 仍聚合 `assertions`+各步 `expect` 并**按语义键去重**作防御网(模型偶尔仍塞 expect 也不重复计入)。〔2026-06-10:从「两处都要、事后去重」改为「只要一处、去重兜底」,消冗余输出 + 拆「瞬态 expect 被拍到终态验」的 false-fail 雷。〕
 - **定位三层**:`Locator` 模型(框架无关)/ 解析层(语义 target→Locator,放 generator 外)/ 渲染层(各 CodeGenerator 自实现);稳健度 `ROLE>TEST_ID>LABEL>PLACEHOLDER>TEXT>CSS`。BDD 只是渲染实现之一。
 - 截图/代码生成在 `agent.run` 内**端到端接通**:浏览器动作后落 `step_NNN.png`(真实 run_id 目录),断言通过后生成 BDD 代码写 `record.generated_code`+落盘。
 
