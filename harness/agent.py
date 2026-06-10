@@ -22,7 +22,14 @@ from codegen.locators import locators_from_steps, resolve_locators
 from harness.assertion import AssertionEngine, AssertionStatus
 from harness.context import ContextCompactor
 from harness.healing import HealingSubagent
-from harness.hooks import AFTER_CASE, BEFORE_CASE, ON_FAILURE, ExecutionContext, HookManager
+from harness.hooks import (
+    AFTER_CASE,
+    BEFORE_CASE,
+    ON_FAILURE,
+    ON_HEAL,
+    ExecutionContext,
+    HookManager,
+)
 from harness.llm import LLMClient
 from harness.page_probe import MCPPageProbe, parse_snapshot
 from harness.permission import PermissionChecker
@@ -468,9 +475,24 @@ class TestCaseAgent:
                     r.reason or "(无)",
                 )
 
-        # 收尾 Hooks:失败触发 on_failure;after_case 无论成败都跑(清理/登出)
+        # 收尾 Hooks:发生自愈触发 on_heal;失败触发 on_failure;after_case 无论成败都跑。
         if self.hooks is not None:
             ctx.set("passed", passed)
+            # 自愈可观测(规格 §7.7):聚合断言侧(重定位后复验通过)+ 操作侧(工具报错
+            # 后重定位重试)两路自愈;任一发生即触发 on_heal,详情入 ctx 供 hook 消费。
+            healed_assertions = [r for r in a_results if r.healed]
+            action_heals = [h for s in result.action_steps for h in s.heal_attempts]
+            if healed_assertions or action_heals:
+                ctx.set("heal_count", len(healed_assertions) + len(action_heals))
+                ctx.set("healed_assertions", [r.to_dict() for r in healed_assertions])
+                ctx.set("action_heals", action_heals)
+                logger.info(
+                    "用例 %s 发生自愈:断言侧 %d 次,操作侧 %d 次",
+                    case.id,
+                    len(healed_assertions),
+                    len(action_heals),
+                )
+                await self.hooks.run(ON_HEAL, ctx)
             if not passed:
                 await self.hooks.run(ON_FAILURE, ctx)
             await self.hooks.run(AFTER_CASE, ctx)

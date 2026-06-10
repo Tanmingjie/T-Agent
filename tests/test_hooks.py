@@ -8,6 +8,7 @@ from harness.hooks import (
     AFTER_CASE,
     BEFORE_CASE,
     ON_FAILURE,
+    ON_HEAL,
     ExecutionContext,
     HookError,
     HookManager,
@@ -137,3 +138,77 @@ async def test_agent_after_case_runs_on_success():
     agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), hooks=mgr)
     await agent.run(_case(), spec=_spec())
     assert cleaned == [True]  # after_case 跑了,且能读到 passed
+
+
+async def test_agent_fires_on_heal_when_assertion_healed(monkeypatch):
+    """断言侧发生自愈(重定位后复验通过)时,on_heal 被触发且 ctx 带自愈详情。"""
+    from harness import agent as agent_mod
+    from harness.agent import TestCaseAgent
+    from harness.assertion import AssertionResult, AssertionStatus
+    from input.models import Assertion
+    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
+
+    healed = AssertionResult(
+        assertion=Assertion(type="dom_exists", target="提交按钮", expected=""),
+        status=AssertionStatus.PASS,
+        healed=True,
+        heal_note="P1 角色重定位到 button[name=提交]",
+    )
+
+    async def fake_verify_all(self, assertions):
+        return [healed]
+
+    monkeypatch.setattr(agent_mod.AssertionEngine, "verify_all", fake_verify_all)
+
+    mgr = HookManager()
+    seen: list = []
+    mgr.register(ON_HEAL, lambda ctx: seen.append(ctx.get("heal_count")))
+
+    llm = _ScriptedLLM(
+        [
+            _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
+            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(content="TEST_RESULT: PASS"),
+        ]
+    )
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), hooks=mgr)
+    record = await agent.run(_case(), spec=_spec())
+
+    assert seen == [1]  # on_heal 触发,且自愈计数=1
+    assert record.passed is True
+
+
+async def test_agent_no_on_heal_without_healing(monkeypatch):
+    """无自愈发生时不应触发 on_heal(避免噪声)。"""
+    from harness import agent as agent_mod
+    from harness.agent import TestCaseAgent
+    from harness.assertion import AssertionResult, AssertionStatus
+    from input.models import Assertion
+    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
+
+    clean = AssertionResult(
+        assertion=Assertion(type="dom_exists", target="提交按钮", expected=""),
+        status=AssertionStatus.PASS,
+        healed=False,
+    )
+
+    async def fake_verify_all(self, assertions):
+        return [clean]
+
+    monkeypatch.setattr(agent_mod.AssertionEngine, "verify_all", fake_verify_all)
+
+    mgr = HookManager()
+    seen: list = []
+    mgr.register(ON_HEAL, lambda ctx: seen.append(1))
+
+    llm = _ScriptedLLM(
+        [
+            _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
+            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(content="TEST_RESULT: PASS"),
+        ]
+    )
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), hooks=mgr)
+    await agent.run(_case(), spec=_spec())
+
+    assert seen == []  # 无自愈 → on_heal 不触发
