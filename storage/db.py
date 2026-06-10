@@ -30,9 +30,13 @@ logger = logging.getLogger(__name__)
 from input.models import (
     ExecutionRecord,
     PageVocabulary,
+    Project,
+    ProjectMember,
     SessionProfile,
     Suite,
     TestCase,
+    User,
+    Version,
 )
 
 # ── 表行定义(table=True) ──────────────────────────────────────
@@ -137,6 +141,46 @@ class SuiteSettingsRow(SQLModel, table=True):
     suite_id: str = Field(primary_key=True)
     permission_mode: str = "trust"  # trust | approve
     parallelism: int = 1  # 并发执行用例数(1=串行)
+    updated_at: float = 0.0
+
+
+# ── 多租户表(平台化 T-P04)──────────────────────────────────────
+
+
+class ProjectRow(SQLModel, table=True):
+    __tablename__ = "project"
+    id: str = Field(primary_key=True)
+    name: str = ""
+    description: str = ""
+    owner: str | None = None
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+
+class VersionRow(SQLModel, table=True):
+    __tablename__ = "version"
+    id: str = Field(primary_key=True)
+    project_id: str = Field(default="", index=True)
+    name: str = ""
+    status: str = "active"  # active | archived
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+
+class UserRow(SQLModel, table=True):
+    __tablename__ = "app_user"  # 避开部分 DB 的保留字 "user"
+    id: str = Field(primary_key=True)
+    display_name: str = ""
+    is_platform_admin: bool = False
+    updated_at: float = 0.0
+
+
+class ProjectMemberRow(SQLModel, table=True):
+    __tablename__ = "project_member"
+    # 复合主键 (project_id, user_id):一个用户在一个项目里只有一种角色
+    project_id: str = Field(primary_key=True)
+    user_id: str = Field(primary_key=True)
+    role: str = "tester"  # admin | tester
     updated_at: float = 0.0
 
 
@@ -334,3 +378,92 @@ class Store:
                 data.pop("id", None)
                 out.append(PageVocabulary(**data))
             return out
+
+    # —— Project(多租户 T-P04)——
+
+    async def save_project(self, p: Project) -> None:
+        await self._upsert(ProjectRow, p)
+
+    async def get_project(self, project_id: str) -> Project | None:
+        async with self._sf() as s:
+            row = await s.get(ProjectRow, project_id)
+            return Project(**row.model_dump()) if row else None
+
+    async def list_projects(self) -> list[Project]:
+        async with self._sf() as s:
+            rows = (await s.exec(select(ProjectRow))).all()
+            return [Project(**r.model_dump()) for r in rows]
+
+    async def delete_project(self, project_id: str) -> bool:
+        async with self._sf() as s:
+            row = await s.get(ProjectRow, project_id)
+            if row is None:
+                return False
+            await s.delete(row)
+            await s.commit()
+            return True
+
+    # —— Version ——
+
+    async def save_version(self, v: Version) -> None:
+        await self._upsert(VersionRow, v)
+
+    async def get_version(self, version_id: str) -> Version | None:
+        async with self._sf() as s:
+            row = await s.get(VersionRow, version_id)
+            return Version(**row.model_dump()) if row else None
+
+    async def list_versions(self, project_id: str | None = None) -> list[Version]:
+        stmt = select(VersionRow)
+        if project_id is not None:
+            stmt = stmt.where(VersionRow.project_id == project_id)
+        async with self._sf() as s:
+            rows = (await s.exec(stmt)).all()
+            return [Version(**r.model_dump()) for r in rows]
+
+    # —— User ——
+
+    async def save_user(self, u: User) -> None:
+        await self._upsert(UserRow, u)
+
+    async def get_user(self, user_id: str) -> User | None:
+        async with self._sf() as s:
+            row = await s.get(UserRow, user_id)
+            return User(**row.model_dump()) if row else None
+
+    async def list_users(self) -> list[User]:
+        async with self._sf() as s:
+            rows = (await s.exec(select(UserRow))).all()
+            return [User(**r.model_dump()) for r in rows]
+
+    # —— ProjectMember(复合主键 project_id+user_id)——
+
+    async def save_member(self, m: ProjectMember) -> None:
+        await self._upsert(ProjectMemberRow, m)
+
+    async def get_member(self, project_id: str, user_id: str) -> ProjectMember | None:
+        async with self._sf() as s:
+            row = await s.get(ProjectMemberRow, (project_id, user_id))
+            return ProjectMember(**row.model_dump()) if row else None
+
+    async def list_members(self, project_id: str) -> list[ProjectMember]:
+        async with self._sf() as s:
+            stmt = select(ProjectMemberRow).where(ProjectMemberRow.project_id == project_id)
+            rows = (await s.exec(stmt)).all()
+            return [ProjectMember(**r.model_dump()) for r in rows]
+
+    async def list_memberships(self, user_id: str) -> list[ProjectMember]:
+        """某用户加入的所有项目(用于「我的项目」列表 / 鉴权)。"""
+        async with self._sf() as s:
+            stmt = select(ProjectMemberRow).where(ProjectMemberRow.user_id == user_id)
+            rows = (await s.exec(stmt)).all()
+            return [ProjectMember(**r.model_dump()) for r in rows]
+
+    async def delete_member(self, project_id: str, user_id: str) -> bool:
+        async with self._sf() as s:
+            row = await s.get(ProjectMemberRow, (project_id, user_id))
+            if row is None:
+                return False
+            await s.delete(row)
+            await s.commit()
+            return True

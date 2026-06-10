@@ -15,7 +15,15 @@ import os
 
 import pytest
 
-from input.models import ExecutionRecord, PageVocabulary, Suite, TestCase
+from input.models import (
+    ExecutionRecord,
+    PageVocabulary,
+    Project,
+    ProjectMember,
+    Suite,
+    TestCase,
+    Version,
+)
 from storage.db import Store
 
 _PG_URL = os.getenv("DATABASE_URL_TEST_PG")
@@ -92,3 +100,15 @@ async def test_vocabulary_cache_key_pg(pg_store):
     assert got.vocabulary == {"a": 2}
     assert got.stale is True
     assert len(await pg_store.list_vocabularies()) == 1
+
+
+async def test_tenancy_tables_pg(pg_store):
+    # 多租户新表在 PG 上 create_all + round-trip + 复合主键 upsert
+    await pg_store.save_project(Project(id="p1", name="支付", owner="alice"))
+    await pg_store.save_version(Version(id="v1", project_id="p1", name="1.0"))
+    await pg_store.save_member(ProjectMember(project_id="p1", user_id="alice", role="tester"))
+    await pg_store.save_member(ProjectMember(project_id="p1", user_id="alice", role="admin"))
+    assert (await pg_store.get_project("p1")).name == "支付"
+    assert {v.id for v in await pg_store.list_versions("p1")} == {"v1"}
+    assert (await pg_store.get_member("p1", "alice")).role == "admin"  # upsert,非两行
+    assert len(await pg_store.list_members("p1")) == 1

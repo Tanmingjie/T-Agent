@@ -205,3 +205,46 @@ class ToolDef(BaseModel):
     returns: str = ""
     when_to_use: str = ""
     timeout_seconds: int = 30
+
+
+# ── 多租户(平台化 T-P04;单机版不使用,project_id 留空即可)──────────────
+
+
+class Project(BaseModel):
+    """租户边界:一个产品线/团队的项目。LLM/Tools/Skills/词汇表/Session 都挂项目级。"""
+
+    id: str  # UUID 或人类可读 slug
+    name: str
+    description: str = ""
+    owner: str | None = None  # 创建人(user id),自动成为项目管理员
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class Version(BaseModel):
+    """项目下的测试版本。测试人员按「项目→版本」测试;Suite/Run 绑版本(已拍板)。"""
+
+    id: str  # UUID
+    project_id: str
+    name: str  # 如 v1.2.0 / 2026Q2
+    status: str = "active"  # active | archived
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
+class User(BaseModel):
+    """平台用户。一期本地账号(或网关 header 透传);二期接 IDaaS 只换来源,结构不变。"""
+
+    id: str  # 用户名 / IDaaS subject
+    display_name: str = ""
+    is_platform_admin: bool = False
+    updated_at: float = Field(default_factory=time.time)
+
+
+class ProjectMember(BaseModel):
+    """项目成员与角色(项目内角色平台自管,不绑 IDaaS 组织架构)。"""
+
+    project_id: str
+    user_id: str
+    role: str = "tester"  # admin(项目管理员)| tester(测试人员)
+    updated_at: float = Field(default_factory=time.time)
