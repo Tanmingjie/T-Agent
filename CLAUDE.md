@@ -17,7 +17,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 铁律(违反即错,必须常驻)
 
 1. **浏览器层只用 playwright-mcp 的 stdio 模式,绝不用 CDP HTTP**(内网代理会拦截 → 504)。
-2. **断言以规则引擎确定性验证为主**。判断在"翻译时"一次性做(预期→结构化 Assertion),执行时只做确定性比较。**唯一例外:`llm_judge` 作为降级链最末档显式兜底**(无法结构化/查真值时),接 LLM 真判 PASS/FAIL 并计入裁决,但结果标 `ai_judged`(低置信、报告与结构化绿区分,使 false green 可见可回溯);裁判 prompt 偏向 FAIL(宁可误报失败不可误报通过)。**能用 DOM/文本/URL/custom_tool 的预期一律不准落到 llm_judge**。〔方案A,2026-06-10 由用户拍板,推翻原"绝不让 LLM 眼判";仍不取 LLM 自报的 TEST_RESULT〕
+2. **LLM 眼判分两种角色,边界要守清(2026-06-10 重订)**:
+   - **(a) 驱动执行 = 鼓励用**。执行中靠 LLM「看快照判断这步成没成、要不要重试、冒出弹窗怎么绕」来随机应变——这是 Agent 的核心价值,治偶发噪声(弹窗/加载慢/改版/多一步确认),**让执行健壮**。这类眼判**不进最终裁决**,只负责「想办法走到终态」。中途若要加确定性校验,也必须是**软的、可恢复的**(不过 → 自愈/重试/绕行),**不能是一票否决的硬闸门**(那会把健壮性弄丢)。
+   - **(b) 裁定 PASS/FAIL = 以规则引擎确定性验证为主**。判断在"翻译时"一次性做(预期→结构化 Assertion),执行后只做确定性比较。**`llm_judge` 作为降级链最末档显式兜底**(无法结构化/查真值时),接 LLM 真判 PASS/FAIL 并**计入裁决**(方案A,已选择信任),但标 `ai_judged`(低置信、报告与结构化绿区分,使 false green 可见可回溯);裁判 prompt 偏向 FAIL(宁可误报失败不可误报通过)。**能用 DOM/文本/URL/custom_tool 的预期一律不准落到 llm_judge**。
+   - **守住的底线**:不让 LLM **不可见地/默认地**决定主裁决(结构化能判的不准交 LLM、AI 判绿必须标记);也不取 LLM 自报的 `TEST_RESULT`。〔方案A 由用户拍板,推翻原"绝不让 LLM 眼判 PASS/FAIL"的绝对表述——禁的是「LLM 不可见地刷绿」,不是「LLM 驱动执行」或「显式可审计的兜底裁决」。〕
 3. **本地 LLM 的 tool_call 必须容错**(宽松 JSON / 从 content 提取 / 重试),偶发格式错误不得搞崩 ReAct 循环。
 4. 最终 PASS/FAIL **以断言裁决为准**(含 `llm_judge` 兜底结果),**不取 LLM 自报的 TEST_RESULT**。
 5. 实现原则(规格 §0):前后端分离、数据层抽象(SQLModel,不直接写 SQL)、输入/输出抽象(都产出 `TestCase`/落 `ExecutionRecord`)、核心表预留 `updated_at`/`owner`/`external_id`、分阶段不跳跃。
