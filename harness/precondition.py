@@ -54,7 +54,10 @@ def _loads_array_or_obj(text: str):
 STATE_HOOK = "state_hook"
 ACTION_STEP = "action_step"
 AMBIGUOUS = "ambiguous"
-_VALID_TYPES = {STATE_HOOK, ACTION_STEP, AMBIGUOUS}
+IGNORE = "ignore"  # 仅用户可选:模糊项确认为「忽略」,既不进 given 也不注册 Hook(惰性)
+_VALID_TYPES = {STATE_HOOK, ACTION_STEP, AMBIGUOUS}  # 分类器(LLM)合法输出,不含 ignore
+# 用户可手动设定的类型(标黄确认:选 Hook / Given / 忽略)
+USER_SETTABLE_TYPES = {STATE_HOOK, ACTION_STEP, IGNORE}
 
 _SYSTEM = """\
 你是测试预置条件的意图分类器。把每条预置条件分到三类之一:

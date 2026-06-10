@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
 from api.server import get_repo
+from harness.precondition import USER_SETTABLE_TYPES
 from input.excel_parser import parse_excel
 from input.models import Suite, TestCase
 
@@ -118,4 +119,28 @@ async def update_precondition(
     ok = await repo.update_precondition(case_id, body.index, body.confirmed)
     if not ok:
         raise HTTPException(404, "Case not found")
+    return {"ok": True}
+
+
+class PreconditionItemUpdate(BaseModel):
+    index: int
+    type: str  # state_hook | action_step | ignore(用户标黄确认的三选一)
+    hook_ref: str | None = None  # type=state_hook 时指定 Hook 名
+
+
+@router.put("/suites/{suite_id}/cases/{case_id}/precondition-item")
+async def update_precondition_item(
+    suite_id: str,
+    case_id: str,
+    body: PreconditionItemUpdate,
+    repo=Depends(get_repo),
+):
+    """标黄确认:把某条预置条件分类改为用户选择(Hook/Given/忽略),落库并标记已确认。"""
+    if body.type not in USER_SETTABLE_TYPES:
+        raise HTTPException(
+            422, f"type 非法:{body.type}(合法:{', '.join(sorted(USER_SETTABLE_TYPES))})"
+        )
+    ok = await repo.update_precondition_item(case_id, body.index, body.type, body.hook_ref)
+    if not ok:
+        raise HTTPException(404, "Case or precondition item not found")
     return {"ok": True}

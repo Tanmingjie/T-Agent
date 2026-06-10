@@ -28,7 +28,10 @@ class TestCase(BaseModel):
     id: str
     name: str
     preconditions: list[str] = []  # 已拆分的预置条件
-    precondition_confirmed: list[bool] = []  # 每个前置条件是否已确认
+    precondition_confirmed: list[bool] = []  # 每个前置条件是否已确认(旧:仅布尔)
+    # 预置条件三分类结果(规格 §3.2/§5.1):首次执行分类后落库,用户标黄确认/改类后持久化,
+    # 下次执行据此跳过 LLM 重分类(confirmed_by_user 优先)。空表示尚未分类。
+    precondition_items: list["PreconditionItem"] = []
     steps: list[str] = []  # 已拆分的测试步骤(数据写死在文本里)
     expected: list[str] = []  # 预期结果
     base_url: str = ""

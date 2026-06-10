@@ -17,12 +17,21 @@ import CaseDrawerBody from "../components/CaseDrawerBody";
 import PermissionDialog from "../components/PermissionDialog";
 import { useSuiteRun, CaseRunStatus } from "../hooks/useSuiteRun";
 
+interface PreconditionItem {
+  text: string;
+  type: string;
+  hook_ref?: string | null;
+  confidence?: number;
+  confirmed_by_user?: boolean;
+}
+
 interface Case {
   id: string;
   name: string;
   steps: string[];
   preconditions: string[];
   expected: string[];
+  precondition_items?: PreconditionItem[];
 }
 
 interface RunLite {

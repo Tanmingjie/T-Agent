@@ -54,3 +54,47 @@ async def test_delete_suite(client):
 
     r = await client.get(f"/api/suites/{sid}")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_update_precondition_item_endpoint(client):
+    import api.server as srv
+    from input.models import PreconditionItem
+
+    tc = TestCase(
+        id="tc1",
+        name="Case",
+        preconditions=["准备好测试环境"],
+        precondition_items=[
+            PreconditionItem(text="准备好测试环境", type="ambiguous", confidence=0.3)
+        ],
+        suite_id="s1",
+    )
+    await srv._repo.bulk_insert([tc])
+
+    # 用户标黄确认为 state_hook + 指定 Hook
+    r = await client.put(
+        "/api/suites/s1/cases/tc1/precondition-item",
+        json={"index": 0, "type": "state_hook", "hook_ref": "LoginHook"},
+    )
+    assert r.status_code == 200
+
+    r = await client.get("/api/suites/s1/cases/tc1")
+    item = r.json()["precondition_items"][0]
+    assert item["type"] == "state_hook"
+    assert item["hook_ref"] == "LoginHook"
+    assert item["confirmed_by_user"] is True
+
+    # 非法 type → 422
+    r = await client.put(
+        "/api/suites/s1/cases/tc1/precondition-item",
+        json={"index": 0, "type": "bogus"},
+    )
+    assert r.status_code == 422
+
+    # 用例不存在 → 404
+    r = await client.put(
+        "/api/suites/s1/cases/nope/precondition-item",
+        json={"index": 0, "type": "ignore"},
+    )
+    assert r.status_code == 404

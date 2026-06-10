@@ -166,9 +166,16 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
                     agent.permission_approver = _perm_approver
                 yield agent
 
+        # 用例按 id 索引:执行期 agent 回写 case.precondition_items(三分类结果),
+        # 用例跑完即落库,供前端「标黄确认」(规格 §3.2 闭环)。
+        _case_by_id = {c.id: c for c in cases}
+
         async def _save_record(record) -> None:
             record.run_id = run_id
             await worker_repo.save_record(record)
+            case = _case_by_id.get(record.case_id)
+            if case is not None and case.precondition_items:
+                await worker_store.save_case(case)
 
         try:
             orch = Orchestrator(agent_factory=make_agent)

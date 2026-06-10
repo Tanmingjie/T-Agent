@@ -55,6 +55,7 @@ class TestCaseRow(SQLModel, table=True):
     name: str = ""
     preconditions: list = Field(default_factory=list, sa_column=Column(JSON))
     precondition_confirmed: list = Field(default_factory=list, sa_column=Column(JSON))
+    precondition_items: list = Field(default_factory=list, sa_column=Column(JSON))
     steps: list = Field(default_factory=list, sa_column=Column(JSON))
     expected: list = Field(default_factory=list, sa_column=Column(JSON))
     base_url: str = ""

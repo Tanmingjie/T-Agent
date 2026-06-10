@@ -11,10 +11,14 @@
   - 期望:抓快照 + 截图双通道,P1→P5 真正含视觉兜底(候选仍须落在快照里,防臆造)。
   - 价值:弱模型环境下纯文本自愈能力有限,截图是 browser-use 验证过的有效手段。
 
-- [ ] **#4 预置条件分类结果落库 + 前端确认闭环**(§3.2)
-  - 现状:仅内存按文本缓存(进程级),未落库到用例;前端无分类编辑/标黄确认 UI。
-  - 期望:分类结果持久化到用例(下次跳过);§3.2#③ 模糊项前端"标黄 → 用户选 Hook/Given/忽略"可随时改。
-  - 价值:设计核心交互之一,目前人工闭环是断的;重启即丢。
+- [x] **#4 预置条件分类结果落库 + 前端确认闭环**(§3.2)— 2026-06-10
+  - 后端:`TestCase.precondition_items`(+`TestCaseRow` JSON 列)落库分类;`agent._classify_preconditions`
+    从用例已确认项灌 classifier memory(命中跳过 LLM、用户选择优先)并回写分类到 case;
+    执行链 `_save_record` 用例跑完即落库;`PreconditionClassifier.IGNORE` + `USER_SETTABLE_TYPES`;
+    Repository/路由 `PUT .../cases/{id}/precondition-item`(type=Hook/Given/忽略,标 confirmed)。
+  - 前端:`CaseDrawerBody` 新增 `PreconditionBlock`,模糊项标黄、下拉选 Hook/Given/忽略即时落库。
+  - 测试:repo/agent/classifier/API 四处单测(共 +4);前端 tsc 通过。
+  - 遗留:执行前「先分类后审查」仍需先跑一次(分类在执行链内);纯 classify-only 端点未做(非必需)。
 
 - [x] **#2 `on_heal` Hook 接通**(§7.7)— 2026-06-10
   - `agent.run` 收尾聚合断言侧(`a_results` 中 `healed`)+ 操作侧(`action_steps[].heal_attempts`)

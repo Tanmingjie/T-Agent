@@ -133,3 +133,59 @@ async def test_llm_missing_text_falls_back_to_order():
     items = await clf.classify(["新建一条订单"])
     assert items[0].type == ACTION_STEP
     assert items[0].text == "新建一条订单"
+
+
+# ── 分类落库闭环(TODO #4)──────────────────────────────────────
+
+
+async def test_classifier_reuses_confirmed_item_from_memory():
+    """memory 命中(用户已确认的条目)时跳过 LLM,且用户选择优先。"""
+    from input.models import PreconditionItem
+
+    llm = _FakeLLM(_classified([{"text": "环境正常", "type": "ambiguous", "confidence": 0.4}]))
+    confirmed = PreconditionItem(
+        text="环境正常", type="action_step", confidence=1.0, confirmed_by_user=True
+    )
+    clf = PreconditionClassifier(llm, memory={"环境正常": confirmed})
+    items = await clf.classify(["环境正常"])
+    assert llm.calls == 0  # 命中 memory,未调用 LLM
+    assert items[0].type == "action_step"
+    assert items[0].confirmed_by_user is True
+
+
+async def test_agent_seeds_from_case_and_writes_back():
+    """agent 从 case.precondition_items 的已确认项灌 memory(跳过 LLM),并回写分类到 case。"""
+    from harness.agent import TestCaseAgent
+    from input.models import PreconditionItem, TestCase
+    from tests.test_agent import SNAPSHOT_OK, _FakeMCP
+
+    llm = _FakeLLM(
+        _classified(
+            [
+                {"text": "已登录系统", "type": "state_hook", "confidence": 0.95},
+                {"text": "设置 CONF=10", "type": "action_step", "confidence": 0.9},
+            ]
+        )
+    )
+    clf = PreconditionClassifier(llm, hook_map={"已登录": "LoginHook"})
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), precondition_classifier=clf)
+
+    # 第二条已被用户确认为 ignore → 应跳过 LLM 重判、保持 ignore
+    case = TestCase(
+        id="tc1",
+        name="x",
+        preconditions=["已登录系统", "设置 CONF=10"],
+        precondition_items=[
+            PreconditionItem(
+                text="设置 CONF=10", type="ignore", confirmed_by_user=True, confidence=1.0
+            )
+        ],
+        base_url="http://x",
+    )
+    items = await agent._classify_preconditions(case)
+
+    types = {i.text: i.type for i in items}
+    assert types["已登录系统"] == "state_hook"
+    assert types["设置 CONF=10"] == "ignore"  # 用户确认优先,未被 LLM 覆盖
+    # 回写到 case(供 API 落库 / 前端标黄)
+    assert case.precondition_items == items

@@ -228,12 +228,19 @@ class TestCaseAgent:
         self._last_precondition_items = []
         if self.precondition_classifier is None or not case.preconditions:
             return []
+        # 复用已确认的历史分类(规格 §3.2「首次确认后记忆,下次跳过」):把用例里
+        # confirmed_by_user 的条目灌进分类器 memory,classify 命中即跳过 LLM、且用户选择优先。
+        for it in case.precondition_items:
+            if it.confirmed_by_user and it.text:
+                self.precondition_classifier.memory[it.text] = it
         try:
             items = await self.precondition_classifier.classify(case.preconditions)
         except Exception as e:  # noqa: BLE001 — 分类失败不阻断翻译,降级为不分类
             logger.warning("预置条件分类失败(%s):%s,降级为不分类", case.id, e)
             return []
         self._last_precondition_items = items
+        # 回写到用例对象:执行链/ API 层据此落库,前端可标黄展示并确认(闭环)。
+        case.precondition_items = items
         for it in items:
             if it.type == STATE_HOOK:
                 logger.info("预置条件[状态声明]→ %s 负责:%s", it.hook_ref, it.text)
