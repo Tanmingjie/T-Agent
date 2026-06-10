@@ -98,3 +98,30 @@ async def test_update_precondition_item_endpoint(client):
         json={"index": 0, "type": "ignore"},
     )
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_cross_suite_same_case_number_no_collision(client):
+    """不同套件上传同号用例(TC101)不再互相覆盖:各自 namespaced id,旧套件用例不丢。"""
+    import api.server as srv
+    from api.routers.suites import namespaced_case_id
+
+    s1, s2 = "suiteA", "suiteB"
+    c1 = TestCase(id=namespaced_case_id(s1, "TC101"), name="A的用例", suite_id=s1)
+    c2 = TestCase(id=namespaced_case_id(s2, "TC101"), name="B的用例", suite_id=s2)
+    await srv._repo.bulk_insert([c1])
+    await srv._repo.bulk_insert([c2])
+
+    a = await srv._repo.list_by_suite(s1)
+    b = await srv._repo.list_by_suite(s2)
+    assert len(a) == 1 and a[0].name == "A的用例"  # 旧套件用例仍在
+    assert len(b) == 1 and b[0].name == "B的用例"
+    assert a[0].id != b[0].id
+
+
+def test_namespaced_case_id_idempotent():
+    from api.routers.suites import namespaced_case_id
+
+    once = namespaced_case_id("s1", "TC101")
+    assert once == "s1--TC101"
+    assert namespaced_case_id("s1", once) == once  # 已带前缀不重复加

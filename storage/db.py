@@ -14,14 +14,17 @@ aiosqlite;换 PostgreSQL 只改连接串。
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Type, TypeVar
 
-from sqlalchemy import JSON, Column, event
+from sqlalchemy import JSON, Column, event, inspect, text
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Field, SQLModel, select
 from sqlmodel.ext.asyncio.session import AsyncSession
+
+logger = logging.getLogger(__name__)
 
 from input.models import (
     ExecutionRecord,
@@ -161,6 +164,36 @@ class Store:
     async def init(self) -> None:
         async with self.engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
+            # 轻量迁移:create_all 只建不存在的表、**不会给已存在的表加列**。新增模型字段
+            # (如 test_case.precondition_items)在旧库里会缺列 → 查询 500。这里对比模型与
+            # 实际表结构,对缺失列做 ALTER ADD COLUMN(SQLite 支持的可空/带默认列)。
+            await conn.run_sync(self._migrate_add_missing_columns)
+
+    @staticmethod
+    def _migrate_add_missing_columns(sync_conn) -> None:  # noqa: ANN001
+        insp = inspect(sync_conn)
+        existing_tables = set(insp.get_table_names())
+        for table in SQLModel.metadata.sorted_tables:
+            if table.name not in existing_tables:
+                continue
+            have = {c["name"] for c in insp.get_columns(table.name)}
+            for col in table.columns:
+                if col.name in have:
+                    continue
+                coltype = col.type.compile(dialect=sync_conn.dialect)
+                sync_conn.execute(
+                    text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {coltype}')
+                )
+                # ALTER ADD COLUMN 把已有行的新列置 NULL;JSON 列(列表/字典)读回时会让
+                # 领域模型(期望 list/dict)校验失败 → 回填空 JSON '[]',与新建行默认一致。
+                if isinstance(col.type, JSON):
+                    sync_conn.execute(
+                        text(
+                            f'UPDATE "{table.name}" SET "{col.name}" = \'[]\' '
+                            f'WHERE "{col.name}" IS NULL'
+                        )
+                    )
+                logger.info("DB 迁移:%s 补列 %s %s", table.name, col.name, coltype)
 
     async def close(self) -> None:
         await self.engine.dispose()

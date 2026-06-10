@@ -16,6 +16,17 @@ from input.models import Suite, TestCase
 
 router = APIRouter(tags=["suites"])
 
+_CASE_ID_SEP = "--"
+
+
+def namespaced_case_id(suite_id: str, case_id: str) -> str:
+    """把用例编号加上套件前缀,避免不同套件同号用例(TC101)主键冲突互相覆盖。
+
+    分隔符 '--' 文件系统/URL 安全(截图目录以 case_id 命名)。已带本套件前缀则不重复加。
+    """
+    prefix = f"{suite_id}{_CASE_ID_SEP}"
+    return case_id if case_id.startswith(prefix) else f"{prefix}{case_id}"
+
 
 class SuiteCreateRequest(BaseModel):
     name: str
@@ -88,6 +99,11 @@ async def upload_excel(
         cases = parse_excel(tmp_path, base_url=suite.base_url, suite_id=suite_id)
         for c in cases:
             c.base_url = suite.base_url
+            # 跨 suite 命名空间:用例 id 取自 Excel「用例编号」(常跨套件重复,如 TC101)。
+            # 主键直接用它,第二个套件上传同号用例会 merge 覆盖第一个 → 旧套件用例丢失。
+            # 加套件前缀消歧;分隔符 '--' 文件系统/URL 安全(截图目录用 case_id 命名,
+            # 冒号在 Windows 非法)。前端展示时去前缀还原编号。
+            c.id = namespaced_case_id(suite_id, c.id)
         n = await repo.bulk_insert(cases)
         return UploadResult(total=len(cases), inserted=n, warnings=[])
     except ValueError as e:

@@ -39,6 +39,12 @@ interface RunLite {
   started_at: number;
 }
 
+/** 去掉用例 id 的套件前缀(后端为避免跨套件同号冲突加的 `{suiteId}--` 前缀),还原 Excel 编号展示。 */
+function caseNo(id: string): string {
+  const i = id.indexOf("--");
+  return i >= 0 ? id.slice(i + 2) : id;
+}
+
 interface RunOverview {
   cases: { case_id: string; passed: boolean }[];
 }
@@ -312,7 +318,7 @@ export default function SuiteCasesPage() {
                   {c.name}
                 </td>
                 <td className="px-5 py-3.5 font-mono text-xs text-gray-500">
-                  {c.id}
+                  {caseNo(c.id)}
                 </td>
                 <td className="px-5 py-3.5 text-gray-500">{c.steps.length}</td>
               </tr>

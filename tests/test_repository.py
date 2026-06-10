@@ -94,3 +94,42 @@ async def test_update_precondition_item_persists_user_choice(repo):
     # 越界 / 不存在
     assert await repo.update_precondition_item("tc1", 9, "ignore", None) is False
     assert await repo.update_precondition_item("nope", 0, "ignore", None) is False
+
+
+@pytest.mark.asyncio
+async def test_migration_adds_missing_json_column_and_backfills():
+    """旧库缺新列(precondition_items)时 init 自动补列并把已有行回填 '[]',读回不报错。"""
+    import os
+    import tempfile
+
+    from sqlalchemy import text
+
+    from storage.db import Store
+
+    fd, path = tempfile.mkstemp(suffix=".db")
+    os.close(fd)
+    try:
+        s = Store(url=f"sqlite+aiosqlite:///{path}")
+        # 模拟旧 schema:test_case 无 precondition_items 列
+        async with s.engine.begin() as conn:
+            await conn.execute(
+                text(
+                    "CREATE TABLE test_case (id TEXT PRIMARY KEY, name TEXT, "
+                    "preconditions JSON, precondition_confirmed JSON, steps JSON, "
+                    "expected JSON, base_url TEXT, suite_id TEXT, external_id TEXT, "
+                    "owner TEXT, updated_at REAL)"
+                )
+            )
+            await conn.execute(
+                text(
+                    "INSERT INTO test_case VALUES ('TC1','n','[]','[]','[]','[]',"
+                    "'http://x','s1',NULL,NULL,0)"
+                )
+            )
+        await s.init()  # 触发迁移
+        cases = await s.list_cases(suite_id="s1")
+        assert len(cases) == 1
+        assert cases[0].precondition_items == []  # 回填为空列表,读回不抛
+        await s.close()
+    finally:
+        os.path.exists(path) and os.unlink(path)
