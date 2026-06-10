@@ -178,3 +178,54 @@ async def test_generator_reraises_when_fallback_disabled():
     gen = SpecGenerator(_FakeLLM(content="坏的"), fallback_on_error=False)
     with pytest.raises(ValueError):
         await gen.generate(_case())
+
+
+# ── 合并调用:一次 LLM 同时分类 + 翻译 ───────────────────────
+
+
+class _CountingLLM(LLMClient):
+    def __init__(self, content: str):
+        self._content = content
+        self.calls = 0
+
+    async def chat(self, messages, tools=None, **kwargs) -> LLMResponse:
+        self.calls += 1
+        return LLMResponse(content=self._content)
+
+
+def _merged_json() -> str:
+    return json.dumps(
+        {
+            "given": [{"action": "execute", "target": "新建草稿订单", "data": None}],
+            "steps": [{"action": "click", "target": "提交按钮", "data": None, "expect": []}],
+            "assertions": [{"type": "url_contains", "target": "URL", "expected": "/list"}],
+            "preconditions": [
+                {"text": "已登录系统", "type": "state_hook", "confidence": 0.95},
+                {"text": "新建一条草稿订单", "type": "action_step", "confidence": 0.9},
+            ],
+        },
+        ensure_ascii=False,
+    )
+
+
+def test_build_messages_request_classification_adds_appendix():
+    msgs = build_spec_messages(_case(), request_classification=True)
+    assert "预置条件分类" in msgs[0]["content"]
+    assert "preconditions" in msgs[0]["content"]
+
+
+async def test_generate_with_classification_single_call():
+    llm = _CountingLLM(_merged_json())
+    gen = SpecGenerator(llm)
+    spec, raw = await gen.generate_with_classification(_case())
+    assert llm.calls == 1  # 一次调用拿到 spec + 分类
+    assert len(spec.steps) == 1
+    assert raw["已登录系统"]["type"] == "state_hook"
+    assert raw["新建一条草稿订单"]["type"] == "action_step"
+
+
+async def test_generate_with_classification_falls_back_on_bad_json():
+    gen = SpecGenerator(_FakeLLM(content="胡言乱语"), fallback_on_error=True)
+    spec, raw = await gen.generate_with_classification(_case())
+    assert [s.target for s in spec.steps] == ["打开订单列表", "点击提交按钮"]  # 降级
+    assert raw == {}  # 分类为空 → 下游全 ambiguous

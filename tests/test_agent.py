@@ -328,6 +328,32 @@ async def test_generate_spec_merges_action_step_precondition_into_given():
     assert any(g.target == "新建一条草稿订单" for g in spec.given)
 
 
+async def test_generate_spec_merged_single_call_with_real_classifier():
+    # 真分类器 + 有预置条件 → 合并路径:一次 LLM 调用同时分类 + 翻译;action_step 合入 given
+    from harness.precondition import PreconditionClassifier
+
+    merged = (
+        '{"given": [], '
+        '"steps": [{"action": "click", "target": "提交按钮", "expect": []}], '
+        '"assertions": [{"type": "url_contains", "target": "URL", "expected": "/list"}], '
+        '"preconditions": [{"text": "新建一条草稿订单", "type": "action_step", "confidence": 0.9}]}'
+    )
+    llm = _ScriptedLLM([_resp(content=merged)])
+    clf = PreconditionClassifier(llm)
+    case = TestCase(
+        id="TC",
+        name="x",
+        preconditions=["新建一条草稿订单"],
+        steps=["点击提交"],
+        base_url="http://x",
+    )
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), precondition_classifier=clf)
+    spec = await agent.generate_spec(case)
+    assert llm._i == 1  # 只一次 LLM 往返(分类随翻译一次出)
+    assert any(g.target == "新建一条草稿订单" for g in spec.given)  # action_step 合入 given
+    assert case.precondition_items[0].type == "action_step"  # 分类回写(确认闭环)
+
+
 async def test_generate_spec_skips_classifier_without_preconditions():
     llm = _ScriptedLLM([_resp(content=_SPEC_JSON_EMPTY_GIVEN)])
     clf = _FakeClassifier([])

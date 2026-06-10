@@ -254,33 +254,59 @@ class TestCaseAgent:
     async def generate_spec(self, case: TestCase) -> TestSpec:
         """生成 TestSpec(供 CLI 先打印给用户审查)。
 
-        含预置条件三分类(规格 §5.1/§5.2):先分类 → 把分类结果下发给翻译器
-        (引导 given 只收 action_step)→ 再**确定性**地把 action_step 合入 given,
-        避免 LLM 漏放。state_hook / ambiguous 记到 ``_last_precondition_items``。
+        含预置条件三分类(规格 §5.1/§5.2)。**默认合并**:当有待分类的预置条件时,用
+        **一次** LLM 调用同时完成「分类 + 翻译」(省掉单独的分类往返,与模型快慢无关的结构
+        优化);分类结果确定性建项(置信阈值 / Hook 映射 / 用户确认优先)并把 action_step
+        合入 given。无待分类(无预置 / 全命中 memory / 无分类器)时退回单次翻译(分类 0 调用)。
         """
+        classifier = self.precondition_classifier
+        # 合并需分类器支持(memory + classify_from_raw);自定义/精简分类器不支持时退回两次调用。
+        supports_merge = classifier is not None and hasattr(classifier, "classify_from_raw")
+        valid_pre = (
+            [p for p in case.preconditions if p and p.strip()]
+            if (classifier is not None and case.preconditions)
+            else []
+        )
+        pending: list[str] = []
+        if valid_pre and supports_merge:
+            self._seed_confirmed_preconditions(case)
+            pending = [p for p in dict.fromkeys(valid_pre) if p not in classifier.memory]
+
+        if valid_pre and supports_merge and pending:
+            # —— 合并:一次调用同时分类 + 翻译 ——
+            spec, raw = await self.spec_generator.generate_with_classification(case)
+            try:
+                items = classifier.classify_from_raw(case.preconditions, raw)
+            except Exception as e:  # noqa: BLE001 — 分类不阻断翻译,降级为不分类
+                logger.warning("预置条件分类(合并)失败(%s):%s,降级为不分类", case.id, e)
+                items = []
+            if items:
+                self._record_classification(case, items)
+                spec = self._merge_given_from_preconditions(spec, items)
+            else:
+                self._last_precondition_items = []
+            return spec
+
+        # —— 无待分类:分类不耗 LLM(空 / 全命中 memory),单独翻译 ——
         items = await self._classify_preconditions(case)
         spec = await self.spec_generator.generate(case, precondition_items=items or None)
         if items:
             spec = self._merge_given_from_preconditions(spec, items)
         return spec
 
-    async def _classify_preconditions(self, case: TestCase) -> list[PreconditionItem]:
-        """对 case.preconditions 做三分类;无分类器/无预置条件时返回空列表。"""
-        self._last_precondition_items = []
-        if self.precondition_classifier is None or not case.preconditions:
-            return []
-        # 复用已确认的历史分类(规格 §3.2「首次确认后记忆,下次跳过」):把用例里
-        # confirmed_by_user 的条目灌进分类器 memory,classify 命中即跳过 LLM、且用户选择优先。
+    def _seed_confirmed_preconditions(self, case: TestCase) -> None:
+        """把用例里 confirmed_by_user 的条目灌进分类器 memory(§3.2:确认后记忆、跳过 LLM、
+        用户选择优先)。"""
+        if self.precondition_classifier is None:
+            return
         for it in case.precondition_items:
             if it.confirmed_by_user and it.text:
                 self.precondition_classifier.memory[it.text] = it
-        try:
-            items = await self.precondition_classifier.classify(case.preconditions)
-        except Exception as e:  # noqa: BLE001 — 分类失败不阻断翻译,降级为不分类
-            logger.warning("预置条件分类失败(%s):%s,降级为不分类", case.id, e)
-            return []
+
+    def _record_classification(self, case: TestCase, items: list[PreconditionItem]) -> None:
+        """分类结果记账:写回用例(落库 + 前端标黄确认闭环)、记 _last_、state_hook 日志、
+        模糊项告警。"""
         self._last_precondition_items = items
-        # 回写到用例对象:执行链/ API 层据此落库,前端可标黄展示并确认(闭环)。
         case.precondition_items = items
         for it in items:
             if it.type == STATE_HOOK:
@@ -293,6 +319,23 @@ class TestCaseAgent:
                 len(pending),
                 "; ".join(p.text for p in pending),
             )
+
+    async def _classify_preconditions(self, case: TestCase) -> list[PreconditionItem]:
+        """对 case.preconditions 做三分类;无分类器/无预置条件时返回空列表。
+
+        注:有待分类条目时,``generate_spec`` 走**合并调用**(分类随翻译一次出),本方法
+        仅在「无待分类(空 / 全命中 memory)」时被调用——此时 ``classify`` 不触发 LLM。
+        """
+        self._last_precondition_items = []
+        if self.precondition_classifier is None or not case.preconditions:
+            return []
+        self._seed_confirmed_preconditions(case)
+        try:
+            items = await self.precondition_classifier.classify(case.preconditions)
+        except Exception as e:  # noqa: BLE001 — 分类失败不阻断翻译,降级为不分类
+            logger.warning("预置条件分类失败(%s):%s,降级为不分类", case.id, e)
+            return []
+        self._record_classification(case, items)
         return items
 
     @staticmethod

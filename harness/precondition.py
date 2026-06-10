@@ -100,6 +100,20 @@ class PreconditionClassifier:
                 self.memory[text] = self._build_item(text, raw.get(text))
         return [self.memory[p] for p in preconditions]
 
+    def classify_from_raw(
+        self, preconditions: list[str], raw: dict[str, dict]
+    ) -> list[PreconditionItem]:
+        """用**外部已拿到**的分类原始结果建项(如随 spec 一次生成),不再单独调 LLM。
+
+        命中 memory 的条目优先保留(贯彻用户确认 / §3.2 记忆);其余按 ``raw`` 确定性建项
+        (复用 `_build_item` 的置信阈值 + Hook 映射)并存入 memory。``raw`` 缺某条 → ambiguous。
+        """
+        preconditions = [p for p in preconditions if p and p.strip()]
+        for text in preconditions:
+            if text not in self.memory:
+                self.memory[text] = self._build_item(text, raw.get(text))
+        return [self.memory[p] for p in preconditions]
+
     def _build_item(self, text: str, raw: dict | None) -> PreconditionItem:
         if not raw:
             return PreconditionItem(text=text, type=AMBIGUOUS, confidence=0.0)

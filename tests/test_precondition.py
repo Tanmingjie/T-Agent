@@ -32,6 +32,37 @@ def _classified(rows):
     return json.dumps(rows, ensure_ascii=False)
 
 
+def test_classify_from_raw_no_llm_call():
+    # 合并模式:用外部 raw 建项,不触发 LLM;置信阈值/Hook 映射照常生效
+    llm = _FakeLLM()
+    clf = PreconditionClassifier(llm, hook_map={"已登录": "LoginHook"})
+    raw = {
+        "已登录系统": {"type": "state_hook", "confidence": 0.95},
+        "新建草稿订单": {"type": "action_step", "confidence": 0.9},
+        "环境正常": {"type": "ambiguous", "confidence": 0.3},
+    }
+    items = clf.classify_from_raw(["已登录系统", "新建草稿订单", "环境正常"], raw)
+    assert llm.calls == 0  # 关键:不调 LLM
+    assert items[0].type == STATE_HOOK and items[0].hook_ref == "LoginHook"
+    assert items[1].type == ACTION_STEP
+    assert items[2].type == AMBIGUOUS
+
+
+def test_classify_from_raw_preserves_confirmed_memory():
+    # 用户已确认的条目在 memory 里 → classify_from_raw 优先保留,不被 raw 覆盖
+    from input.models import PreconditionItem
+
+    llm = _FakeLLM()
+    clf = PreconditionClassifier(llm)
+    clf.memory["提交订单"] = PreconditionItem(
+        text="提交订单", type=ACTION_STEP, confirmed_by_user=True, confidence=1.0
+    )
+    raw = {"提交订单": {"type": "state_hook", "confidence": 0.9}}  # raw 说 state_hook
+    items = clf.classify_from_raw(["提交订单"], raw)
+    assert items[0].type == ACTION_STEP  # 用户确认优先,raw 不覆盖
+    assert items[0].confirmed_by_user is True
+
+
 async def test_three_way_classification():
     llm = _FakeLLM(
         _classified(
