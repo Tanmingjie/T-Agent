@@ -75,6 +75,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **定位三层**:`Locator` 模型(框架无关)/ 解析层(语义 target→Locator,放 generator 外)/ 渲染层(各 CodeGenerator 自实现);稳健度 `ROLE>TEST_ID>LABEL>PLACEHOLDER>TEXT>CSS`。BDD 只是渲染实现之一。
 - 截图/代码生成在 `agent.run` 内**端到端接通**:浏览器动作后落 `step_NNN.png`(真实 run_id 目录),断言通过后生成 BDD 代码写 `record.generated_code`+落盘。
 
+## 平台化(进行中的新主线,2026-06-10 启动)
+
+单机版 → 多租户 Web 平台(全公司多产品线)。方向与已拍板决策见 `平台化设计草案.md`;
+**任务分解与进度跟踪见 `平台化开发路径.md`(用户两地开发、多 agent 接力:开工前必读、收尾必更新该文档并提交)**。
+要点:Postgres、API/worker 双进程(本地优先,K8s 延后到 M3)、项目→版本→Suite→Run、
+三角色 RBAC、HTTP 型 Custom Tool、项目级 LLM 配置(加密落库)。单机 CLI 路径保留不回归。
+
 ## 实施进度
 
 - 阶段一 ✅ T-01~T-10(主干跑通,断言驱动 PASS/FAIL;saucedemo 端到端验证过)
