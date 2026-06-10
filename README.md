@@ -117,7 +117,16 @@ cd frontend && npm install && cd ..
 LLM_MODEL=openai/qwen3          # 模型名需带 provider 前缀(openai/xxx、ollama/xxx)
 LLM_API_BASE=http://127.0.0.1:11434/v1
 LLM_API_KEY=sk-xxx
+# 内网直连 LLM、需绕过代理时(见下「故障排查」),加一行:
+# NO_PROXY=localhost,127.0.0.1,your-internal-llm-host
 ```
+
+> **故障排查:同一 cmd 里 `curl` 能连 LLM,本项目却报「代理异常 / Content Filter -
+> Access Denied(504)」**——Windows 下 Python(httpx)会读取**系统/注册表代理(WinINET)**
+> 把内网请求也发给代理,而 `curl` 不读注册表代理、直连成功,故同一 shell 两者表现不同
+> (与是否设了 `HTTP_PROXY` 环境变量无关)。解法:把内网 LLM 主机(`LLM_API_BASE` 里的
+> 主机名/IP,不带 `http://` 和端口)写进 `.env` 的 `NO_PROXY`,httpx 即对该主机直连、
+> 公网仍走代理;全部走内网可用 `NO_PROXY=*`。诊断脚本:`python scripts/diag_proxy.py`。
 
 ### 运行测试
 
