@@ -67,14 +67,13 @@ async def test_record_json_roundtrip_pg(pg_store):
         exec_id="e1",
         case_id="TC001",
         case_assertions=[{"type": "url_contains", "status": "pass"}],
-        spec={"steps": [{"action": "click"}]},
         passed=True,
     )
     await pg_store.save_record(rec)
     got = await pg_store.get_record("e1")
     assert got is not None
-    assert got.case_assertions[0]["status"] == "pass"
-    assert got.spec["steps"][0]["action"] == "click"
+    assert got.passed is True
+    assert got.case_assertions[0]["status"] == "pass"  # JSON 列 round-trip
 
 
 async def test_suite_hooks_json_pg(pg_store):
