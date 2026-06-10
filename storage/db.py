@@ -15,6 +15,7 @@ aiosqlite;换 PostgreSQL 只改连接串。
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import Type, TypeVar
 
@@ -145,20 +146,33 @@ _T = TypeVar("_T", bound=SQLModel)
 class Store:
     """异步仓储。CRUD 方法收发领域模型,内部转换为表行。"""
 
-    def __init__(self, url: str = "sqlite+aiosqlite:///storage/ai_test.db") -> None:
-        # 并发要点:后台执行任务在写库的同时,API 还要读 /result。SQLite 默认 rollback-journal
-        # 下读写互斥 → 读请求被锁阻塞 → 前端"加载中"挂死、服务像崩了。WAL 让写不阻塞读。
-        # 关键:PRAGMA journal_mode=WAL 在事务里会被 SQLite **静默忽略**,必须在每条新连接上、
-        # 事务外执行才生效 → 用 connect 监听器逐连接设置(busy_timeout 兜底:撞锁等待而非抛)。
-        # 不指定 poolclass:SQLAlchemy 对 :memory: 自动用 StaticPool(测试)、文件库用 QueuePool。
-        self.engine = create_async_engine(url, future=True, connect_args={"timeout": 30})
+    def __init__(self, url: str | None = None) -> None:
+        # 连接串走 env(DATABASE_URL),缺省 SQLite 文件库(单机/CLI 向后兼容)。
+        # 平台版传 postgresql+asyncpg://...;方言差异在此分支,业务代码不感知(规格 §0 原则2)。
+        url = url or os.getenv("DATABASE_URL", "sqlite+aiosqlite:///storage/ai_test.db")
+        self.url = url
+        self.is_sqlite = url.startswith("sqlite")
 
-        @event.listens_for(self.engine.sync_engine, "connect")
-        def _set_sqlite_pragma(dbapi_conn, _rec):  # noqa: ANN001
-            cur = dbapi_conn.cursor()
-            cur.execute("PRAGMA journal_mode=WAL")
-            cur.execute("PRAGMA busy_timeout=30000")
-            cur.close()
+        if self.is_sqlite:
+            # SQLite 并发要点:后台执行任务写库的同时,API 还要读 /result。默认 rollback-journal
+            # 下读写互斥 → 读请求被锁阻塞 → 前端"加载中"挂死、服务像崩了。WAL 让写不阻塞读。
+            # 关键:PRAGMA journal_mode=WAL 在事务里会被 SQLite **静默忽略**,必须在每条新连接上、
+            # 事务外执行才生效 → 用 connect 监听器逐连接设置(busy_timeout 兜底:撞锁等待而非抛)。
+            # timeout 是 aiosqlite 的 connect 参数;asyncpg 不认,故只在 SQLite 下传。
+            # 不指定 poolclass:SQLAlchemy 对 :memory: 自动用 StaticPool(测试)、文件库用 QueuePool。
+            self.engine = create_async_engine(url, future=True, connect_args={"timeout": 30})
+
+            @event.listens_for(self.engine.sync_engine, "connect")
+            def _set_sqlite_pragma(dbapi_conn, _rec):  # noqa: ANN001
+                cur = dbapi_conn.cursor()
+                cur.execute("PRAGMA journal_mode=WAL")
+                cur.execute("PRAGMA busy_timeout=30000")
+                cur.close()
+
+        else:
+            # Postgres(asyncpg)等:MVCC 读写不互斥,无需 WAL pragma;pool_pre_ping 治
+            # 长连接被服务端断开(开发期连接闲置后失效)。pool 参数用 SQLAlchemy 默认。
+            self.engine = create_async_engine(url, future=True, pool_pre_ping=True)
 
         self._sf = sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
 
