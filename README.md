@@ -83,7 +83,13 @@ uv venv --python 3.11
 .venv\Scripts\activate.bat
 uv pip install -r requirements.txt
 
-:: 前端(两种方式相同)
+:: ── 方式 C:无 venv,直接全局安装(代理只放行某个 shell 时省事)──
+:: 在能联网的 cmd 里装到全局 site-packages,之后一律用 py -3.11 运行,无需激活
+py -3.11 -m pip install -r requirements.txt
+:: 运行示例:py -3.11 -m pytest -q  /  py -3.11 cli\run_case.py ...
+:: 注意:须是正常 CPython(py -3.11 -m pip --version 能用),embeddable 版不行
+
+:: 前端(三种方式相同)
 cd frontend && npm install && cd ..
 ```
 

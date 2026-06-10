@@ -250,6 +250,9 @@ python scripts/serve.py
 
 # 启动前端开发服务器
 cd frontend && npm install && npm run dev
+# 前端构建 / 类型检查(无独立 ESLint;`build` 先跑 `tsc`,即类型检查门禁)
+cd frontend && npm run build      # tsc + vite build;提交前用它当类型检查
+cd frontend && npm run preview    # 本地预览生产构建
 
 # LLM 配置:.env(项目根,自动加载) 或 env 或 CLI flag
 #   LLM_MODEL / LLM_API_BASE / LLM_API_KEY；模型名需带 provider 前缀(如 openai/xxx、ollama/xxx)
