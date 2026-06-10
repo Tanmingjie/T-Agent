@@ -410,6 +410,18 @@ class TestCaseAgent:
             result = await self.mcp.call_tool("browser_snapshot", {})
             return self.mcp.result_to_text(result)
 
+        async def get_screenshot() -> str | None:
+            """取当前页面截图(base64 PNG),供操作侧视觉自愈双通道。失败返回 None。"""
+            import base64
+
+            try:
+                result = await self.mcp.call_tool("browser_take_screenshot", {})
+                img = self.mcp.result_to_image_bytes(result)
+            except Exception as e:  # noqa: BLE001 — 截图失败不影响自愈兜底
+                logger.warning("操作侧视觉自愈取截图失败:%s", e)
+                return None
+            return base64.b64encode(img).decode("ascii") if img else None
+
         async def capture_screenshot(step_no: int, tool_name: str) -> str | None:
             """浏览器动作后抓当前页面落盘成 step_NNN.png(控制/自定义/非浏览器工具跳过)。"""
             if not _CAPTURE_SCREENSHOTS:
@@ -437,6 +449,7 @@ class TestCaseAgent:
             max_steps=self.max_steps,
             healer=healer,
             get_snapshot=get_snapshot,
+            get_screenshot=get_screenshot,
             compactor=ContextCompactor(),
             capture_screenshot=capture_screenshot,
             on_step=emit_step,  # 每步落定即时推送(实时进度)

@@ -44,6 +44,7 @@ class HealCandidate:
     strategy: str = "P1_role"  # P1_role | P2_text | P3_attr | P4_position | P5_visual
     confidence: float = 0.0
     selector: str | None = None
+    ref: str = ""  # 命中的 a11y 节点 ref(eXX);视觉通道靠它锚定可操作节点、防臆造
     reason: str = ""
 
     @property
@@ -62,27 +63,37 @@ class HealResult:
 
 _SYSTEM = """\
 你是 UI 元素重定位专家。某个测试动作或断言要找的目标元素没定位到,需要你根据当前页面的
-无障碍(A11y)快照,判断业务语义目标实际对应页面上的哪个元素。
+无障碍(A11y)快照(必要时结合页面截图),判断业务语义目标实际对应页面上的哪个元素。
 
 策略优先级(尽量用靠前的):
 - P1_role:语义角色 + 可及名(最可靠)
 - P2_text:可见文本
 - P3_attr:属性(如 aria-label / placeholder)
 - P4_position:位置关系(如"第一个商品的按钮")
-- P5_visual:视觉判断(仅在前面都不行时)
+- P5_visual:看截图视觉判断(仅在 A11y 文本对不上时用,如图标按钮 / 角标 / 可及名缺失或与业务词不一致)
 
 只输出 JSON,给出至多 3 个候选,按你认为的可能性从高到低排序:
 {"candidates":[
-  {"target":"页面上真实存在的可及名或文本","strategy":"P1_role","confidence":0.0~1.0,"reason":"为什么"}
+  {"ref":"e12","target":"该节点的可及名或文本","strategy":"P1_role","confidence":0.0~1.0,"reason":"为什么"}
 ]}
-target 必须尽量取自下面快照里真实出现的元素名/文本,不要臆造。"""
+
+铁律(防臆造):
+- ref 必须取自下面清单里真实出现的 [ref=eXX];target 取该节点的可及名/文本。
+- 用截图只是为了"看见"并选对清单里的某个节点,**不要发明清单里没有的 ref / 元素**。
+- 若结合截图发现业务目标其实对应清单里某个可及名为空或与业务词不同的节点,请给它的 ref。"""
 
 
 def _nodes_digest(nodes: list[A11yNode], limit: int = 60) -> str:
-    """把快照节点压成给 LLM 看的清单(role / name / value)。"""
+    """把快照节点压成给 LLM 看的清单(ref / role / name / value)。
+
+    带上 ref,让视觉通道能用 ref 锚定可操作节点(playwright-mcp 只能按 ref 操作)。
+    """
     lines = []
     for n in nodes[:limit]:
-        parts = [n.role]
+        parts = []
+        if n.ref:
+            parts.append(f"[ref={n.ref}]")
+        parts.append(n.role)
         if n.name:
             parts.append(f'"{n.name}"')
         if n.value:
@@ -106,12 +117,20 @@ class HealingSubagent:
         snapshot_text: str,
         expected: str | None = None,
         vocabulary: dict | None = None,
+        screenshot: str | None = None,
     ) -> HealResult:
-        """重定位语义 target。返回校验过(确实落在快照里)的候选结果。"""
+        """重定位语义 target。返回校验过(确实落在快照里)的候选结果。
+
+        ``screenshot``:当前页面截图(base64 PNG)。提供时启用**视觉双通道**(规格 §5.4 P5):
+        把截图与 A11y 清单一起喂给(多模态)模型,治"元素在 a11y 里但可及名缺失/与业务词
+        不一致"的高频误判。模型不支持图像时自动退回纯文本通道,不影响主流程。
+        """
         snap = parse_snapshot(snapshot_text)
         node_names = {n.name for n in snap.nodes if n.name} | {
             n.text_content for n in snap.nodes if n.text_content
         }
+        node_refs = {n.ref for n in snap.nodes if n.ref}
+        ref_to_name = {n.ref: n.name for n in snap.nodes if n.ref}
 
         # 词汇表优先(本阶段通常为空,留扩展点)
         if vocabulary and target in vocabulary:
@@ -130,25 +149,32 @@ class HealingSubagent:
             )
 
         # 独立 context
-        user = (
+        user_text = (
             f"业务语义目标:{target}\n"
             f"操作意图:{intent or '(未提供)'}\n"
             f"期望值/上下文:{expected if expected is not None else '(无)'}\n\n"
             f"当前页面 A11y 元素清单:\n{_nodes_digest(snap.nodes)}"
         )
-        messages = [{"role": "system", "content": _SYSTEM}, {"role": "user", "content": user}]
 
         attempts = 0
         try:
             attempts = 1
-            resp = await self.llm.chat(messages)
+            resp = await self._chat_relocate(user_text, screenshot)
             candidates = self._parse_candidates(resp.content)
         except Exception as e:  # noqa: BLE001 — 自愈失败不应炸主流程
             logger.warning("自愈 relocate 调用失败:%s", e)
             return HealResult(healed=False, summary=f"自愈失败:{e}", attempts=attempts)
 
-        # 只保留 target 确实出现在快照里的候选(防臆造),按优先级+置信度排序
-        valid = [c for c in candidates if _resolves(c.target, node_names)]
+        # 防臆造:候选必须能锚定到快照里真实节点——ref 命中,或 target 命中某节点名/文本。
+        # ref 命中但 target 为空/对不上时,用该 ref 节点的真实可及名作 target(供下游按名复验)。
+        valid: list[HealCandidate] = []
+        for c in candidates:
+            if c.ref and c.ref in node_refs:
+                if not _resolves(c.target, node_names):
+                    c.target = ref_to_name.get(c.ref, c.target)
+                valid.append(c)
+            elif _resolves(c.target, node_names):
+                valid.append(c)
         valid.sort(key=lambda c: (c.priority, -c.confidence))
 
         if not valid:
@@ -167,6 +193,41 @@ class HealingSubagent:
             summary=f"自愈:'{target}' → '{chosen.target}'({chosen.strategy},conf={chosen.confidence:.2f})",
         )
 
+    async def _chat_relocate(self, user_text: str, screenshot: str | None):
+        """发起重定位对话。有截图且启用视觉时走多模态;模型不支持图像则退回纯文本。
+
+        env ``HEAL_VISUAL=0`` 可全局关闭视觉通道。
+        """
+        import os
+
+        text_messages = [
+            {"role": "system", "content": _SYSTEM},
+            {"role": "user", "content": user_text},
+        ]
+        visual_on = os.getenv("HEAL_VISUAL", "1") not in ("0", "false", "False")
+        if not (screenshot and visual_on):
+            return await self.llm.chat(text_messages)
+
+        # 多模态消息(OpenAI/LiteLLM vision 格式):文本清单 + 截图
+        url = (
+            screenshot if screenshot.startswith("data:") else f"data:image/png;base64,{screenshot}"
+        )
+        vision_messages = [
+            {"role": "system", "content": _SYSTEM},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": user_text},
+                    {"type": "image_url", "image_url": {"url": url}},
+                ],
+            },
+        ]
+        try:
+            return await self.llm.chat(vision_messages)
+        except Exception as e:  # noqa: BLE001 — 模型可能不支持图像 → 退回纯文本通道
+            logger.warning("视觉自愈调用失败(%s),退回纯文本通道", e)
+            return await self.llm.chat(text_messages)
+
     def _parse_candidates(self, content: str) -> list[HealCandidate]:
         try:
             data = loads_lenient(content)
@@ -177,7 +238,8 @@ class HealingSubagent:
             if not isinstance(raw, dict):
                 continue
             tgt = str(raw.get("target") or "").strip()
-            if not tgt:
+            ref = str(raw.get("ref") or "").strip()
+            if not tgt and not ref:
                 continue
             strat = str(raw.get("strategy") or "P1_role").strip()
             if strat not in _STRATEGY_ORDER:
@@ -188,7 +250,11 @@ class HealingSubagent:
                 conf = 0.0
             out.append(
                 HealCandidate(
-                    target=tgt, strategy=strat, confidence=conf, reason=str(raw.get("reason") or "")
+                    target=tgt,
+                    strategy=strat,
+                    confidence=conf,
+                    ref=ref,
+                    reason=str(raw.get("reason") or ""),
                 )
             )
         return out

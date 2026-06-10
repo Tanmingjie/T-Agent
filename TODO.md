@@ -6,10 +6,16 @@
 
 ## 一、真正的缺口(应处理)
 
-- [ ] **#1 视觉自愈 / 截图双通道**(§7.3、§9.1#1)
-  - 现状:`harness/healing.py` 不传任何截图给 LLM,`P5_visual` 只是优先级标签,自愈实为**纯文本**。
-  - 期望:抓快照 + 截图双通道,P1→P5 真正含视觉兜底(候选仍须落在快照里,防臆造)。
-  - 价值:弱模型环境下纯文本自愈能力有限,截图是 browser-use 验证过的有效手段。
+- [x] **#1 视觉自愈 / 截图双通道**(§7.3、§9.1#1)— 2026-06-10
+  - `HealingSubagent.relocate(screenshot=)`:有截图时发**多模态**消息(文本 A11y 清单 + 图),
+    模型不支持图像/`HEAL_VISUAL=0` 时自动退回纯文本通道(向后兼容,不传图时行为不变)。
+  - 防臆造升级:A11y 清单带 `[ref=eXX]`,视觉候选用 **ref 锚定**真实可操作节点;ref 命中但
+    target 对不上时用该 ref 节点真实可及名复写 target(供按名复验)。治"元素在 a11y 里但可及名
+    缺失/与业务词不一致"(图标按钮 / 角标)的高频误判。
+  - 两侧接通:断言侧(`MCPPageProbe.raw_screenshot` → `AssertionEngine._try_heal`)+ 操作侧
+    (`ReActLoop.get_screenshot` → `_heal_action`)。单测 +5(ref 校验 / 带图 / 退回 / env 关 / 纯文本兼容)。
+  - **遗留**:需多模态模型才真正生效;纯 a11y 缺失(canvas)仍无可操作 ref(设计内边界)。
+    未真机 live 验证(待你内网多模态模型)。
 
 - [x] **#4 预置条件分类结果落库 + 前端确认闭环**(§3.2)— 2026-06-10
   - 后端:`TestCase.precondition_items`(+`TestCaseRow` JSON 列)落库分类;`agent._classify_preconditions`

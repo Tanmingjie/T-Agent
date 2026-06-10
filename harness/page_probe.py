@@ -26,11 +26,14 @@ playwright-mcp 的 ``browser_snapshot`` 返回形如::
 from __future__ import annotations
 
 import json
+import logging
 import re
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from harness.assertion import ElementQuery
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_json(text: str) -> dict | None:
@@ -333,6 +336,23 @@ class MCPPageProbe:
     def raw_snapshot(self) -> str:
         """最近一次快照的原始文本(供自愈子代理重定位用)。"""
         return self._raw_text
+
+    async def raw_screenshot(self) -> str | None:
+        """抓一张当前页面截图(base64 PNG),供视觉自愈双通道(规格 §5.4)。
+
+        失败/不支持时返回 None,自愈自动退回纯文本通道(不影响主流程)。
+        """
+        import base64
+
+        try:
+            result = await self._mcp.call_tool("browser_take_screenshot", {})
+            img = self._mcp.result_to_image_bytes(result)
+        except Exception as e:  # noqa: BLE001 — 截图失败不应炸断言/自愈
+            logger.warning("视觉自愈取截图失败:%s", e)
+            return None
+        if not img:
+            return None
+        return base64.b64encode(img).decode("ascii")
 
     async def _ensure(self) -> Snapshot:
         if self._cache is None:

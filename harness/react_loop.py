@@ -173,6 +173,7 @@ class ReActLoop:
         max_idle_nudges: int = 5,
         healer=None,
         get_snapshot=None,
+        get_screenshot=None,
         compactor=None,
         capture_screenshot=None,
         on_step=None,
@@ -184,6 +185,7 @@ class ReActLoop:
         # 操作侧自愈:工具报错/找不到元素时重定位(可选)
         self.healer = healer
         self.get_snapshot = get_snapshot  # async () -> str,返回当前页面快照文本
+        self.get_screenshot = get_screenshot  # async () -> base64|None,视觉自愈双通道
         self.compactor = compactor  # Context Compact(可选),发 LLM 前压缩历史
         # 截图回调:async (step_no, tool_name) -> filename|None;每步执行后落盘截图
         self.capture_screenshot = capture_screenshot
@@ -465,11 +467,19 @@ class ReActLoop:
             except Exception as e:  # noqa: BLE001 — 查词失败不影响自愈兜底
                 logger.warning("自愈查词汇表失败:%s", e)
 
+        # 视觉双通道(规格 §5.4 P5):取一张截图一并喂给自愈,治图标/角标类文本对不上的误判
+        screenshot: str | None = None
+        if self.get_screenshot is not None:
+            try:
+                screenshot = await self.get_screenshot()
+            except Exception as e:  # noqa: BLE001 — 截图失败退回纯文本通道
+                logger.warning("操作侧自愈取截图失败:%s", e)
         heal = await self.healer.relocate(
             intent=intent or tc.name,
             target=str(target),
             snapshot_text=snapshot_text,
             vocabulary=vocabulary,
+            screenshot=screenshot,
         )
         attempt = {
             "tool": tc.name,

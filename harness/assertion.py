@@ -185,12 +185,19 @@ class AssertionEngine:
             entry = await resolve_entry(a.target)
             if entry and entry.get("name"):
                 vocabulary = {a.target: str(entry["name"]).strip()}
+        # 视觉双通道(规格 §5.4 P5):探针能截图就一并喂给自愈,治"元素在 a11y 里但
+        # 可及名缺失/与业务词不一致"的误判。取不到截图则纯文本通道,行为不变。
+        screenshot: str | None = None
+        shot_fn = getattr(self.probe, "raw_screenshot", None)
+        if callable(shot_fn):
+            screenshot = await shot_fn()
         heal = await self.healer.relocate(
             intent=f"断言 {a.type} 的目标",
             target=a.target,
             snapshot_text=snapshot_text,
             expected=a.expected,
             vocabulary=vocabulary,
+            screenshot=screenshot,
         )
         if not heal.healed or heal.chosen is None:
             original.reason += f";自愈未能重定位({heal.summary})"

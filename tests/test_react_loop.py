@@ -476,8 +476,11 @@ async def test_action_healing_uses_vocabulary_first():
     seen: dict = {}
 
     class _RecordingHealer:
-        async def relocate(self, *, intent, target, snapshot_text, expected=None, vocabulary=None):
+        async def relocate(
+            self, *, intent, target, snapshot_text, expected=None, vocabulary=None, screenshot=None
+        ):
             seen["vocabulary"] = vocabulary
+            seen["screenshot"] = screenshot
             from harness.healing import HealCandidate, HealResult
 
             cand = HealCandidate(target="提交", strategy="P1_role", confidence=0.95)

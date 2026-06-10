@@ -190,3 +190,83 @@ async def test_engine_heal_relocated_but_value_wrong_still_fails():
     r = await engine.verify(Assertion(type="text_equals", target="订单状态", expected="已通过"))
     assert not r.passed
     assert r.healed  # 自愈确实重定位了,只是事实不符
+
+
+# ── 视觉自愈双通道(TODO #1)──────────────────────────────────
+
+
+class _CapturingLLM(LLMClient):
+    """记录最后一次 messages,用于验证是否带图;可对多模态消息抛错以测退回。"""
+
+    def __init__(self, content="", raise_on_image=False):
+        self._content = content
+        self.raise_on_image = raise_on_image
+        self.calls: list = []
+
+    async def chat(self, messages, tools=None, **kwargs) -> LLMResponse:
+        self.calls.append(messages)
+        user = messages[-1]["content"]
+        has_image = isinstance(user, list) and any(
+            isinstance(p, dict) and p.get("type") == "image_url" for p in user
+        )
+        if has_image and self.raise_on_image:
+            raise RuntimeError("model has no vision")
+        return LLMResponse(content=self._content)
+
+
+def _cands(rows):
+    return json.dumps({"candidates": rows}, ensure_ascii=False)
+
+
+async def test_visual_heal_validates_by_ref_and_rewrites_target():
+    """视觉候选给的 target 不在快照名里,但 ref 命中 → 接受,并用该 ref 节点真实名复写 target。"""
+    llm = _FakeLLM(
+        _cands([{"ref": "e6", "target": "回到上一页", "strategy": "P5_visual", "confidence": 0.8}])
+    )
+    healer = HealingSubagent(llm)
+    res = await healer.relocate(
+        intent="点返回", target="回到上一页", snapshot_text=SNAPSHOT, screenshot="ZmFrZQ=="
+    )
+    assert res.healed is True
+    assert res.chosen.ref == "e6"
+    assert res.chosen.target == "返回"  # 用 ref=e6 节点的真实可及名复写
+
+
+async def test_visual_heal_sends_image_when_screenshot_present():
+    llm = _CapturingLLM(_cands([{"ref": "e6", "target": "返回", "strategy": "P1_role"}]))
+    healer = HealingSubagent(llm)
+    await healer.relocate(intent="x", target="返回", snapshot_text=SNAPSHOT, screenshot="ZmFrZQ==")
+    user = llm.calls[-1][-1]["content"]
+    assert isinstance(user, list)
+    img = [p for p in user if p.get("type") == "image_url"][0]
+    assert img["image_url"]["url"].startswith("data:image/png;base64,")
+
+
+async def test_visual_heal_falls_back_to_text_when_model_rejects_image():
+    llm = _CapturingLLM(
+        _cands([{"ref": "e6", "target": "返回", "strategy": "P1_role"}]), raise_on_image=True
+    )
+    healer = HealingSubagent(llm)
+    res = await healer.relocate(
+        intent="x", target="返回", snapshot_text=SNAPSHOT, screenshot="ZmFrZQ=="
+    )
+    assert res.healed is True  # 退回纯文本通道仍成功
+    assert len(llm.calls) == 2  # 第一次带图失败,第二次纯文本
+    assert isinstance(llm.calls[-1][-1]["content"], str)  # 第二次是纯文本
+
+
+async def test_visual_disabled_by_env(monkeypatch):
+    monkeypatch.setenv("HEAL_VISUAL", "0")
+    llm = _CapturingLLM(_cands([{"ref": "e6", "target": "返回", "strategy": "P1_role"}]))
+    healer = HealingSubagent(llm)
+    await healer.relocate(intent="x", target="返回", snapshot_text=SNAPSHOT, screenshot="ZmFrZQ==")
+    assert isinstance(llm.calls[-1][-1]["content"], str)  # 关闭视觉 → 不带图
+
+
+async def test_text_only_unchanged_without_screenshot():
+    """不传 screenshot 时行为与原纯文本通道一致(向后兼容)。"""
+    llm = _CapturingLLM(_cands([{"target": "返回", "strategy": "P2_text", "confidence": 0.9}]))
+    healer = HealingSubagent(llm)
+    res = await healer.relocate(intent="x", target="返回", snapshot_text=SNAPSHOT)
+    assert res.healed is True
+    assert isinstance(llm.calls[-1][-1]["content"], str)
