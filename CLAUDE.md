@@ -176,6 +176,13 @@ T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规
 - **每个任务动手前,重读 `实现规格说明书.md` 对应小节**(以原文为准,别凭记忆);并核对已实现部分有无偏离。
 - 每个任务配单元测试;不连真实 LLM/浏览器,用 fake/mock 驱动(参考 `tests/` 现有写法)。
 - 改完跑 `pytest`,并 `isort`+`black` 格式化后再交。
+- **较大改动(碰执行链 / 断言 / 翻译 / 词汇表 / codegen / API 执行路径)交付前,除单测外必须跑一轮 saucedemo live 冒烟**(真 DeepSeek + 真 Chromium + playwright-mcp,验端到端不退化,弥补「单测绿≠接通」)。最小冒烟一条命令:
+  ```powershell
+  python cli/run_case.py --excel examples/saucedemo_cases.xlsx --case-id TC101 `
+      --base-url https://www.saucedemo.com --isolated --headless
+  ```
+  期望:`✅ PASS`,终态断言 `url_contains inventory.html` + `text_equals 角标==1` 双绿。
+  改动较深时再加跑完整结算 `examples/saucedemo_checkout.xlsx` TC201(`--max-steps 60`,11 业务步,验长流程);只改翻译/分类时可用 `--spec-only` 快速验 spec 质量不退化(不跑浏览器、更快)。env(LLM)走项目根 `.env`。**这条 live 冒烟是 `CLAUDE.md` 约定的标准验证步骤,大改动不可只凭单测交付。**
 - 分阶段推进:一个阶段验收通过再进下一阶段,不跳阶段、不过度设计未来阶段。
 - 不确定的设计点(尤其用例管理平台集成)不要自行假设,先问用户。
 
