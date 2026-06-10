@@ -171,6 +171,9 @@ async def trigger_run(
                     hooks=hooks,
                     skills=skills,
                     tools_registry=tools_registry,
+                    # 默认 40:多步流程(如结算 11 业务步×约 3 次往返)30 步会被截断而误 FAIL;
+                    # env AGENT_MAX_STEPS 可调。live 实证 saucedemo 全结算流需 ~34 步。
+                    max_steps=int(os.getenv("AGENT_MAX_STEPS", "40")),
                 )
                 if approve_mode:
                     agent.permission_approver = _perm_approver

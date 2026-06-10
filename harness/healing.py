@@ -108,6 +108,8 @@ class HealingSubagent:
     def __init__(self, llm: LLMClient, *, max_attempts: int = 3) -> None:
         self.llm = llm
         # max_attempts reserved for future retry logic
+        # 模型一旦拒绝图像(非多模态),记下来,后续自愈直接走纯文本,不再每次浪费一次失败请求
+        self._vision_unsupported = False
 
     async def relocate(
         self,
@@ -205,7 +207,8 @@ class HealingSubagent:
             {"role": "user", "content": user_text},
         ]
         visual_on = os.getenv("HEAL_VISUAL", "1") not in ("0", "false", "False")
-        if not (screenshot and visual_on):
+        # 已知模型不支持图像 → 直接纯文本,省掉注定失败的一次图像请求
+        if not (screenshot and visual_on) or self._vision_unsupported:
             return await self.llm.chat(text_messages)
 
         # 多模态消息(OpenAI/LiteLLM vision 格式):文本清单 + 截图
@@ -225,7 +228,9 @@ class HealingSubagent:
         try:
             return await self.llm.chat(vision_messages)
         except Exception as e:  # noqa: BLE001 — 模型可能不支持图像 → 退回纯文本通道
-            logger.warning("视觉自愈调用失败(%s),退回纯文本通道", e)
+            # 记住该模型不支持图像,后续自愈不再尝试(避免每次浪费一次失败请求)
+            self._vision_unsupported = True
+            logger.warning("视觉自愈调用失败(%s),改用纯文本通道(后续自愈也将跳过图像)", e)
             return await self.llm.chat(text_messages)
 
     def _parse_candidates(self, content: str) -> list[HealCandidate]:

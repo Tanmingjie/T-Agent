@@ -265,6 +265,7 @@ cd frontend && npm run preview    # 本地预览生产构建
 #   MCP_SETTLE=0                                   → 关「导航类动作后等页面稳定」(默认开)
 #   MCP_SETTLE_TIMEOUT_MS=8000 / MCP_SETTLE_INTERVAL_MS=400 → settle 超时/轮询间隔
 #   HEAL_VISUAL=0                                  → 关视觉自愈截图双通道(默认开,需多模态模型)
+#   AGENT_MAX_STEPS=40                             → API 执行的 ReAct 最大步数(长流程如结算需调大)
 ```
 
 测试配置:`pyproject.toml` 的 `[tool.pytest.ini_options]` 已设 `asyncio_mode = "auto"`(async 测试无需标记)。

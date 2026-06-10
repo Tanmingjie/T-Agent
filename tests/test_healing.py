@@ -270,3 +270,18 @@ async def test_text_only_unchanged_without_screenshot():
     res = await healer.relocate(intent="x", target="返回", snapshot_text=SNAPSHOT)
     assert res.healed is True
     assert isinstance(llm.calls[-1][-1]["content"], str)
+
+
+async def test_vision_unsupported_cached_after_first_rejection():
+    """模型拒图一次后,后续 relocate 不再发图像请求(只走纯文本)。"""
+    llm = _CapturingLLM(
+        _cands([{"ref": "e6", "target": "返回", "strategy": "P1_role"}]), raise_on_image=True
+    )
+    healer = HealingSubagent(llm)
+    await healer.relocate(intent="x", target="返回", snapshot_text=SNAPSHOT, screenshot="ZmFrZQ==")
+    assert healer._vision_unsupported is True
+    n_before = len(llm.calls)
+    # 第二次:应直接纯文本,不再发图(故不会再触发 raise_on_image 的额外一次)
+    await healer.relocate(intent="y", target="返回", snapshot_text=SNAPSHOT, screenshot="ZmFrZQ==")
+    assert len(llm.calls) == n_before + 1  # 只多了一次(纯文本),没有图像尝试
+    assert isinstance(llm.calls[-1][-1]["content"], str)
