@@ -112,6 +112,15 @@ def _render_calls(tool_calls: list[ToolCall]) -> str:
     )
 
 
+def _arg_brief(arguments: dict, limit: int = 120) -> str:
+    """工具参数的单行摘要(进度日志用),过长截断避免刷屏。"""
+    try:
+        s = json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError):
+        s = str(arguments)
+    return s if len(s) <= limit else s[:limit] + "…"
+
+
 def parse_test_result(content: str | None) -> str | None:
     """从内容里解析 TEST_RESULT: PASS/FAIL(大小写不敏感),无则 None。"""
     if not content:
@@ -318,6 +327,19 @@ class ReActLoop:
                 started = time.monotonic()
                 outcome = await self._execute_one(tc)
                 duration_ms = int((time.monotonic() - started) * 1000)
+
+                # 每步进度(便于失败时回看执行轨迹):工具 + 参数摘要 + 成功/失败 + 耗时。
+                failed = _is_tool_failure(outcome.text)
+                logger.log(
+                    logging.WARNING if failed else logging.INFO,
+                    "步骤 %d: %s(%s)%s %dms%s",
+                    step_no,
+                    tc.name,
+                    _arg_brief(tc.arguments),
+                    " 失败" if failed else " ok",
+                    duration_ms,
+                    f" | {outcome.text[:160]}" if failed else "",
+                )
 
                 # 操作侧自愈:工具报错/找不到元素时重定位,回灌建议引导重试
                 heal_attempts: list[dict] = []

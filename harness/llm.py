@@ -15,11 +15,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 # 内网无法访问 GitHub:LiteLLM 默认在 import 时联网拉模型价目表(成本估算用),
 # 握手超时后回退本地备份并刷 warning。强制用包内自带的本地备份,既消 warning
@@ -290,11 +293,36 @@ class LiteLLMClient(LLMClient):
         if tools:
             call_kwargs["tools"] = tools
         call_kwargs["timeout"] = self.timeout
+        # 请求摘要(DEBUG):便于失败时核对实际打到哪个模型/地址、消息与工具规模。
+        # 不打印消息正文(可能很长且含敏感数据),只打印计数。
+        logger.debug(
+            "LLM 请求 → model=%s api_base=%s messages=%d tools=%d timeout=%ss",
+            self.model,
+            self.api_base or "(default)",
+            len(messages),
+            len(tools or []),
+            self.timeout,
+        )
         # 关键:用同步 litellm.completion + to_thread 把整次调用(含 litellm 的同步开销:
         # tiktoken 计数 / 日志 / 回调,会随快照历史增大而变重)挪到**工作线程**,不占用
         # uvicorn 的事件循环。否则执行期间 LLM 调用会周期性冻结单一事件循环,导致所有
         # HTTP 接口在用例执行中/收尾时 pending(实测现象)。串行执行,单次仅一线程。
-        return await asyncio.to_thread(litellm.completion, **call_kwargs)
+        try:
+            return await asyncio.to_thread(litellm.completion, **call_kwargs)
+        except Exception as e:
+            # 失败时把「打到哪、什么错」打全:内网最常见是代理拦截 / 超时 / 鉴权。
+            # 错误正文可能是一大段 HTML(如代理 Content Filter 页),截断避免刷屏。
+            detail = str(e).replace("\n", " ")
+            if len(detail) > 500:
+                detail = detail[:500] + "…(截断)"
+            logger.error(
+                "LLM 调用失败:%s | model=%s api_base=%s | %s",
+                type(e).__name__,
+                self.model,
+                self.api_base or "(default)",
+                detail,
+            )
+            raise
 
     def _parse(self, resp: Any, expect_tools: bool = True) -> "_Parsed":
         """从 litellm 响应解析出规范化结果 + 容错。
@@ -349,7 +377,7 @@ class LiteLLMClient(LLMClient):
         # 拿到任何可用调用就不算失败(部分容错优于全盘失败)
         if had_error and calls:
             logger.warning(
-                "部分 tool_call 解析失败,已丢弃%d个无效调用", len(raw_calls) - len(calls)
+                "部分 tool_call 解析失败,已丢弃%d个无效调用", len(raw_tool_calls) - len(calls)
             )
         error = "" if calls or not had_error else "tool_call 格式无法解析"
         return _Parsed(

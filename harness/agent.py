@@ -19,7 +19,7 @@ from pathlib import Path
 
 from codegen.bdd import BDDGenerator
 from codegen.locators import locators_from_steps, resolve_locators
-from harness.assertion import AssertionEngine
+from harness.assertion import AssertionEngine, AssertionStatus
 from harness.context import ContextCompactor
 from harness.healing import HealingSubagent
 from harness.hooks import AFTER_CASE, BEFORE_CASE, ON_FAILURE, ExecutionContext, HookManager
@@ -445,6 +445,28 @@ class TestCaseAgent:
         recorder.set_case_assertions([r.to_dict() for r in a_results])
         recorder.record.heal_count += sum(1 for r in a_results if r.healed)
         passed = AssertionEngine.verdict(a_results)
+
+        # 断言逐条记账(便于失败定位):全部走 DEBUG,失败/跳过额外 WARNING 抬到默认可见。
+        for r in a_results:
+            logger.debug(
+                "断言 [%s] %s target=%r expected=%r actual=%r %s",
+                r.status.value.upper(),
+                r.assertion.type,
+                r.assertion.target,
+                r.assertion.expected,
+                r.actual,
+                f"reason={r.reason}" if r.reason else "",
+            )
+            if r.status != AssertionStatus.PASS:
+                logger.warning(
+                    "断言未通过 [%s] %s target=%r expected=%r actual=%r reason=%s",
+                    r.status.value.upper(),
+                    r.assertion.type,
+                    r.assertion.target,
+                    r.assertion.expected,
+                    r.actual,
+                    r.reason or "(无)",
+                )
 
         # 收尾 Hooks:失败触发 on_failure;after_case 无论成败都跑(清理/登出)
         if self.hooks is not None:
