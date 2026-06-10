@@ -12,6 +12,7 @@ import {
   FileText,
   Copy,
   Check,
+  Play,
 } from "lucide-react";
 import type {
   CaseRunState,
@@ -522,12 +523,16 @@ export default function CaseDrawerBody({
   caseInfo,
   status,
   liveState,
+  onRun,
+  runDisabled,
 }: {
   suiteId: string;
   runId: string | null;
   caseInfo: CaseInfo;
   status: CaseRunStatus;
   liveState?: CaseRunState;
+  onRun?: (caseId: string) => void;
+  runDisabled?: boolean;
 }) {
   const [result, setResult] = useState<CaseResult | null>(null);
   const [code, setCode] = useState<string | null>(null);
@@ -653,16 +658,32 @@ export default function CaseDrawerBody({
   return (
     <div className="flex flex-col h-full">
       {/* Big header */}
-      <div className="px-6 py-4 border-b border-gray-200 shrink-0">
-        <h2 className="text-lg font-semibold text-surface-900">
-          {caseInfo.name}
-        </h2>
-        <div
-          className={`mt-1 inline-flex items-center gap-1.5 text-sm ${pill.cls}`}
-        >
-          {pill.icon}
-          {pill.label}
+      <div className="px-6 py-4 border-b border-gray-200 shrink-0 flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold text-surface-900">
+            {caseInfo.name}
+          </h2>
+          <div
+            className={`mt-1 inline-flex items-center gap-1.5 text-sm ${pill.cls}`}
+          >
+            {pill.icon}
+            {pill.label}
+          </div>
         </div>
+        {onRun && (
+          <button
+            onClick={() => onRun(caseInfo.id)}
+            disabled={runDisabled || isRunning}
+            className="shrink-0 inline-flex items-center gap-1.5 px-3.5 py-2 rounded-md text-sm font-medium bg-brand-600 text-white hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+          >
+            {isRunning ? (
+              <Loader2 size={15} className="animate-spin" />
+            ) : (
+              <Play size={15} />
+            )}
+            {isRunning ? "执行中" : "执行"}
+          </button>
+        )}
       </div>
 
       <div className="flex flex-1 overflow-hidden">

@@ -61,7 +61,8 @@ export function useSuiteRun(suiteId: string | undefined) {
   }, []);
 
   const start = useCallback(
-    async (caseIds: string[]) => {
+    // caseId 给定时只跑该单条用例(抽屉「执行」按钮),否则跑 caseIds 代表的整套件
+    async (caseIds: string[], caseId?: string) => {
       if (!suiteId) return;
       stop();
       // 预置所有用例为 pending
@@ -75,9 +76,10 @@ export function useSuiteRun(suiteId: string | undefined) {
       setError(null);
 
       try {
-        const { run_id } = await apiPost<{ run_id: string }>(
-          `/suites/${suiteId}/run`,
-        );
+        const runPath = caseId
+          ? `/suites/${suiteId}/run?case_id=${encodeURIComponent(caseId)}`
+          : `/suites/${suiteId}/run`;
+        const { run_id } = await apiPost<{ run_id: string }>(runPath);
         setRunId(run_id);
 
         const es = new EventSource(

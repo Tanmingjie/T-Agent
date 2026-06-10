@@ -161,6 +161,11 @@ export default function SuiteCasesPage() {
     run.start(cases.map((c) => c.id));
   }
 
+  // 单用例执行(抽屉右上角「执行」按钮):只跑这一条,保持抽屉打开看实时进度
+  function runOne(caseId: string) {
+    run.start([caseId], caseId);
+  }
+
   // 抽屉数据源:本次会话刚跑的 run 优先,否则取套件最近一次 run
   const selRun = selected ? run.statuses[selected.id] : undefined;
   const latestPastRun =
@@ -345,6 +350,8 @@ export default function SuiteCasesPage() {
             caseInfo={selected}
             status={statusOf(selected.id)}
             liveState={selRun}
+            onRun={runOne}
+            runDisabled={run.running}
           />
         )}
       </Drawer>

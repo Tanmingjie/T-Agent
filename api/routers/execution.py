@@ -45,7 +45,13 @@ def _mcp_args() -> list[str]:
 
 
 @router.post("/suites/{suite_id}/run")
-async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_store)):
+async def trigger_run(
+    suite_id: str,
+    case_id: str | None = None,
+    repo=Depends(get_repo),
+    store=Depends(get_store),
+):
+    """触发执行。``case_id`` 给定时只跑该单条用例(抽屉里的「执行」按钮),否则跑整套件。"""
     suite = await repo.get_suite(suite_id)
     if suite is None:
         raise HTTPException(404, "Suite not found")
@@ -53,6 +59,10 @@ async def trigger_run(suite_id: str, repo=Depends(get_repo), store=Depends(get_s
     cases = await repo.list_by_suite(suite_id)
     if not cases:
         raise HTTPException(400, "Suite 没有用例，请先上传 Excel")
+    if case_id is not None:
+        cases = [c for c in cases if c.id == case_id]
+        if not cases:
+            raise HTTPException(404, f"用例 {case_id} 不存在于该套件")
 
     # Check if already running。注意:_sse_queues 是内存态,进程重启后必为空,
     # 故 DB 里仍为 running 但不在队列中的 run 是上次崩溃/重启遗留的僵尸 → 自动收尾,
