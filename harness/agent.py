@@ -101,9 +101,10 @@ _SETTLE_ENABLED = os.getenv("MCP_SETTLE", "1") != "0"
 _SETTLE_TIMEOUT = float(os.getenv("MCP_SETTLE_TIMEOUT_MS", "8000")) / 1000.0
 _SETTLE_INTERVAL = float(os.getenv("MCP_SETTLE_INTERVAL_MS", "400")) / 1000.0
 
-# 词汇表增量扫描(策略C)开关:默认开,env VOCAB_SCAN=0 关闭。
-# 执行结束后复用执行期已捕获的 a11y 快照(无需额外开浏览器),独立 context 提炼并库。
-_INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "1") != "0"
+# 词汇表增量扫描(策略C)开关:**默认关**(2026-06-10),env VOCAB_SCAN=1 开启。
+# 主动扫描(/vocabulary/scan,会导航的探索式扫描)是词汇表主入口;执行期增量扫描降级为
+# 可选补充——避免它延后用例收尾(交互执行末尾多一次 LLM 往返)、避免与主动扫描两写入源。
+_INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "0") != "0"
 
 # 生成代码落盘目录(与 api/routers/results.py 的 GENERATED_ROOT 一致)
 _GENERATED_ROOT = "storage/generated"
@@ -509,7 +510,9 @@ class TestCaseAgent:
         probe = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
         await probe.refresh()  # 用例结束后抓一次终态快照
         # 数据断言(custom_tool)经 ToolRegistry 取业务真值;未注入则该类断言 skipped
-        engine = AssertionEngine(probe, healer=healer, tool_registry=self.tools_registry)
+        engine = AssertionEngine(
+            probe, healer=healer, tool_registry=self.tools_registry, llm=self.llm
+        )
         # 聚合用例级 + 步骤级 expect 断言,避免 LLM 把断言放在 step.expect 时被漏验
         a_results = await engine.verify_all(collect_assertions(spec))
         recorder.set_case_assertions([r.to_dict() for r in a_results])

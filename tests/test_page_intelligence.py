@@ -113,6 +113,57 @@ async def test_vocabulary_resolver_returns_selector_entry(store):
     assert await resolver.resolve("购物车图标", url="https://x/other", title="X") is None
 
 
+# ── base_url 作用域:跨系统隔离 / 同系统共享 ──────────────────
+
+
+async def test_base_url_scopes_cross_system(store):
+    """两个系统同 url_pattern(/login)不同 base_url → 各自命中,不互相污染。"""
+    from intelligence.vocabulary import VocabularyResolver
+
+    await store.save_vocabulary(
+        PageVocabulary(
+            base_url="https://sys-a.intra",
+            url_pattern="/login",
+            page_title="",
+            login_role="",
+            vocabulary={"提交": {"name": "A系统提交"}},
+        )
+    )
+    await store.save_vocabulary(
+        PageVocabulary(
+            base_url="https://sys-b.intra",
+            url_pattern="/login",
+            page_title="",
+            login_role="",
+            vocabulary={"提交": {"name": "B系统提交"}},
+        )
+    )
+    # 两条独立存在(键含 base_url,不被 upsert 合并)
+    assert len(await store.list_vocabularies()) == 2
+    resolver = VocabularyResolver(VocabularyManager(store))
+    a = await resolver.resolve("提交", url="https://sys-a.intra/login")
+    b = await resolver.resolve("提交", url="https://sys-b.intra/login")
+    assert a == {"name": "A系统提交"}
+    assert b == {"name": "B系统提交"}
+
+
+async def test_empty_base_url_is_wildcard(store):
+    """空 base_url(历史/手动未填)对任意 url 通配命中(向后兼容)。"""
+    from intelligence.vocabulary import VocabularyResolver
+
+    await store.save_vocabulary(
+        PageVocabulary(
+            url_pattern="/login",
+            page_title="",
+            login_role="",
+            vocabulary={"提交": {"name": "通配提交"}},
+        )
+    )
+    resolver = VocabularyResolver(VocabularyManager(store))
+    got = await resolver.resolve("提交", url="https://anything.com/login")
+    assert got == {"name": "通配提交"}
+
+
 # ── 手动条目优先于 AI 扫描 ──────────────────────────────────
 
 
@@ -207,7 +258,15 @@ async def test_scanner_bad_json_empty_vocab():
     assert vocab.vocabulary == {}
 
 
-# ── 策略C:执行期增量扫描接入 agent ─────────────────────────
+# ── 策略C:执行期增量扫描接入 agent(默认关,需开 VOCAB_SCAN)──────
+
+
+@pytest.fixture(autouse=True)
+def _enable_incremental_scan(monkeypatch):
+    """执行期增量扫描 2026-06-10 起默认关;这些测试针对该功能,显式开启。"""
+    import harness.agent as _agent
+
+    monkeypatch.setattr(_agent, "_INCREMENTAL_SCAN", True)
 
 
 async def test_agent_incremental_scan_persists_from_run(store):

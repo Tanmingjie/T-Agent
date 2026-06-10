@@ -231,12 +231,63 @@ async def test_custom_tool_fail_when_tool_errors():
     assert "执行失败" in r.reason
 
 
-async def test_llm_judge_still_skipped_even_with_registry():
-    # 铁律2:llm_judge 不做确定性验证,永远 skipped(不让 LLM 眼判 PASS/FAIL)
+async def test_llm_judge_skipped_without_llm():
+    # 未接入 LLM 时 llm_judge 仍 skipped(不静默放过)
     reg = _registry_with("x", "y")
     eng = AssertionEngine(DictProbe(), tool_registry=reg)
     r = await eng.verify(Assertion(type="llm_judge", target="x", confidence="low"))
     assert r.status == AssertionStatus.SKIPPED
+
+
+# ── llm_judge 方案A:真判 PASS/FAIL 并计入裁决,但标 ai_judged 低置信 ────
+
+
+class _JudgeLLM:
+    """假 LLM:按预设 content 返回。"""
+
+    def __init__(self, content: str):
+        self._content = content
+        self.calls = 0
+
+    async def chat(self, messages, tools=None, **kwargs):
+        self.calls += 1
+
+        class _R:
+            content = self._content
+
+        return _R()
+
+
+async def test_llm_judge_pass_counts_but_flagged_ai_judged():
+    llm = _JudgeLLM('{"verdict":"PASS","reason":"页面显示成功提示"}')
+    eng = AssertionEngine(DictProbe(), llm=llm)
+    r = await eng.verify(Assertion(type="llm_judge", target="显示成功提示", confidence="low"))
+    assert r.status == AssertionStatus.PASS
+    assert r.ai_judged is True  # 可审计:AI 判绿与结构化绿区分
+    assert llm.calls == 1
+
+
+async def test_llm_judge_fail_counts():
+    llm = _JudgeLLM('{"verdict":"FAIL","reason":"未见成功提示"}')
+    eng = AssertionEngine(DictProbe(), llm=llm)
+    r = await eng.verify(Assertion(type="llm_judge", target="显示成功提示"))
+    assert r.status == AssertionStatus.FAIL
+    assert r.ai_judged is True
+
+
+async def test_llm_judge_unclear_verdict_skipped():
+    llm = _JudgeLLM('{"reason":"说不准"}')  # 无明确 verdict
+    eng = AssertionEngine(DictProbe(), llm=llm)
+    r = await eng.verify(Assertion(type="llm_judge", target="x"))
+    assert r.status == AssertionStatus.SKIPPED
+    assert r.ai_judged is True
+
+
+async def test_llm_judge_to_dict_carries_ai_judged():
+    llm = _JudgeLLM('{"verdict":"PASS"}')
+    eng = AssertionEngine(DictProbe(), llm=llm)
+    r = await eng.verify(Assertion(type="llm_judge", target="x"))
+    assert r.to_dict()["ai_judged"] is True
 
 
 # ── 裁决 / 聚合 ───────────────────────────────────────────────

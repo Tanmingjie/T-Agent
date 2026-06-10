@@ -103,6 +103,7 @@ class ExecutionRecordRow(SQLModel, table=True):
 class PageVocabularyRow(SQLModel, table=True):
     __tablename__ = "page_vocabulary"
     id: int | None = Field(default=None, primary_key=True)
+    base_url: str = Field(default="", index=True)  # 作用域键(跨系统隔离),见 PageVocabulary
     url_pattern: str = Field(default="", index=True)
     page_title: str = ""
     login_role: str = ""
@@ -279,6 +280,7 @@ class Store:
         data["updated_at"] = time.time()
         async with self._sf() as s:
             stmt = select(PageVocabularyRow).where(
+                PageVocabularyRow.base_url == v.base_url,
                 PageVocabularyRow.url_pattern == v.url_pattern,
                 PageVocabularyRow.page_title == v.page_title,
                 PageVocabularyRow.login_role == v.login_role,
@@ -293,10 +295,11 @@ class Store:
             await s.commit()
 
     async def get_vocabulary(
-        self, url_pattern: str, page_title: str, login_role: str
+        self, url_pattern: str, page_title: str, login_role: str, base_url: str = ""
     ) -> PageVocabulary | None:
         async with self._sf() as s:
             stmt = select(PageVocabularyRow).where(
+                PageVocabularyRow.base_url == base_url,
                 PageVocabularyRow.url_pattern == url_pattern,
                 PageVocabularyRow.page_title == page_title,
                 PageVocabularyRow.login_role == login_role,

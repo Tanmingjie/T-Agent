@@ -46,13 +46,13 @@
 - [ ] 失败断点续跑 — 阶段五
 - [ ] Page Object 模式 — 阶段五
 - [ ] 测试管理平台 API 对接(含 `external_id` 同步)— 阶段五
-- [x] `llm_judge` 执行 — **有意恒 skipped**(贯彻铁律2,非缺陷)
+- [x] `llm_judge` 执行 — **方案A(2026-06-10)**:作降级链最末档兜底,接 LLM 真判 PASS/FAIL 计入裁决,标 `ai_judged` 低置信、报告区分、偏向 FAIL(原"恒 skipped"已由用户拍板推翻)
 - [x] `/vocabulary/scan` — **有意 no-op**(真扫描在执行期增量做)
 
 ## 三、已实现但不完整 / 弱项
 
 - [ ] **断言目标定位器对齐**:action 定位器已对齐执行捕获;断言目标(如购物车角标)走 probe 不产出可复用选择器,无 vocab 时仍文本兜底 → 需在 vocab/selector 层对齐。
-- [ ] **定时扫描触发**(§6.4 "手动/stale/定时"):只有手动 + stale + 执行期增量,"定时"无实现。
+- [ ] **定时扫描触发**(§6.4 "手动/stale/定时"):**手动主动扫描已做**(2026-06-10,`/vocabulary/scan` 会导航的探索式扫描,清单为主+可选浅爬)+ stale + 执行期增量(默认关);唯"**定时**"调度仍无实现。
 - [ ] **Session 过期自动重登**(§7.1):`valid_until` 有效期检查已做;自动重登需接真实 `login_aw`(未接时 optional 放行让 Agent 自登)。
 - [ ] **prompt 优化 C/D**:每步约 3 次 LLM 往返(snapshot→action→mark_done)、system 每轮重列全部工具,可省 token;有正确性风险,待 live A/B。
 - [ ] **真实内网用例 live 验证**(主线,环境阻塞):saucedemo 全链路已 live 绿(基础/结算/会话复用/custom_tool/codegen 回放),真实内网业务系统待跑。

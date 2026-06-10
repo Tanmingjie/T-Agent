@@ -45,6 +45,12 @@ def _path_of(url: str) -> str:
     return p or "/"
 
 
+def _origin_of(url: str) -> str:
+    """取 URL 的根地址(scheme://host[:port])作 base_url 作用域键。"""
+    m = re.match(r"^https?://[^/]+", url or "")
+    return m.group(0) if m else ""
+
+
 def _nodes_digest(nodes: list[A11yNode], limit: int = 80) -> str:
     lines = []
     for n in nodes[:limit]:
@@ -70,7 +76,12 @@ class Scanner:
         self.llm = llm
 
     async def extract(
-        self, snapshot_text: str, *, login_role: str = "", url_pattern: str | None = None
+        self,
+        snapshot_text: str,
+        *,
+        login_role: str = "",
+        url_pattern: str | None = None,
+        base_url: str | None = None,
     ) -> PageVocabulary:
         """快照 → PageVocabulary(LLM 提炼;失败则空词汇表)。"""
         snap = parse_snapshot(snapshot_text)
@@ -92,6 +103,7 @@ class Scanner:
                 vocab[str(term)] = entry
 
         return PageVocabulary(
+            base_url=base_url if base_url is not None else _origin_of(snap.url),
             url_pattern=url_pattern or _path_of(snap.url),
             page_title=snap.title,
             login_role=login_role,
@@ -105,7 +117,10 @@ class Scanner:
         login_role: str,
         manager: VocabularyManager,
         url_pattern: str | None = None,
+        base_url: str | None = None,
     ) -> PageVocabulary:
         """提炼并并入词汇表(增量补充,手动条目优先)。"""
-        vocab = await self.extract(snapshot_text, login_role=login_role, url_pattern=url_pattern)
+        vocab = await self.extract(
+            snapshot_text, login_role=login_role, url_pattern=url_pattern, base_url=base_url
+        )
         return await manager.merge_scanned(vocab)

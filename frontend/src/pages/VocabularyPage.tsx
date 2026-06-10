@@ -11,6 +11,7 @@ interface VocabEntry {
 }
 
 interface Vocab {
+  base_url: string;
   url_pattern: string;
   page_title: string;
   login_role: string;
@@ -18,10 +19,25 @@ interface Vocab {
 }
 
 const EMPTY_PAGE: Vocab = {
+  base_url: "",
   url_pattern: "",
   page_title: "",
   login_role: "",
   vocabulary: {},
+};
+
+interface ScanForm {
+  base_url: string;
+  entry_paths: string; // 每行一个路径
+  session_profile: string;
+  shallow_crawl: boolean;
+}
+
+const EMPTY_SCAN: ScanForm = {
+  base_url: "",
+  entry_paths: "",
+  session_profile: "",
+  shallow_crawl: false,
 };
 
 export default function VocabularyPage() {
@@ -31,9 +47,10 @@ export default function VocabularyPage() {
   const [scanMsg, setScanMsg] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [newPage, setNewPage] = useState<Vocab | null>(null);
+  const [scanForm, setScanForm] = useState<ScanForm | null>(null);
 
   function keyOf(v: Vocab) {
-    return `${v.url_pattern}|${v.page_title}|${v.login_role}`;
+    return `${v.base_url}|${v.url_pattern}|${v.page_title}|${v.login_role}`;
   }
 
   async function load() {
@@ -46,13 +63,42 @@ export default function VocabularyPage() {
     load();
   }, [query]);
 
-  async function scan() {
+  /** 主动扫描:起浏览器→(可选登录)→按入口清单逐页提炼词汇,(可选)浅爬点击触发的内页。 */
+  async function runScan(form: ScanForm) {
+    setScanForm(null);
     setScanning(true);
-    setScanMsg(null);
+    setScanMsg("主动扫描已启动:正在起浏览器、逐页提炼词汇…");
     try {
-      const r = await apiPost<{ message?: string }>("/vocabulary/scan");
-      await load();
-      setScanMsg(r.message ?? "已触发。词汇表在执行 Suite 时自动增量更新。");
+      const { scan_id } = await apiPost<{ scan_id: string }>("/vocabulary/scan", {
+        base_url: form.base_url,
+        entry_paths: form.entry_paths
+          .split("\n")
+          .map((s) => s.trim())
+          .filter(Boolean),
+        session_profile: form.session_profile || null,
+        shallow_crawl: form.shallow_crawl,
+      });
+      // 轮询状态
+      for (let i = 0; i < 600; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const st = await apiGet<{
+          status: string;
+          report?: { page_count: number; total_terms: number };
+          error?: string;
+        }>(`/vocabulary/scan/${scan_id}`);
+        if (st.status === "completed") {
+          await load();
+          setScanMsg(
+            `扫描完成:${st.report?.page_count ?? 0} 页,新增/更新 ${st.report?.total_terms ?? 0} 个业务词。`,
+          );
+          return;
+        }
+        if (st.status === "failed") {
+          setScanMsg(`扫描失败:${st.error ?? "未知错误"}`);
+          return;
+        }
+      }
+      setScanMsg("扫描仍在进行,稍后刷新页面查看新增词条。");
     } catch (e) {
       setScanMsg(`扫描请求失败:${e instanceof Error ? e.message : String(e)}`);
     } finally {
@@ -63,6 +109,7 @@ export default function VocabularyPage() {
   /** 保存整页词汇表(API 按 url_pattern+title+role 为键 upsert)。 */
   async function savePage(v: Vocab) {
     await apiPut("/vocabulary/0", {
+      base_url: v.base_url,
       url_pattern: v.url_pattern,
       page_title: v.page_title,
       login_role: v.login_role,
@@ -75,6 +122,7 @@ export default function VocabularyPage() {
   async function deletePage(v: Vocab) {
     if (!confirm(`删除页面词汇表「${v.page_title || v.url_pattern}」?`)) return;
     const qs = new URLSearchParams({
+      base_url: v.base_url,
       url_pattern: v.url_pattern,
       page_title: v.page_title,
       login_role: v.login_role,
@@ -111,11 +159,11 @@ export default function VocabularyPage() {
             新建词汇表
           </button>
           <button
-            onClick={scan}
+            onClick={() => setScanForm({ ...EMPTY_SCAN })}
             disabled={scanning}
             className="bg-brand-600 text-white px-3.5 py-2 rounded-md text-sm font-medium hover:bg-brand-700 disabled:opacity-50 transition-colors"
           >
-            {scanning ? "扫描中…" : "扫描页面"}
+            {scanning ? "扫描中…" : "主动扫描"}
           </button>
         </div>
       </div>
@@ -143,6 +191,15 @@ export default function VocabularyPage() {
         <span className="text-xs text-gray-400 ml-auto">共 {items.length} 条</span>
       </div>
 
+      {scanForm && (
+        <ScanFormPanel
+          form={scanForm}
+          onChange={setScanForm}
+          onCancel={() => setScanForm(null)}
+          onRun={() => runScan(scanForm)}
+        />
+      )}
+
       {newPage && (
         <NewPageForm
           page={newPage}
@@ -164,6 +221,7 @@ export default function VocabularyPage() {
             <thead>
               <tr className="border-b border-gray-200 text-left text-xs font-medium text-gray-500">
                 <th className="px-5 py-3 w-8"></th>
+                <th className="px-5 py-3 font-medium">系统(base_url)</th>
                 <th className="px-5 py-3 font-medium">页面路径</th>
                 <th className="px-5 py-3 font-medium">页面标题</th>
                 <th className="px-5 py-3 font-medium">登录角色</th>
@@ -182,6 +240,7 @@ export default function VocabularyPage() {
                       onClick={() => setExpanded(open ? null : k)}
                     >
                       <td className="px-5 py-3 text-gray-400">{open ? "▾" : "▸"}</td>
+                      <td className="px-5 py-3 font-mono text-xs text-gray-500">{v.base_url || <span className="text-gray-300">(通配)</span>}</td>
                       <td className="px-5 py-3 font-mono text-xs text-gray-600">{v.url_pattern}</td>
                       <td className="px-5 py-3 text-surface-900">{v.page_title}</td>
                       <td className="px-5 py-3 text-gray-500">{v.login_role || <span className="text-gray-300">(任意)</span>}</td>
@@ -200,7 +259,7 @@ export default function VocabularyPage() {
                     </tr>
                     {open && (
                       <tr>
-                        <td colSpan={6} className="bg-gray-50/60 px-5 py-3">
+                        <td colSpan={7} className="bg-gray-50/60 px-5 py-3">
                           <TermEditor page={v} onSave={savePage} />
                         </td>
                       </tr>
@@ -212,6 +271,77 @@ export default function VocabularyPage() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+function ScanFormPanel({
+  form,
+  onChange,
+  onCancel,
+  onRun,
+}: {
+  form: ScanForm;
+  onChange: (f: ScanForm) => void;
+  onCancel: () => void;
+  onRun: () => void;
+}) {
+  return (
+    <div className="bg-white border rounded p-4 mb-4">
+      <h3 className="font-semibold mb-1">主动扫描</h3>
+      <p className="text-xs text-gray-500 mb-3">
+        起浏览器逐页提炼业务词→元素映射。需登录的页面请先在套件设置里配好 Session
+        并跑一次以落盘 Cookie,再在此填其名称。
+      </p>
+      <div className="grid grid-cols-2 gap-3">
+        <label className="text-xs text-gray-600">
+          系统 base_url(必填)
+          <input
+            className="border px-2 py-1 rounded w-full mt-1 text-sm font-mono"
+            value={form.base_url}
+            onChange={(e) => onChange({ ...form, base_url: e.target.value })}
+            placeholder="https://www.saucedemo.com"
+          />
+        </label>
+        <label className="text-xs text-gray-600">
+          Session Profile(可选,用其 Cookie 登录)
+          <input
+            className="border px-2 py-1 rounded w-full mt-1 text-sm"
+            value={form.session_profile}
+            onChange={(e) => onChange({ ...form, session_profile: e.target.value })}
+            placeholder="留空=扫公开页"
+          />
+        </label>
+      </div>
+      <label className="text-xs text-gray-600 block mt-3">
+        入口路径清单(每行一个,留空=只扫 /)
+        <textarea
+          className="border px-2 py-1 rounded w-full mt-1 text-sm font-mono h-20"
+          value={form.entry_paths}
+          onChange={(e) => onChange({ ...form, entry_paths: e.target.value })}
+          placeholder={"/inventory.html\n/cart.html"}
+        />
+      </label>
+      <label className="flex items-center gap-2 text-xs text-gray-700 mt-3">
+        <input
+          type="checkbox"
+          checked={form.shallow_crawl}
+          onChange={(e) => onChange({ ...form, shallow_crawl: e.target.checked })}
+        />
+        浅爬:点击导航类元素进入点击触发的内页(只读,跳过高危词)
+      </label>
+      <div className="flex gap-2 mt-3">
+        <button
+          onClick={onRun}
+          disabled={!form.base_url.trim()}
+          className="bg-brand-600 text-white px-3.5 py-1.5 rounded-md text-sm font-medium hover:bg-brand-700 disabled:opacity-50 transition-colors"
+        >
+          开始扫描
+        </button>
+        <button onClick={onCancel} className="text-gray-600 px-3 py-1.5 text-sm">
+          取消
+        </button>
+      </div>
     </div>
   );
 }
@@ -230,7 +360,16 @@ function NewPageForm({
   return (
     <div className="bg-white border rounded p-4 mb-4">
       <h3 className="font-semibold mb-3">新建页面词汇表</h3>
-      <div className="grid grid-cols-3 gap-3">
+      <div className="grid grid-cols-2 gap-3">
+        <label className="text-xs text-gray-600">
+          系统 base_url(留空=对任意系统通配)
+          <input
+            className="border px-2 py-1 rounded w-full mt-1 text-sm font-mono"
+            value={page.base_url}
+            onChange={(e) => onChange({ ...page, base_url: e.target.value })}
+            placeholder="https://www.saucedemo.com"
+          />
+        </label>
         <label className="text-xs text-gray-600">
           URL 路径(支持 /order/&#123;id&#125;)
           <input

@@ -9,8 +9,11 @@
 - ``url_contains`` / ``url_equals`` —— URL/导航断言
 
 ``custom_tool`` —— 数据断言:接入 ``ToolRegistry`` 后经 Custom Tool 取业务真值并确定性
-比较(未接入则 skipped)。``llm_judge`` —— **不执行**(铁律2:判定不让 LLM 眼判),标
-skipped 待人工复核。skipped **不静默放过**(裁决时全 skipped 不算可信通过)。
+比较(未接入则 skipped)。``llm_judge`` —— **降级链最末档兜底**(方案A):接入 LLM 后真判
+PASS/FAIL 并计入裁决,但结果打 ``ai_judged`` 标记(低置信、可审计),报告区分「结构化绿」
+与「AI 判绿」使 false green 可见可回溯;**能结构化/查真值的预期应优先用 DOM/文本/URL/
+custom_tool**(都比 llm_judge 可靠)。未接入 LLM 则 skipped。skipped **不静默放过**
+(裁决时全 skipped 不算可信通过)。
 
 断言失败的两种归因(§5.3):
 - 真失败:元素在、值不对 → FAIL(``healable=False``)。
@@ -28,9 +31,17 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
+from harness.llm import loads_lenient
 from input.models import Assertion
 
 logger = logging.getLogger(__name__)
+
+# llm_judge 兜底裁判的 system prompt。偏向 FAIL:测试平台宁可误报失败、不可误报通过。
+_JUDGE_SYSTEM = """你是测试断言裁判。根据下面的页面无障碍(A11y)快照,判断给定「期望」\
+是否在当前页面真实成立。这是降级兜底判定,只在无法结构化验证时使用。
+要求:严格按快照事实判断,不臆测;证据不足或拿不准时一律判 FAIL\
+(测试平台宁可误报失败,不可误报通过)。
+只输出 JSON:{"verdict":"PASS"|"FAIL","reason":"简述依据"}"""
 
 # 阶段一支持的确定性断言类型
 _SUPPORTED = {
@@ -65,7 +76,7 @@ class PageProbe(Protocol):
 class AssertionStatus(str, Enum):
     PASS = "pass"
     FAIL = "fail"
-    SKIPPED = "skipped"  # 阶段一不支持的类型(custom_tool / llm_judge)
+    SKIPPED = "skipped"  # 无法确定性验证(custom_tool 未接 / llm_judge 未接 LLM)
 
 
 @dataclass
@@ -77,6 +88,7 @@ class AssertionResult:
     healable: bool = False  # 元素未找到 → 可能 selector 失效,触发自愈
     healed: bool = False  # 经自愈重定位后复验通过
     heal_note: str = ""  # 自愈摘要(重定位到哪个 target / 策略)
+    ai_judged: bool = False  # 该结果由 llm_judge 兜底判定(低置信),报告需与结构化绿区分
 
     @property
     def passed(self) -> bool:
@@ -94,18 +106,21 @@ class AssertionResult:
             "healable": self.healable,
             "healed": self.healed,
             "heal_note": self.heal_note,
+            "ai_judged": self.ai_judged,
         }
 
 
 class AssertionEngine:
     """确定性断言验证引擎。可选接入 Healing Subagent 做断言目标重定位。"""
 
-    def __init__(self, probe: PageProbe, healer=None, *, tool_registry=None) -> None:
+    def __init__(self, probe: PageProbe, healer=None, *, tool_registry=None, llm=None) -> None:
         self.probe = probe
         self.healer = healer
         # 数据断言(custom_tool)经 ToolRegistry 取业务真值(规格 §5.3#4/§5.4)。
         # 未接入时 custom_tool 断言保持 skipped(不静默放过)。
         self.tool_registry = tool_registry
+        # llm_judge 兜底裁判用(方案A)。未接入则 llm_judge 断言保持 skipped。
+        self.llm = llm
 
     async def verify(self, a: Assertion) -> AssertionResult:
         res = await self._verify_once(a)
@@ -122,12 +137,72 @@ class AssertionEngine:
             return await handler(a)
         if a.type == "custom_tool":
             return await self._check_custom_tool(a)
-        # llm_judge 等:**不执行 LLM 眼判**(铁律2:判定必须确定性,不让 LLM 裁 PASS/FAIL)。
-        # 标 skipped 而非静默放过;裁决时全 skipped 不算可信通过。
+        if a.type == "llm_judge":
+            return await self._check_llm_judge(a)
+        # 其余未知类型:标 skipped 而非静默放过;裁决时全 skipped 不算可信通过。
         return AssertionResult(
             assertion=a,
             status=AssertionStatus.SKIPPED,
-            reason=f"断言类型 {a.type} 不做确定性验证(llm_judge 由铁律2 排除,需人工复核)",
+            reason=f"断言类型 {a.type} 不支持确定性验证 → skipped(需人工复核)",
+        )
+
+    async def _check_llm_judge(self, a: Assertion) -> AssertionResult:
+        """LLM 语义断言(方案A:真判 PASS/FAIL 并计入裁决,但标 ai_judged 低置信可审计)。
+
+        这是降级链**最末档兜底**:能结构化/查真值的预期应优先用 DOM/文本/URL/custom_tool。
+        AI 判出的结果打 ``ai_judged`` 标记,报告区分「结构化绿」与「AI 判绿」,使 false green
+        可见、可回溯、可调 prompt;裁判 prompt 偏向 FAIL(宁可误报失败不可误报通过)。
+        未接入 LLM → skipped(不静默放过)。
+        """
+        if self.llm is None:
+            return AssertionResult(
+                assertion=a,
+                status=AssertionStatus.SKIPPED,
+                reason="llm_judge 未接入 LLM → skipped(需人工复核)",
+            )
+        snapshot_text = ""
+        raw_fn = getattr(self.probe, "raw_snapshot", None)
+        if callable(raw_fn):
+            snapshot_text = raw_fn() or ""
+        expectation = (a.expected or a.target or "").strip()
+        messages = [
+            {"role": "system", "content": _JUDGE_SYSTEM},
+            {
+                "role": "user",
+                "content": (
+                    f"期望:{expectation}\n\n"
+                    f"当前页面无障碍快照:\n{snapshot_text[:6000] or '(无快照)'}"
+                ),
+            },
+        ]
+        try:
+            resp = await self.llm.chat(messages)
+            data = loads_lenient(resp.content)
+        except Exception as e:  # noqa: BLE001 — 判定失败降级 skipped,不炸裁决
+            logger.warning("llm_judge 调用/解析失败:%s", e)
+            return AssertionResult(
+                assertion=a,
+                status=AssertionStatus.SKIPPED,
+                ai_judged=True,
+                reason=f"llm_judge 失败 → skipped:{e}",
+            )
+        verdict = str(data.get("verdict") or "").strip().upper()
+        reason = str(data.get("reason") or "").strip()
+        if verdict not in ("PASS", "FAIL"):
+            return AssertionResult(
+                assertion=a,
+                status=AssertionStatus.SKIPPED,
+                ai_judged=True,
+                actual=(resp.content or "")[:200],
+                reason=f"llm_judge 未给出明确裁决 → skipped:{reason or '(无)'}",
+            )
+        ok = verdict == "PASS"
+        return AssertionResult(
+            assertion=a,
+            status=_st(ok),
+            actual=f"AI判定={verdict}",
+            reason=("AI 判定通过(低置信,建议复核)" if ok else f"AI 判定失败:{reason}"),
+            ai_judged=True,
         )
 
     async def _check_custom_tool(self, a: Assertion) -> AssertionResult:
@@ -218,7 +293,12 @@ class AssertionEngine:
 
     @staticmethod
     def verdict(results: list[AssertionResult]) -> bool:
-        """裁决:只要有 FAIL 即 PASS=False;无断言或全为 SKIPPED 时不算可信通过。"""
+        """裁决:只要有 FAIL 即 PASS=False;无断言或全为 SKIPPED 时不算可信通过。
+
+        方案A 后 PASS 可来自结构化断言**或** llm_judge 兜底(后者标 ``ai_judged``);
+        SKIPPED 收窄为「custom_tool 未接 / llm_judge 未接 LLM / 未知类型」。裁决本身仍确定性:
+        任一 FAIL 即不通过,需至少一条 PASS 才算可信通过。
+        """
         if not results:
             return False
         if any(r.status == AssertionStatus.FAIL for r in results):

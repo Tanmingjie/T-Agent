@@ -17,9 +17,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 铁律(违反即错,必须常驻)
 
 1. **浏览器层只用 playwright-mcp 的 stdio 模式,绝不用 CDP HTTP**(内网代理会拦截 → 504)。
-2. **断言由规则引擎确定性验证,不让 LLM 眼判 PASS/FAIL**。判断在"翻译时"一次性做(预期→结构化 Assertion),执行时只做确定性比较。
+2. **断言以规则引擎确定性验证为主**。判断在"翻译时"一次性做(预期→结构化 Assertion),执行时只做确定性比较。**唯一例外:`llm_judge` 作为降级链最末档显式兜底**(无法结构化/查真值时),接 LLM 真判 PASS/FAIL 并计入裁决,但结果标 `ai_judged`(低置信、报告与结构化绿区分,使 false green 可见可回溯);裁判 prompt 偏向 FAIL(宁可误报失败不可误报通过)。**能用 DOM/文本/URL/custom_tool 的预期一律不准落到 llm_judge**。〔方案A,2026-06-10 由用户拍板,推翻原"绝不让 LLM 眼判";仍不取 LLM 自报的 TEST_RESULT〕
 3. **本地 LLM 的 tool_call 必须容错**(宽松 JSON / 从 content 提取 / 重试),偶发格式错误不得搞崩 ReAct 循环。
-4. 最终 PASS/FAIL **以断言裁决为准,不取 LLM 自报的 TEST_RESULT**。
+4. 最终 PASS/FAIL **以断言裁决为准**(含 `llm_judge` 兜底结果),**不取 LLM 自报的 TEST_RESULT**。
 5. 实现原则(规格 §0):前后端分离、数据层抽象(SQLModel,不直接写 SQL)、输入/输出抽象(都产出 `TestCase`/落 `ExecutionRecord`)、核心表预留 `updated_at`/`owner`/`external_id`、分阶段不跳跃。
 
 ## 架构大图(需要读多文件才能拼出的部分)
@@ -150,6 +150,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **P2 跨用例 Cookie 复用 + 抓出真 bug** ★ — 走 API 路径(hooks 只在 API 接通)2 用例 suite。**首跑两用例都"绿"但 cookie 文件根本没生成 → 功能其实没接通**(典型「看着绿实则空转」,幸亏走真实端到端到产物)。根因:`browser_run_code_unsafe` 把返回值**双重 JSON 编码**(cookies 是带引号的 JSON 字符串字面量 `"[{\"name\":...}]"`),`_parse_cookies_result` 只 loads 一次 → 0 条 → `CaptureSessionHook` 从没存过。修:`_parse_cookies_result` 兼容双重编码(先 loads 外层字符串再 loads 内层数组)。修后:cookie 文件生成、TCB 步数 7→3(省了登录);**铁证**(无 agent 干扰的直接注入回放):捕获 cookie→全新浏览器注入→直达 `inventory.html` 免登录可达(6 个商品)= True。教训复刻:**saucedemo 账号太有名,agent 可能自己重登 → 用例"绿"会掩盖复用失效;验证复用要看产物(cookie 文件)+ 隔离注入回放,别只看用例 PASS**。
 - **定位器对齐(2026-06-07,已做)** — 修 codegen 退化文本兜底。实证根因:① 模型把 ref 放进 **`target`** 参数(非 `ref`),`react_loop` 只读 `ref` → 执行捕获 role+name 永远落空;② 真正可靠的是 tool_result 里**实际执行的 Playwright 定位器**(`page.locator('[data-test="username"]')` 等,真跑通过、必然唯一可用)。修:`react_loop._ref_alias`(从 `target` 等别名认 ref,形如 `e\d+`)+ `extract_executed_locator`(抓实际执行的定位表达式存 `ActionStep.element_selector`);`codegen/locators.py::locator_from_executed` 解析成 Locator(getByRole→ROLE / getByTestId→TEST_ID / locator(css)→CSS …),`locators_from_steps` **优先用实际执行定位器**(ground truth,胜过快照重建的可能歧义 role+name,如 6 个"Add to cart")。**闭环实证**(无 `--vocab` 纯靠执行捕获):TC101 生成代码 action 步全部用真实选择器(`[data-test="username/password/login-button/add-to-cart-sauce-labs-backpack"]`)、无兜底注释;pytest-playwright 回放登录+加购全过。**遗留**:断言目标(如购物车角标)不经"执行定位器"捕获(断言走 probe 不产出可复用选择器),无 vocab 时仍文本兜底——需 vocab/selector 对齐(设计内边界)。
 - **codegen 闭环验证 + 导航修复(2026-06-07,已做)** — 真把生成的 pytest-bdd 用 Playwright 跑了一遍。发现并修:用例把"打开页面"写在预置条件(被 P1 归 state_hook 不进 steps)→ 生成代码缺 `page.goto`、回放不开页面。修:`agent.ensure_navigation_step` codegen 前置注入隐式导航。闭环实证:含正确定位器的 spec→生成 BDD→pytest-playwright 真打 saucedemo 1 passed。遗留:spec target 与词汇表/捕获键不一致时定位器退化文本兜底(待对齐)。**附:此前怀疑的"step-def 命名 bug"是 `ls|head` 截断误判,不存在**(`test_<case>.py` 本就按用例命名)。
+- **llm_judge / 词汇表 base_url / 主动扫描(2026-06-10,已做,用户拍板三连)** —
+  - **#1 llm_judge 方案A(推翻原"恒 skipped")** — 接降级链最末档兜底:`AssertionEngine(llm=)` 真判 PASS/FAIL **计入裁决**,但结果标 `ai_judged`(低置信)、裁判 prompt 偏向 FAIL(宁可误报失败不可误报通过);前端断言视图加「AI判定·低置信」标记使 false green 可见可回溯。**铁律2/4 口径已改**(CLAUDE.md+产品设计文档+TODO);skipped 收窄为「custom_tool 未接 / llm_judge 未接 LLM」。**仍引导:能结构化/查真值的预期优先 DOM/文本/URL/custom_tool**。
+  - **#2 词汇表绑 base_url** — `PageVocabulary`/`PageVocabularyRow` 加 `base_url` 维度,去重键含之;`find_page` 按「base_url 为当前 url 前缀」作用域隔离(空 base_url 通配,向后兼容)→ **跨系统不再撞键**(系统甲/乙的 `/login` 互不污染)、**同系统多 suite 共享一份**。前端词汇表页加「系统(base_url)」列 + 新建表单字段。`Suite.page_intelligence_id` 仍预留(base_url 作用域已实质完成 suite↔vocab 关联,更干净)。**存量数据:迁移自动加列(旧行 base_url="" 通配);要清版需手动清 `page_vocabulary` 表**。
+  - **#3 主动扫描 + 执行期扫描默认关** — `intelligence/active_scan.py::ActiveScanner`:会导航的**只读**探索式扫描——起浏览器、可选登录(`session_profile` 落盘 Cookie 注入)、按入口清单逐页抓快照提炼词汇、**可选浅爬**(点击 link/tab/menuitem 进入点击触发的内页,跳过可及名含高危词的元素,深度/页数受限)。`/vocabulary/scan` 从 no-op 改真干活(后台线程+独立 loop/Store/MCP,同 execution_worker;返回 scan_id 轮询);前端加扫描表单(base_url/入口清单/Session/浅爬开关 + 状态轮询)。**`VOCAB_SCAN` 默认改 0**(执行期增量扫降为可选补充,主动扫描为主入口,消除交互延迟 + 两写入源打架)。单测 +12(active_scan 6 / base_url 作用域 / llm_judge 4 / scan 端点)。
 - **下一步候选(2026-06-07 收口时的待办):**
   - **真实内网用例 live 验证**(主线,当前被环境阻塞)— saucedemo 全链路已 live 绿(基础/结算/会话复用/custom_tool/codegen 回放),内网真实业务系统待跑。解阻塞后 CLI/API 两条路径都就绪。
   - **prompt 优化 C/D(省 token/提速,未做)** — C:每业务步约 3 次 LLM 往返(snapshot→action→mark_done),~100k token/用例,可探索「动作结果已带快照则免单独 snapshot」「mark_done 合并」(有正确性风险,实测 click 结果不总带 ref,需 live A/B);D:system 每轮重列全部 ~25 工具文本(已另经 `tools=` 传,冗余),可用 `PromptBuilder.max_tools` 按相关度截断(风险:漏掉所需工具)。已做的 prompt 优化见「prompt 优化(2026-06-07)」:BASE 强制每轮工具调用 + idle 指令修正,live 0 卡死。
@@ -261,7 +265,8 @@ cd frontend && npm run preview    # 本地预览生产构建
 #   CUSTOM_TOOLS_YAML=examples/custom_tools.yaml  → Custom Tool
 #   MCP_ISOLATED=1 / MCP_HEADLESS=1               → playwright-mcp 启动参数
 #   MCP_SCREENSHOT=0                               → 关截图捕获
-#   VOCAB_SCAN=0                                   → 关执行期增量词汇表扫描
+#   VOCAB_SCAN=1                                   → 开执行期增量词汇表扫描(**默认关**;主动扫描为主入口)
+#   SCAN_CRAWL_DEPTH=1 / SCAN_MAX_PAGES=20         → 主动扫描浅爬深度 / 单次最多扫页数
 #   MCP_SETTLE=0                                   → 关「导航类动作后等页面稳定」(默认开)
 #   MCP_SETTLE_TIMEOUT_MS=8000 / MCP_SETTLE_INTERVAL_MS=400 → settle 超时/轮询间隔
 #   HEAL_VISUAL=0                                  → 关视觉自愈截图双通道(默认开,需多模态模型)

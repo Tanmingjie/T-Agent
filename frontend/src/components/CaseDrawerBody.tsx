@@ -44,6 +44,7 @@ interface AssertionResult {
   status: string; // pass | fail | skipped
   actual?: string | null;
   reason?: string | null;
+  ai_judged?: boolean; // 由 llm_judge 兜底判定(低置信)→ 与结构化绿区分,使 false green 可见
 }
 
 interface StepDetail {
@@ -929,6 +930,14 @@ export default function CaseDrawerBody({
                                 <span className="text-gray-400">
                                   {" "}
                                   == {a.expected}
+                                </span>
+                              )}
+                              {a.ai_judged && (
+                                <span
+                                  className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200 align-middle"
+                                  title="由 LLM 兜底判定,低置信,建议人工复核"
+                                >
+                                  AI判定·低置信
                                 </span>
                               )}
                               {a.status === "fail" &&

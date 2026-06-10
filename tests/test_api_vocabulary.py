@@ -85,7 +85,40 @@ async def test_search(client):
 
 
 @pytest.mark.asyncio
-async def test_scan_trigger(client):
-    r = await client.post("/api/vocabulary/scan")
+async def test_scan_trigger_launches_and_status(client, monkeypatch):
+    # 不真开浏览器:打桩 spawn_run,只验证端点返回 scan_id + 状态可查
+    import api.routers.vocabulary as vmod
+
+    monkeypatch.setattr(vmod, "spawn_run", lambda scan_id, worker: None)
+    r = await client.post(
+        "/api/vocabulary/scan",
+        json={"base_url": "https://x.com", "entry_paths": ["/login"], "shallow_crawl": True},
+    )
     assert r.status_code == 200
-    assert r.json()["ok"] is True
+    scan_id = r.json()["scan_id"]
+    assert r.json()["status"] == "started"
+
+    st = await client.get(f"/api/vocabulary/scan/{scan_id}")
+    assert st.status_code == 200
+    assert st.json()["status"] == "running"  # 桩未真正跑,留在初始 running
+
+    assert (await client.get("/api/vocabulary/scan/nope")).status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_create_with_base_url_scope(client):
+    # base_url 维度随创建落库,跨系统隔离的基础
+    r = await client.post(
+        "/api/vocabulary",
+        json={
+            "base_url": "https://sys-a.intra",
+            "url_pattern": "/login",
+            "page_title": "L",
+            "login_role": "",
+            "vocabulary": {},
+            "action_map": [],
+        },
+    )
+    assert r.status_code == 200
+    items = (await client.get("/api/vocabulary")).json()["items"]
+    assert items[0]["base_url"] == "https://sys-a.intra"

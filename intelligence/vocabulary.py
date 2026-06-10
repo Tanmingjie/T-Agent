@@ -61,6 +61,9 @@ class VocabularyManager:
             if route_match(v.url_pattern, url)
             and _loose_eq(v.page_title, page_title)
             and _loose_eq(v.login_role, login_role)
+            # base_url 作用域:词条带 base_url 时,仅当它是当前 url 前缀才命中(跨系统隔离);
+            # 空 base_url(历史/手动未填)视为通配,向后兼容。
+            and (not v.base_url or (url or "").startswith(v.base_url))
         ]
         if not candidates:
             return None
@@ -79,7 +82,7 @@ class VocabularyManager:
     async def merge_scanned(self, scanned: PageVocabulary) -> PageVocabulary:
         """把 AI 扫描结果并入既有词汇表;手动条目不被覆盖。"""
         existing = await self.store.get_vocabulary(
-            scanned.url_pattern, scanned.page_title, scanned.login_role
+            scanned.url_pattern, scanned.page_title, scanned.login_role, scanned.base_url
         )
         if existing is None:
             await self.store.save_vocabulary(scanned)
@@ -95,9 +98,11 @@ class VocabularyManager:
         await self.store.save_vocabulary(existing)
         return existing
 
-    async def mark_stale(self, url_pattern: str, page_title: str, login_role: str) -> bool:
+    async def mark_stale(
+        self, url_pattern: str, page_title: str, login_role: str, base_url: str = ""
+    ) -> bool:
         """标记某页词汇表过期(自愈失败 / 手动)。命中返回 True。"""
-        v = await self.store.get_vocabulary(url_pattern, page_title, login_role)
+        v = await self.store.get_vocabulary(url_pattern, page_title, login_role, base_url)
         if v is None:
             return False
         v.stale = True
