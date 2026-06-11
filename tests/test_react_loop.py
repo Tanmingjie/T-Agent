@@ -135,6 +135,46 @@ async def test_happy_path_completes():
     assert result.action_steps[0].reasoning == "点第一个按钮"
 
 
+async def test_guard_premature_mark_then_act():
+    """B-软护栏:没操作就 mark_done → 被软拦,推模型先实操,再标记完成。"""
+    plan = _plan(1)
+    llm = _ScriptedLLM(
+        [
+            _resp(content="直接完成", calls=[("mark_step_done", {"step_no": 1})]),  # 过早 → 拦
+            _resp(content="先点按钮", calls=[("browser_click", {"ref": "b1"})]),  # 实操
+            _resp(content="现在完成", calls=[("mark_step_done", {"step_no": 1})]),  # 放行
+            _resp(content="done"),
+        ]
+    )
+    loop = ReActLoop(
+        llm, tools=[], execute=_make_executor(plan), step_plan=plan, build_system=_build_system
+    )
+    result = await loop.run()
+    assert result.stop_reason == StopReason.COMPLETED
+    assert plan.all_done()
+    # 被推着先操作再标记(无护栏则 r0 直接 mark 完成、不会有 click)
+    assert any(s.tool_name == "browser_click" for s in result.action_steps)
+
+
+async def test_guard_premature_mark_at_most_once():
+    """B-软护栏每步至多拦一次:模型坚持「无需操作」再次 mark → 放行(覆盖纯校验步)。"""
+    plan = _plan(1)
+    llm = _ScriptedLLM(
+        [
+            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),  # 过早 → 拦一次
+            _resp(content="确实无需操作", calls=[("mark_step_done", {"step_no": 1})]),  # 放行
+            _resp(content="done"),
+        ]
+    )
+    loop = ReActLoop(
+        llm, tools=[], execute=_make_executor(plan), step_plan=plan, build_system=_build_system
+    )
+    result = await loop.run()
+    assert result.stop_reason == StopReason.COMPLETED
+    assert plan.all_done()
+    assert not any(s.tool_name == "browser_click" for s in result.action_steps)
+
+
 async def test_llm_finished_without_toolcall():
     # 无待办步骤(空 plan,all_resolved 为真)时,模型不调工具并自报结果 → 正常结束
     plan = _plan(0)
@@ -340,11 +380,13 @@ async def test_tool_call_error_persistent_stops():
 async def test_tool_call_error_transient_recovers():
     """铁律3:偶发 tool_call 错误不得搞崩循环——纠偏续推后仍能完成剩余步骤。"""
     plan = _plan(1)
-    # 第 0 次报错(该槽被 raise 消费)→ 续推;第 1 次正常 mark_step_done 完成该步 → 收尾
+    # 第 0 次报错(该槽被 raise 消费)→ 续推;第 1 次 mark 被 B-软护栏拦一次(该步无实操)→
+    # 第 2 次再 mark 放行收尾(护栏每步至多拦一次)。
     llm = _ScriptedLLM(
         [
             _resp(content="坏"),  # idx0 槽:被 raise 占用
-            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # idx1:纠偏后正常调用
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # idx1:护栏拦一次
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # idx2:放行,完成该步
             _resp(content="完成"),
         ],
         raise_on={0: LLMToolCallError("偶发坏格式")},

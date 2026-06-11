@@ -29,7 +29,7 @@ from typing import Awaitable, Callable
 
 from harness.llm import LLMClient, LLMToolCallError, ToolCall
 from harness.page_probe import build_ref_index, parse_snapshot
-from harness.step_plan import StepPlan
+from harness.step_plan import MARK_STEP_DONE_TOOL, StepPlan
 from input.models import ActionStep
 
 logger = logging.getLogger(__name__)
@@ -213,6 +213,10 @@ class ReActLoop:
         # 最近一次观察(工具结果)文本,含 playwright-mcp 快照。LLM 本轮回传的 ref 即
         # 对应它最近观察到的这份快照 → 据此回查被操作元素的真实 (role, name)。
         last_snapshot_text = ""
+        # B-软最小护栏(只接「过早 mark_done」):记录每个 StepPlan 步骤是否真的做过操作,
+        # 以及已对哪些步骤软提示过(每步至多拦一次,避免误判空转)。
+        acted_steps: set[int] = set()  # 该 step_no 下执行过「操作类」工具(非 snapshot/非 mark)
+        nudged_mark: set[int] = set()  # 已就「过早 mark_done」提示过的 step_no
 
         for iteration in range(1, self.max_steps + 1):
             result.iterations = iteration
@@ -313,6 +317,17 @@ class ReActLoop:
                 result.stop_reason = StopReason.LOOP_DETECTED
                 break
 
+            # B-软最小护栏:仅当本轮**只调用** mark_step_done、且该步从未做过任何操作类工具、
+            # 且尚未就此步提示过 → 软提示先实操,不采信本次标记(铁律2(a):软、可恢复、不判失败)。
+            # 限「只调 mark」+「每步至多一次」双重保守,避免误判把正常流程拖进空转。
+            guard_nudge = self._guard_premature_mark(resp.tool_calls, acted_steps, nudged_mark)
+            if guard_nudge is not None:
+                messages.append(
+                    {"role": "assistant", "content": reasoning or _render_calls(resp.tool_calls)}
+                )
+                messages.append({"role": "user", "content": guard_nudge})
+                continue
+
             # 记录模型的「思考 + 决策」
             messages.append(
                 {"role": "assistant", "content": reasoning or _render_calls(resp.tool_calls)}
@@ -393,6 +408,15 @@ class ReActLoop:
                     except Exception as e:  # noqa: BLE001 — 推送失败不影响执行
                         logger.warning("on_step 回调失败:%s", e)
 
+                # B-软护栏记账:本步执行了「操作类」工具(非 snapshot/非 mark)且未报错 →
+                # 记下当前 StepPlan 步骤「已实操」,据此识别「没操作就 mark_done」的过早标记。
+                if (
+                    cur_step is not None
+                    and tc.name not in (MARK_STEP_DONE_TOOL, "browser_snapshot")
+                    and not _is_tool_failure(outcome.text)
+                ):
+                    acted_steps.add(cur_step.step_no)
+
                 # 观察回灌(含自愈建议)
                 messages.append({"role": "user", "content": f"[观察] {outcome.text}{obs_suffix}"})
                 # 记下本次观察快照,供下一轮 ref 回查。仅当观察里**真的带 ref**(浏览器工具
@@ -419,6 +443,38 @@ class ReActLoop:
             "",
         )
         return f"### System Prompt\n{system}\n\n### 最近输入(本轮触发)\n{last_user}"
+
+    @staticmethod
+    def _guard_premature_mark(
+        tool_calls: list[ToolCall], acted_steps: set[int], nudged_mark: set[int]
+    ) -> str | None:
+        """过早 mark_done 软护栏(B-软最小版,只接此一种)。
+
+        触发条件(三重保守,避免误判正常流程):本轮**仅**一个工具调用且为 mark_step_done、
+        其 step_no **从未执行过操作类工具**、且**尚未就此步提示过**。触发则返回软提示串
+        (调用方回灌并跳过本次标记);否则返回 None 放行。已提示过的步骤再次标记即放行
+        (覆盖「纯校验/状态已满足、确实无需操作」的合法步骤,代价至多一次多余往返)。
+        """
+        if len(tool_calls) != 1:
+            return None
+        tc = tool_calls[0]
+        if tc.name != MARK_STEP_DONE_TOOL:
+            return None
+        raw = tc.arguments.get("step_no") if isinstance(tc.arguments, dict) else None
+        try:
+            step_no = int(raw)
+        except (TypeError, ValueError):
+            return None
+        if step_no in acted_steps or step_no in nudged_mark:
+            return None
+        nudged_mark.add(step_no)
+        return (
+            f"你要把第 {step_no} 步标记完成,但本步还没执行任何页面操作(点击/输入/选择)。"
+            f"请先用快照里对应元素的 ref 实际执行该步骤的操作,确认页面已响应,再调用 "
+            f"mark_step_done(step_no={step_no})。"
+            f"若该步骤确实无需任何页面操作(纯校验 / 状态已满足),可直接再次调用 "
+            f"mark_step_done(step_no={step_no}) 推进。"
+        )
 
     def _current_keywords(self) -> list[str]:
         """当前步骤的关键词,供 L2 相关度截断。"""
