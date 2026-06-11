@@ -59,7 +59,14 @@ class TestCaseRepository(ABC):
 
 class ExecutionRepository(ABC):
     @abstractmethod
-    async def create_run(self, run_id: str, suite_id: str, total_cases: int) -> None: ...
+    async def create_run(
+        self,
+        run_id: str,
+        suite_id: str,
+        total_cases: int,
+        project_id: str = "",
+        version_id: str = "",
+    ) -> None: ...
 
     @abstractmethod
     async def update_run(
@@ -219,10 +226,19 @@ class SQLModelRepository(
 
     # ── Execution ──
 
-    async def create_run(self, run_id: str, suite_id: str, total_cases: int) -> None:
+    async def create_run(
+        self,
+        run_id: str,
+        suite_id: str,
+        total_cases: int,
+        project_id: str = "",
+        version_id: str = "",
+    ) -> None:
         row = RunRecordRow(
             id=run_id,
             suite_id=suite_id,
+            project_id=project_id,
+            version_id=version_id,
             status="running",
             total_cases=total_cases,
             started_at=time.time(),

@@ -32,6 +32,7 @@ logger = logging.getLogger(__name__)
 import json
 
 from input.models import (
+    AuditLog,
     ExecutionRecord,
     PageVocabulary,
     Project,
@@ -222,8 +223,20 @@ class ProjectRow(SQLModel, table=True):
     name: str = ""
     description: str = ""
     owner: str | None = None
+    max_concurrency: int = 0  # 项目级并发 run 配额(0=不限,M2)
     created_at: float = 0.0
     updated_at: float = 0.0
+
+
+class AuditLogRow(SQLModel, table=True):
+    __tablename__ = "audit_log"
+    id: str = Field(primary_key=True)
+    actor: str = Field(default="", index=True)
+    action: str = ""
+    project_id: str = Field(default="", index=True)
+    target: str = ""
+    detail: str = ""
+    created_at: float = Field(default=0.0, index=True)
 
 
 class VersionRow(SQLModel, table=True):
@@ -864,24 +877,32 @@ class Store:
             if not candidates:
                 return None
 
+            # 配额判定:全局 max_project_concurrency>0 时统一用它;否则查各项目 Project.max_concurrency
+            # (0=不限)。两者皆无限制则直接取队首。
+            counts = dict(
+                (
+                    await s.exec(
+                        select(RunQueueRow.project_id, func.count())
+                        .where(RunQueueRow.status == "claimed")
+                        .group_by(RunQueueRow.project_id)
+                    )
+                ).all()
+            )
+
+            async def _limit_for(pid: str) -> int:
+                if max_project_concurrency > 0:
+                    return max_project_concurrency
+                if not pid:
+                    return 0
+                prj = await s.get(ProjectRow, pid)
+                return prj.max_concurrency if prj else 0
+
             chosen = None
-            if max_project_concurrency > 0:
-                # 各项目当前 claimed 数(配额判定)
-                counts = dict(
-                    (
-                        await s.exec(
-                            select(RunQueueRow.project_id, func.count())
-                            .where(RunQueueRow.status == "claimed")
-                            .group_by(RunQueueRow.project_id)
-                        )
-                    ).all()
-                )
-                for row in candidates:
-                    if counts.get(row.project_id, 0) < max_project_concurrency:
-                        chosen = row
-                        break
-            else:
-                chosen = candidates[0]
+            for row in candidates:
+                limit = await _limit_for(row.project_id)
+                if limit <= 0 or counts.get(row.project_id, 0) < limit:
+                    chosen = row
+                    break
 
             if chosen is None:
                 return None
@@ -972,3 +993,54 @@ class Store:
                 PermissionRequestRow.status == "pending",
             )
             return list((await s.exec(stmt)).all())
+
+    # —— 版本维度报告:按项目/版本列 run（M2)——
+
+    async def list_runs(self, project_id: str, version_id: str | None = None) -> list[dict]:
+        stmt = select(RunRecordRow).where(RunRecordRow.project_id == project_id)
+        if version_id:
+            stmt = stmt.where(RunRecordRow.version_id == version_id)
+        stmt = stmt.order_by(RunRecordRow.started_at.desc())
+        async with self._sf() as s:
+            rows = (await s.exec(stmt)).all()
+            return [
+                {
+                    "id": r.id,
+                    "suite_id": r.suite_id,
+                    "version_id": r.version_id,
+                    "status": r.status,
+                    "total_cases": r.total_cases,
+                    "passed_cases": r.passed_cases,
+                    "failed_cases": r.failed_cases,
+                    "started_at": r.started_at,
+                    "finished_at": r.finished_at,
+                }
+                for r in rows
+            ]
+
+    # —— 审计日志(M2)——
+
+    async def append_audit(
+        self, actor: str, action: str, *, project_id: str = "", target: str = "", detail: str = ""
+    ) -> None:
+        async with self._sf() as s:
+            s.add(
+                AuditLogRow(
+                    id=uuid.uuid4().hex,
+                    actor=actor,
+                    action=action,
+                    project_id=project_id,
+                    target=target,
+                    detail=detail,
+                    created_at=time.time(),
+                )
+            )
+            await s.commit()
+
+    async def list_audit(self, project_id: str | None = None, limit: int = 100) -> list[AuditLog]:
+        stmt = select(AuditLogRow)
+        if project_id is not None:
+            stmt = stmt.where(AuditLogRow.project_id == project_id)
+        stmt = stmt.order_by(AuditLogRow.created_at.desc()).limit(limit)
+        async with self._sf() as s:
+            return [AuditLog(**r.model_dump()) for r in (await s.exec(stmt)).all()]

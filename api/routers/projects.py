@@ -64,6 +64,7 @@ async def create_project(
     await store.save_member(
         ProjectMember(project_id=pid, user_id=principal.user_id, role=ROLE_ADMIN)
     )
+    await store.append_audit(principal.user_id, "project.create", project_id=pid, target=body.name)
     return {"id": pid, "name": body.name, "description": body.description}
 
 
@@ -89,6 +90,56 @@ async def get_project(
     return p.model_dump()
 
 
+class ProjectUpdate(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    max_concurrency: int | None = None  # 项目级并发 run 配额(0=不限)
+
+
+@router.put("/projects/{project_id}")
+async def update_project(
+    project_id: str,
+    body: ProjectUpdate,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    p = await store.get_project(project_id)
+    if p is None:
+        raise HTTPException(404, "项目不存在")
+    data = p.model_dump()
+    for k in ("name", "description", "max_concurrency"):
+        v = getattr(body, k)
+        if v is not None:
+            data[k] = v
+    await store.save_project(Project(**data))
+    return {"ok": True}
+
+
+@router.get("/projects/{project_id}/runs")
+async def list_project_runs(
+    project_id: str,
+    version_id: str = "",
+    _role: str = Depends(require_member),
+    store=Depends(get_store),
+):
+    """版本维度报告:按项目(可选版本)列执行 run + 通过/失败汇总。"""
+    runs = await store.list_runs(project_id, version_id or None)
+    total = len(runs)
+    passed = sum(r["passed_cases"] for r in runs)
+    failed = sum(r["failed_cases"] for r in runs)
+    return {"runs": runs, "summary": {"run_count": total, "passed": passed, "failed": failed}}
+
+
+@router.get("/projects/{project_id}/audit")
+async def list_audit(
+    project_id: str,
+    limit: int = 100,
+    _role: str = Depends(require_member),
+    store=Depends(get_store),
+):
+    return [a.model_dump() for a in await store.list_audit(project_id, limit=limit)]
+
+
 # ── 成员管理(项目管理员)──────────────────────────────────────
 
 
@@ -108,7 +159,7 @@ async def list_members(
 async def add_member(
     project_id: str,
     body: MemberIn,
-    _: Principal = Depends(require_project_admin),
+    principal: Principal = Depends(require_project_admin),
     store=Depends(get_store),
 ):
     if body.role not in (ROLE_ADMIN, ROLE_TESTER):
@@ -119,6 +170,13 @@ async def add_member(
         await store.save_user(User(id=body.user_id, display_name=body.user_id))
     await store.save_member(
         ProjectMember(project_id=project_id, user_id=body.user_id, role=body.role)
+    )
+    await store.append_audit(
+        principal.user_id,
+        "member.add",
+        project_id=project_id,
+        target=body.user_id,
+        detail=body.role,
     )
     return {"ok": True, "user_id": body.user_id, "role": body.role}
 
@@ -224,9 +282,12 @@ async def get_llm_config(
 async def put_llm_config(
     project_id: str,
     body: LLMConfigIn,
-    _: Principal = Depends(require_project_admin),
+    principal: Principal = Depends(require_project_admin),
     store=Depends(get_store),
 ):
+    await store.append_audit(
+        principal.user_id, "llm_config.update", project_id=project_id, detail=body.model
+    )
     # api_key 留空或仍是掩码 → 保留已存 key(避免前端不重输就被清空)
     api_key = body.api_key
     if not api_key or _is_mask(api_key):

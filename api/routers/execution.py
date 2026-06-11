@@ -93,7 +93,10 @@ async def trigger_run(
         await repo.update_run(active_run["id"], status="failed", finished_at=time.time())
 
     run_id = uuid.uuid4().hex[:12]
-    await repo.create_run(run_id, suite_id, len(cases))
+    await repo.create_run(run_id, suite_id, len(cases), suite.project_id, suite.version_id)
+    await store.append_audit(
+        "system", "run.trigger", project_id=suite.project_id, target=suite_id, detail=run_id
+    )
 
     # 双进程模式(RUN_MODE=queue):API 只入队,独立 worker(scripts/worker.py)领取执行。
     # SSE 实时进度由 T-P09(LISTEN/NOTIFY)接;此模式下 /stream 暂无 live 数据,前端轮询结果。

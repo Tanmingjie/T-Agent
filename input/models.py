@@ -236,8 +236,23 @@ class Project(BaseModel):
     name: str
     description: str = ""
     owner: str | None = None  # 创建人(user id),自动成为项目管理员
+    max_concurrency: int = 0  # 项目级并发 run 配额(0=不限,平台化 M2);worker 领取处生效
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
+
+
+class AuditLog(BaseModel):
+    """审计日志(平台化 M2):谁、对哪个项目、做了什么。配置变更/执行触发/审批等关键动作。"""
+
+    id: str
+    actor: str  # user id
+    action: (
+        str  # 如 project.create / member.add / llm_config.update / run.trigger / permission.resolve
+    )
+    project_id: str = ""
+    target: str = ""  # 受影响对象标识(suite_id / member user / 工具名…)
+    detail: str = ""
+    created_at: float = Field(default_factory=time.time)
 
 
 class Version(BaseModel):
