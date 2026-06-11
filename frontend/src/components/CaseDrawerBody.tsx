@@ -45,6 +45,8 @@ interface AssertionResult {
   actual?: string | null;
   reason?: string | null;
   ai_judged?: boolean; // 由 llm_judge 兜底判定(低置信)→ 与结构化绿区分,使 false green 可见
+  healed?: boolean; // 经自愈重定位后才通过 → 与结构化绿区分(自愈绿)
+  heal_note?: string | null; // 自愈摘要(重定位到哪个 target / 策略)
 }
 
 interface StepDetail {
@@ -938,6 +940,18 @@ export default function CaseDrawerBody({
                                   title="由 LLM 兜底判定,低置信,建议人工复核"
                                 >
                                   AI判定·低置信
+                                </span>
+                              )}
+                              {a.healed && (
+                                <span
+                                  className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200 align-middle"
+                                  title={
+                                    a.heal_note
+                                      ? `经自愈重定位后通过:${a.heal_note}`
+                                      : "经自愈重定位后通过(原定位失效)"
+                                  }
+                                >
+                                  已自愈
                                 </span>
                               )}
                               {a.status === "fail" &&
