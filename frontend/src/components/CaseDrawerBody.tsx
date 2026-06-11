@@ -15,7 +15,6 @@ import {
   Clock,
   Wrench,
   ImageOff,
-  ListChecks,
   FileText,
   Copy,
   Check,
@@ -366,6 +365,7 @@ function InfoView({
       ) : (
         <ListBlock title="预置条件" items={caseInfo.preconditions} />
       )}
+      <ListBlock title="测试步骤" items={caseInfo.steps} />
       <ListBlock title="预期结果" items={caseInfo.expected} />
 
       <section className="border-t border-gray-200 pt-5">
@@ -481,7 +481,14 @@ function TimelineView({
   code: string | null;
 }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [promptOpen, setPromptOpen] = useState<Set<number>>(new Set());
   const [showCode, setShowCode] = useState(false);
+  const togglePrompt = (no: number) =>
+    setPromptOpen((p) => {
+      const n = new Set(p);
+      n.has(no) ? n.delete(no) : n.add(no);
+      return n;
+    });
   const bottomRef = useRef<HTMLDivElement | null>(null);
   const runningNo = steps.find((s) => s.state === "running")?.no ?? null;
   const phase = liveState?.phases?.[liveState.phases.length - 1]?.phase;
@@ -585,6 +592,33 @@ function TimelineView({
                     {s.hasShot && (
                       <div className="max-w-sm">
                         <Shot src={shotUrl(s.no)} alt={s.label} />
+                      </div>
+                    )}
+                    {s.prompt && (
+                      <div>
+                        <div className="flex items-center gap-3">
+                          <button
+                            onClick={() => togglePrompt(s.no)}
+                            className="text-[11px] font-medium text-brand-700 hover:text-brand-800"
+                          >
+                            {promptOpen.has(s.no) ? "收起 prompt" : "查看 prompt"}
+                          </button>
+                          {promptOpen.has(s.no) && (
+                            <button
+                              onClick={() =>
+                                navigator.clipboard?.writeText(s.prompt ?? "")
+                              }
+                              className="text-[11px] text-gray-400 hover:text-gray-600"
+                            >
+                              复制
+                            </button>
+                          )}
+                        </div>
+                        {promptOpen.has(s.no) && (
+                          <pre className="mt-1 text-[11px] bg-surface-900 text-gray-100 border border-gray-800 rounded-md p-3 whitespace-pre-wrap max-h-80 overflow-auto leading-relaxed">
+                            {s.prompt}
+                          </pre>
+                        )}
                       </div>
                     )}
                   </div>
@@ -738,10 +772,7 @@ function BlinkCursor() {
   );
 }
 
-type Selection =
-  | { kind: "info" }
-  | { kind: "result" }
-  | { kind: "step"; no: number };
+type Selection = { kind: "info" } | { kind: "result" };
 
 interface DisplayStep {
   no: number; // 用于截图 URL (history 用 step_no);live/spec 用序号
@@ -776,14 +807,6 @@ export default function CaseDrawerBody({
   const [code, setCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState<Selection>({ kind: "info" });
-  const [showPrompt, setShowPrompt] = useState(false);
-  // 执行中自动跟随当前步骤(逐步展开);用户手动点任意条目即停止跟随,自由回看
-  const [followLive, setFollowLive] = useState(true);
-  const pickSel = useCallback((s: Selection) => {
-    setFollowLive(false);
-    setSel(s);
-    setShowPrompt(false);
-  }, []);
 
   const isRunning = status === "running" || status === "healing";
   // 进行中的结果请求:重新加载时先 abort 上一次,避免 /result+/code 在 HTTP/1.1
@@ -894,28 +917,9 @@ export default function CaseDrawerBody({
     // → 思考流逐 token 推进时不重算步骤列表,消除流式期间点击切换的卡顿。
   }, [result, liveState?.steps, caseInfo.steps]);
 
-  // 执行中自动跟随最新步骤(只在有新步骤落定时触发——deps 取稳定的 steps 引用,
-  // 思考流逐 token 推进不会重触发);用户手动点过(followLive=false)则不跟随。
-  useEffect(() => {
-    if (!isRunning || !followLive) return;
-    const live = liveState?.steps;
-    if (live && live.length) {
-      const latest = Math.max(...live.map((s) => s.index));
-      setSel({ kind: "step", no: latest });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isRunning, followLive, liveState?.steps]);
-
-  // 新一轮执行开始 → 恢复自动跟随
-  useEffect(() => {
-    if (isRunning) setFollowLive(true);
-  }, [runId, caseInfo.id, isRunning]);
-
   const pill = STATUS_PILL[status] ?? STATUS_PILL.pending;
   const shotUrl = (no: number) =>
     `/api/screenshots/${runId}/${caseInfo.id}/step_${pad3(no)}.png`;
-  const selStep =
-    sel.kind === "step" ? steps.find((s) => s.no === sel.no) : undefined;
 
   return (
     <div className="flex flex-col h-full">
@@ -953,7 +957,7 @@ export default function CaseDrawerBody({
         <aside className="w-80 shrink-0 border-r border-gray-200 overflow-auto p-4 space-y-5">
           {/* 用例信息(预置/预期/TestSpec)→ 右栏宽栏展示 */}
           <button
-            onClick={() => pickSel({ kind: "info" })}
+            onClick={() => setSel({ kind: "info" })}
             className={`w-full text-left rounded-lg border p-3 transition-colors ${
               sel.kind === "info"
                 ? "border-brand-300 bg-brand-50/60"
@@ -974,7 +978,7 @@ export default function CaseDrawerBody({
           {/* Test result card(执行中显示转圈占位,参考 TestSprite) */}
           {(result || isRunning) && (
             <button
-              onClick={() => pickSel({ kind: "result" })}
+              onClick={() => setSel({ kind: "result" })}
               className={`w-full text-left rounded-lg border p-3 transition-colors ${
                 sel.kind === "result"
                   ? !result
@@ -1010,49 +1014,6 @@ export default function CaseDrawerBody({
             </button>
           )}
 
-          {/* Steps */}
-          <section>
-            <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2 flex items-center gap-1.5">
-              <ListChecks size={13} /> 步骤
-            </h4>
-            <div className="space-y-1.5">
-              {steps.map((s) => {
-                const active = sel.kind === "step" && sel.no === s.no;
-                return (
-                  <button
-                    key={`${s.no}-${s.label}`}
-                    onClick={() => pickSel({ kind: "step", no: s.no })}
-                    className={`w-full text-left rounded-lg border p-2.5 flex items-start gap-2 cursor-pointer transition-colors ${
-                      active
-                        ? "border-brand-300 bg-brand-50/60"
-                        : "border-gray-200 hover:bg-gray-50"
-                    }`}
-                  >
-                    <span className="mt-0.5 shrink-0">
-                      {s.state === "running" ? (
-                        <Loader2
-                          size={14}
-                          className="text-blue-600 animate-spin"
-                        />
-                      ) : s.state === "done" ? (
-                        <CheckCircle size={14} className="text-brand-600" />
-                      ) : (
-                        <span className="w-4 h-4 rounded bg-gray-100 text-gray-500 text-[10px] flex items-center justify-center">
-                          {s.no}
-                        </span>
-                      )}
-                    </span>
-                    <span className="text-sm text-gray-700 leading-snug">
-                      {s.label}
-                    </span>
-                  </button>
-                );
-              })}
-              {steps.length === 0 && (
-                <p className="text-sm text-gray-400">暂无步骤</p>
-              )}
-            </div>
-          </section>
         </aside>
 
         {/* ── Right pane ── */}
@@ -1066,79 +1027,6 @@ export default function CaseDrawerBody({
               caseInfo={caseInfo}
               spec={result?.spec ?? (liveState?.spec as TestSpec | undefined)}
             />
-          ) : sel.kind === "step" && selStep ? (
-            /* Step view: screenshot + detail(显式选中步骤优先于运行态占位) */
-            <div className="p-6 space-y-4">
-              <h3 className="text-sm font-medium text-surface-900">
-                {selStep.label}
-              </h3>
-              {/* 思考过程:运行中的步骤显示实时流(带光标),已落定步骤显示定格文本(可回溯) */}
-              {(() => {
-                const liveThinking =
-                  selStep.state === "running" ? liveState?.thinkStream : undefined;
-                const thinking = liveThinking ?? selStep.reasoning;
-                if (!thinking) return null;
-                return (
-                  <div>
-                    <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
-                      思考过程
-                    </h4>
-                    <pre className="text-xs bg-gray-50 border border-gray-200 rounded-md p-3 whitespace-pre-wrap break-words max-h-72 overflow-auto leading-relaxed text-gray-700">
-                      {thinking}
-                      {selStep.state === "running" && (
-                        <span className="inline-block w-1.5 h-3.5 bg-blue-500 animate-pulse align-middle ml-0.5" />
-                      )}
-                    </pre>
-                  </div>
-                );
-              })()}
-              {runId && selStep.hasShot ? (
-                <div className="max-w-xl">
-                  <Shot src={shotUrl(selStep.no)} alt={selStep.label} />
-                </div>
-              ) : (
-                <p className="text-sm text-gray-400">
-                  {runId ? "该步骤无截图（快照/失败步不落图）" : "该步骤无截图（执行后生成）"}
-                </p>
-              )}
-              {selStep.url && (
-                <p className="text-xs text-gray-400 break-all">
-                  URL: {selStep.url}
-                </p>
-              )}
-              {selStep.prompt && (
-                <div>
-                  <div className="flex items-center justify-between mb-1">
-                    <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
-                      请求 Prompt
-                    </h4>
-                    <div className="flex items-center gap-3">
-                      {showPrompt && (
-                        <button
-                          onClick={() =>
-                            navigator.clipboard?.writeText(selStep.prompt ?? "")
-                          }
-                          className="text-[11px] text-gray-400 hover:text-gray-600"
-                        >
-                          复制
-                        </button>
-                      )}
-                      <button
-                        onClick={() => setShowPrompt((v) => !v)}
-                        className="text-xs font-medium text-brand-700 hover:text-brand-800"
-                      >
-                        {showPrompt ? "收起" : "查看 prompt"}
-                      </button>
-                    </div>
-                  </div>
-                  {showPrompt && (
-                    <pre className="text-xs bg-surface-900 text-gray-100 border border-gray-800 rounded-md p-3 whitespace-pre-wrap max-h-96 overflow-auto leading-relaxed">
-                      {selStep.prompt}
-                    </pre>
-                  )}
-                </div>
-              )}
-            </div>
           ) : (
             /* 过程时间线:执行中流式、执行后回溯,全过程一处可见 */
             <TimelineView
