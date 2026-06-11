@@ -9,20 +9,25 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import FileResponse, StreamingResponse
 
+from api.auth import require_suite_access
 from api.server import get_repo
 
 router = APIRouter(tags=["results"])
+
+# suite 维度鉴权:所有 /suites/{suite_id}/... 的 JSON 结果路由都要求该套件项目的成员资格
+# (单机/无 project_id 放行)。截图端点(get_screenshot)无 suite_id 且服务于 <img>,不在此列。
+_suite_guard = [Depends(require_suite_access)]
 
 SCREENSHOT_ROOT = Path("storage/screenshots")
 GENERATED_ROOT = Path("storage/generated")
 
 
-@router.get("/suites/{suite_id}/runs")
+@router.get("/suites/{suite_id}/runs", dependencies=_suite_guard)
 async def list_runs(suite_id: str, repo=Depends(get_repo)):
     return await repo.list_runs_by_suite(suite_id)
 
 
-@router.get("/suites/{suite_id}/runs/{run_id}")
+@router.get("/suites/{suite_id}/runs/{run_id}", dependencies=_suite_guard)
 async def get_run_overview(suite_id: str, run_id: str, repo=Depends(get_repo)):
     run = await repo.get_run(run_id)
     if run is None:
@@ -43,7 +48,7 @@ async def get_run_overview(suite_id: str, run_id: str, repo=Depends(get_repo)):
     }
 
 
-@router.get("/suites/{suite_id}/runs/{run_id}/cases/{case_id}/result")
+@router.get("/suites/{suite_id}/runs/{run_id}/cases/{case_id}/result", dependencies=_suite_guard)
 async def get_case_result(suite_id: str, run_id: str, case_id: str, repo=Depends(get_repo)):
     records = await repo.list_records_by_run(run_id)
     record = next((r for r in records if r.case_id == case_id), None)
@@ -82,7 +87,7 @@ def _build_history(record):
     return history
 
 
-@router.get("/suites/{suite_id}/runs/{run_id}/cases/{case_id}/code")
+@router.get("/suites/{suite_id}/runs/{run_id}/cases/{case_id}/code", dependencies=_suite_guard)
 async def get_case_code(suite_id: str, run_id: str, case_id: str, repo=Depends(get_repo)):
     records = await repo.list_records_by_run(run_id)
     record = next((r for r in records if r.case_id == case_id), None)
@@ -105,7 +110,9 @@ async def get_case_code(suite_id: str, run_id: str, case_id: str, repo=Depends(g
     return {"files": files, "case_id": case_id}
 
 
-@router.get("/suites/{suite_id}/runs/{run_id}/cases/{case_id}/code/download")
+@router.get(
+    "/suites/{suite_id}/runs/{run_id}/cases/{case_id}/code/download", dependencies=_suite_guard
+)
 async def download_code(suite_id: str, run_id: str, case_id: str, repo=Depends(get_repo)):
     records = await repo.list_records_by_run(run_id)
     record = next((r for r in records if r.case_id == case_id), None)

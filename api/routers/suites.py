@@ -9,7 +9,8 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile
 from pydantic import BaseModel
 
-from api.server import get_repo
+from api.auth import Principal, get_principal, require_member, require_suite_access, role_in_project
+from api.server import get_repo, get_store
 from harness.precondition import USER_SETTABLE_TYPES
 from input.excel_parser import parse_excel
 from input.models import Suite, TestCase
@@ -32,6 +33,8 @@ class SuiteCreateRequest(BaseModel):
     name: str
     base_url: str
     session_profile: str | None = None
+    project_id: str = ""  # 多租户(T-P07);单机留空
+    version_id: str = ""
 
 
 class UploadResult(BaseModel):
@@ -41,28 +44,51 @@ class UploadResult(BaseModel):
 
 
 @router.get("/suites")
-async def list_suites(repo=Depends(get_repo)):
-    suites = await repo.list_all()
+async def list_suites(
+    project_id: str = "",
+    version_id: str = "",
+    principal: Principal = Depends(get_principal),
+    store=Depends(get_store),
+    repo=Depends(get_repo),
+):
+    # 指定项目 → 要求成员 + 作用域过滤;未指定 → 仅平台管理员(含单机隐式 admin)可看全部。
+    if project_id:
+        if await role_in_project(store, principal.user_id, project_id) is None:
+            raise HTTPException(403, "无权访问该项目")
+        suites = await store.list_suites(project_id=project_id, version_id=version_id or None)
+    else:
+        if not principal.is_platform_admin:
+            raise HTTPException(400, "请指定 project_id")
+        suites = await repo.list_all()
     return [s.model_dump() for s in suites]
 
 
 @router.post("/suites")
-async def create_suite(body: SuiteCreateRequest, repo=Depends(get_repo)):
+async def create_suite(
+    body: SuiteCreateRequest,
+    principal: Principal = Depends(get_principal),
+    store=Depends(get_store),
+    repo=Depends(get_repo),
+):
+    # 项目内全开放:测试人员也能建 Suite(任一成员角色即可);指定项目时校验成员资格。
+    if body.project_id:
+        if await role_in_project(store, principal.user_id, body.project_id) is None:
+            raise HTTPException(403, "无权在该项目创建套件")
     suite = Suite(
         id=uuid.uuid4().hex[:12],
         name=body.name,
         base_url=body.base_url,
         session_profile=body.session_profile,
+        project_id=body.project_id,
+        version_id=body.version_id,
+        owner=principal.user_id,
     )
     await repo.create(suite)
     return suite.model_dump()
 
 
 @router.get("/suites/{suite_id}")
-async def get_suite(suite_id: str, repo=Depends(get_repo)):
-    suite = await repo.get_suite(suite_id)
-    if suite is None:
-        raise HTTPException(404, "Suite not found")
+async def get_suite(suite_id: str, suite=Depends(require_suite_access), repo=Depends(get_repo)):
     cases = await repo.list_by_suite(suite_id)
     runs = await repo.list_runs_by_suite(suite_id)
     return {
@@ -73,7 +99,7 @@ async def get_suite(suite_id: str, repo=Depends(get_repo)):
 
 
 @router.delete("/suites/{suite_id}")
-async def delete_suite(suite_id: str, repo=Depends(get_repo)):
+async def delete_suite(suite_id: str, _suite=Depends(require_suite_access), repo=Depends(get_repo)):
     if not await repo.delete(suite_id):
         raise HTTPException(404, "Suite not found")
 
@@ -82,11 +108,9 @@ async def delete_suite(suite_id: str, repo=Depends(get_repo)):
 async def upload_excel(
     suite_id: str,
     file: UploadFile = File(...),
+    suite=Depends(require_suite_access),
     repo=Depends(get_repo),
 ) -> UploadResult:
-    suite = await repo.get_suite(suite_id)
-    if suite is None:
-        raise HTTPException(404, "Suite not found")
     if not file.filename or not file.filename.endswith((".xlsx", ".xls")):
         raise HTTPException(400, "只支持 .xlsx 文件")
 
@@ -113,7 +137,9 @@ async def upload_excel(
 
 
 @router.get("/suites/{suite_id}/cases/{case_id}")
-async def get_case(suite_id: str, case_id: str, repo=Depends(get_repo)):
+async def get_case(
+    suite_id: str, case_id: str, _suite=Depends(require_suite_access), repo=Depends(get_repo)
+):
     tc = await repo.get_case(case_id)
     if tc is None:
         raise HTTPException(404, "Case not found")
@@ -130,6 +156,7 @@ async def update_precondition(
     suite_id: str,
     case_id: str,
     body: PreconditionUpdate,
+    _suite=Depends(require_suite_access),
     repo=Depends(get_repo),
 ):
     ok = await repo.update_precondition(case_id, body.index, body.confirmed)
@@ -149,6 +176,7 @@ async def update_precondition_item(
     suite_id: str,
     case_id: str,
     body: PreconditionItemUpdate,
+    _suite=Depends(require_suite_access),
     repo=Depends(get_repo),
 ):
     """标黄确认:把某条预置条件分类改为用户选择(Hook/Given/忽略),落库并标记已确认。"""

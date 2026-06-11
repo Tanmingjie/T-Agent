@@ -19,11 +19,16 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from api.auth import require_suite_access
 from api.execution_worker import make_sse_bridge, schedule_queue_cleanup, spawn_run
 from api.repository import get_suite_settings, set_suite_settings
 from api.server import get_repo, get_store
 
 router = APIRouter(tags=["execution"])
+
+# suite 维度鉴权(单机/无 project_id 放行)。SSE /stream 因 EventSource 无法带 header,
+# 单机隐式 admin 放行;平台 SSE 鉴权随 T-P09 双进程改造引入 token。
+_suite_guard = [Depends(require_suite_access)]
 
 # In-memory registry of active SSE queues + permission events。
 # 权限事件用 threading.Event(执行在 worker 线程/loop,审批在 API loop,跨线程 set)。
@@ -44,7 +49,7 @@ def _mcp_args() -> list[str]:
     return args
 
 
-@router.post("/suites/{suite_id}/run")
+@router.post("/suites/{suite_id}/run", dependencies=_suite_guard)
 async def trigger_run(
     suite_id: str,
     case_id: str | None = None,
@@ -258,7 +263,7 @@ async def stream_events(suite_id: str, run_id: str):
     )
 
 
-@router.get("/suites/{suite_id}/settings")
+@router.get("/suites/{suite_id}/settings", dependencies=_suite_guard)
 async def get_settings(suite_id: str, store=Depends(get_store)):
     return await get_suite_settings(store, suite_id)
 
@@ -268,7 +273,7 @@ class SettingsUpdate(BaseModel):
     parallelism: int = 1  # 并发执行用例数(1=串行)
 
 
-@router.put("/suites/{suite_id}/settings")
+@router.put("/suites/{suite_id}/settings", dependencies=_suite_guard)
 async def update_settings(suite_id: str, body: SettingsUpdate, store=Depends(get_store)):
     await set_suite_settings(store, suite_id, body.permission_mode, body.parallelism)
     return {"ok": True}

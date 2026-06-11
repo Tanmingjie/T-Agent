@@ -14,9 +14,19 @@ import uuid
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
+from api.auth import Principal, get_principal, role_in_project
 from api.execution_worker import spawn_run
-from api.server import get_repo
+from api.server import get_repo, get_store
 from input.models import PageVocabulary
+
+
+async def _ensure_project_access(store, principal: Principal, project_id: str) -> None:
+    """词汇表按项目作用域:指定 project_id 时要求成员资格(单机/空 project 放行)。"""
+    if project_id and await role_in_project(store, principal.user_id, project_id) is None:
+        from fastapi import HTTPException
+
+        raise HTTPException(403, "无权访问该项目词汇表")
+
 
 router = APIRouter(tags=["vocabulary"])
 logger = logging.getLogger(__name__)
@@ -39,9 +49,19 @@ class VocabularyEntry(BaseModel):
 async def list_vocabulary(
     page: int = Query(1, ge=1),
     q: str = Query("", alias="query"),
+    project_id: str = Query(""),
+    principal: Principal = Depends(get_principal),
+    store=Depends(get_store),
     repo=Depends(get_repo),
 ):
-    all_items = await repo.list_vocabularies()
+    # 指定项目 → 成员可见、作用域过滤;未指定 → 仅平台管理员(含单机隐式 admin)看全部。
+    if project_id:
+        await _ensure_project_access(store, principal, project_id)
+        all_items = await repo.list_vocabularies(project_id=project_id)
+    else:
+        if not principal.is_platform_admin:
+            raise HTTPException(400, "请指定 project_id")
+        all_items = await repo.list_vocabularies()
     if q:
         all_items = [
             v
@@ -55,14 +75,27 @@ async def list_vocabulary(
 
 
 @router.post("/vocabulary")
-async def create_vocabulary(entry: VocabularyEntry, repo=Depends(get_repo)):
+async def create_vocabulary(
+    entry: VocabularyEntry,
+    principal: Principal = Depends(get_principal),
+    store=Depends(get_store),
+    repo=Depends(get_repo),
+):
+    await _ensure_project_access(store, principal, entry.project_id)
     v = PageVocabulary(**entry.model_dump())
     await repo.save(v)
     return v.model_dump()
 
 
 @router.put("/vocabulary/{vocab_id}")
-async def update_vocabulary(vocab_id: int, entry: VocabularyEntry, repo=Depends(get_repo)):
+async def update_vocabulary(
+    vocab_id: int,
+    entry: VocabularyEntry,
+    principal: Principal = Depends(get_principal),
+    store=Depends(get_store),
+    repo=Depends(get_repo),
+):
+    await _ensure_project_access(store, principal, entry.project_id)
     v = PageVocabulary(**entry.model_dump())
     await repo.save(v)
     return v.model_dump()
@@ -76,8 +109,11 @@ async def delete_vocabulary(
     login_role: str = Query(""),
     base_url: str = Query(""),
     project_id: str = Query(""),
+    principal: Principal = Depends(get_principal),
+    store=Depends(get_store),
     repo=Depends(get_repo),
 ):
+    await _ensure_project_access(store, principal, project_id)
     if not await repo.delete_by_key(url_pattern, page_title, login_role, base_url, project_id):
         raise HTTPException(404, "Vocabulary entry not found")
     return {"ok": True}

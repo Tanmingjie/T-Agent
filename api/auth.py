@@ -82,9 +82,13 @@ def set_auth_provider(provider: AuthProvider | None) -> None:
 
 
 async def get_principal(x_user: str | None = Header(default=None)) -> Principal:
-    """认证依赖:解析 Principal,失败 401。"""
+    """认证依赖:解析 Principal,失败 401。
+
+    **单机模式**(未配置 AuthProvider,如 CLI/本地/现有非鉴权测试):返回隐式平台管理员
+    `system`,保留单机全开放 + 向后兼容。平台部署一旦 `set_auth_provider`,即走真实 RBAC。
+    """
     if _auth_provider is None:
-        raise HTTPException(500, "AuthProvider 未初始化")
+        return Principal(user_id="system", is_platform_admin=True)
     principal = await _auth_provider.authenticate(x_user)
     if principal is None:
         raise HTTPException(401, "未认证(缺少 X-User)")
@@ -126,3 +130,20 @@ async def require_platform_admin(principal: Principal = Depends(get_principal)) 
     if not principal.is_platform_admin:
         raise HTTPException(403, "需要平台管理员权限")
     return principal
+
+
+async def require_suite_access(suite_id: str, principal: Principal = Depends(get_principal)):
+    """suite 维度的鉴权:加载 suite → 按其所属项目查成员资格。返回 suite(供路由复用)。
+
+    无 project_id 的 suite(单机/历史)放行;有则要求成员。404 在此统一抛。
+    用于 suites/execution/results 等以 suite_id 为入口的路由。
+    """
+    store = _get_store_dep()
+    suite = await store.get_suite(suite_id)
+    if suite is None:
+        raise HTTPException(404, "Suite not found")
+    if suite.project_id:
+        role = await role_in_project(store, principal.user_id, suite.project_id)
+        if role is None:
+            raise HTTPException(403, "无权访问该套件所属项目")
+    return suite

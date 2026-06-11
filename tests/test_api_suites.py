@@ -61,6 +61,8 @@ async def test_update_precondition_item_endpoint(client):
     import api.server as srv
     from input.models import PreconditionItem
 
+    # suite 维度鉴权(T-P07)会校验 suite 存在 → 先建 suite
+    await srv._repo.create(Suite(id="s1", name="S", base_url="https://x"))
     tc = TestCase(
         id="tc1",
         name="Case",

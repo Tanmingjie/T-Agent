@@ -183,6 +183,38 @@ async def test_llm_config_masks_key_and_preserves(ctx):
 
 
 @pytest.mark.asyncio
+async def test_suite_tenant_isolation(ctx):
+    """带 project_id 的 suite:非成员 403,成员 200;list 按项目作用域。"""
+    client, _ = ctx
+    pid = (await client.post("/api/projects", json={"name": "A"}, headers=_h("alice"))).json()["id"]
+    # alice 在自己项目下建 suite
+    r = await client.post(
+        "/api/suites",
+        json={"name": "S", "base_url": "https://x", "project_id": pid},
+        headers=_h("alice"),
+    )
+    assert r.status_code == 200
+    sid = r.json()["id"]
+    # 非成员看不到 / 进不去
+    assert (await client.get(f"/api/suites/{sid}", headers=_h("stranger"))).status_code == 403
+    assert (await client.get(f"/api/suites/{sid}", headers=_h("alice"))).status_code == 200
+    # 非成员不能在该项目建 suite
+    r = await client.post(
+        "/api/suites",
+        json={"name": "X", "base_url": "https://x", "project_id": pid},
+        headers=_h("stranger"),
+    )
+    assert r.status_code == 403
+    # 按项目 list:alice 成员可列,stranger 403
+    assert (
+        await client.get(f"/api/suites?project_id={pid}", headers=_h("alice"))
+    ).status_code == 200
+    assert (
+        await client.get(f"/api/suites?project_id={pid}", headers=_h("stranger"))
+    ).status_code == 403
+
+
+@pytest.mark.asyncio
 async def test_llm_check_mocked(ctx, monkeypatch):
     client, _ = ctx
     pid = (await client.post("/api/projects", json={"name": "A"}, headers=_h("alice"))).json()["id"]
