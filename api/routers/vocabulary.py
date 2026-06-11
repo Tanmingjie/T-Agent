@@ -26,6 +26,7 @@ _scan_status: dict[str, dict] = {}
 
 
 class VocabularyEntry(BaseModel):
+    project_id: str = ""  # 多租户作用域(T-P04b);项目上下文路由化留 T-P07,此处先留字段不丢
     base_url: str = ""  # 被测系统根地址(作用域键),跨系统隔离
     url_pattern: str
     page_title: str
@@ -74,9 +75,10 @@ async def delete_vocabulary(
     page_title: str = Query(""),
     login_role: str = Query(""),
     base_url: str = Query(""),
+    project_id: str = Query(""),
     repo=Depends(get_repo),
 ):
-    if not await repo.delete_by_key(url_pattern, page_title, login_role, base_url):
+    if not await repo.delete_by_key(url_pattern, page_title, login_role, base_url, project_id):
         raise HTTPException(404, "Vocabulary entry not found")
     return {"ok": True}
 

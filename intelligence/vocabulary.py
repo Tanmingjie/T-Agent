@@ -46,8 +46,10 @@ def _term_lookup(vocab: dict, term: str) -> dict | None:
 
 
 class VocabularyManager:
-    def __init__(self, store) -> None:
+    def __init__(self, store, *, project_id: str = "") -> None:
         self.store = store
+        # 租户作用域(T-P04b):单机/CLI 留空=默认租户;平台路径按 suite 的项目注入。
+        self.project_id = project_id
 
     async def find_page(self, url: str, page_title: str, login_role: str) -> PageVocabulary | None:
         """按 路由匹配 + 标题 + 角色 找页面词汇表(非 stale 优先)。
@@ -57,7 +59,7 @@ class VocabularyManager:
         """
         candidates = [
             v
-            for v in await self.store.list_vocabularies()
+            for v in await self.store.list_vocabularies(project_id=self.project_id)
             if route_match(v.url_pattern, url)
             and _loose_eq(v.page_title, page_title)
             and _loose_eq(v.login_role, login_role)
@@ -81,8 +83,14 @@ class VocabularyManager:
 
     async def merge_scanned(self, scanned: PageVocabulary) -> PageVocabulary:
         """把 AI 扫描结果并入既有词汇表;手动条目不被覆盖。"""
+        # 保证扫描结果落进本 manager 的租户作用域(scanner 可能未感知 project)。
+        scanned.project_id = self.project_id
         existing = await self.store.get_vocabulary(
-            scanned.url_pattern, scanned.page_title, scanned.login_role, scanned.base_url
+            scanned.url_pattern,
+            scanned.page_title,
+            scanned.login_role,
+            scanned.base_url,
+            self.project_id,
         )
         if existing is None:
             await self.store.save_vocabulary(scanned)
@@ -102,7 +110,9 @@ class VocabularyManager:
         self, url_pattern: str, page_title: str, login_role: str, base_url: str = ""
     ) -> bool:
         """标记某页词汇表过期(自愈失败 / 手动)。命中返回 True。"""
-        v = await self.store.get_vocabulary(url_pattern, page_title, login_role, base_url)
+        v = await self.store.get_vocabulary(
+            url_pattern, page_title, login_role, base_url, self.project_id
+        )
         if v is None:
             return False
         v.stale = True

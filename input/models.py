@@ -186,6 +186,7 @@ class Suite(BaseModel):
 class PageVocabulary(BaseModel):
     """页面词汇表:业务词 → UI 元素映射(规格 §5.5)。"""
 
+    project_id: str = ""  # 多租户作用域(T-P04b):词汇表项目级,跨版本共享;空=默认租户(单机/CLI)
     base_url: str = ""  # 被测系统根地址(作用域键):resolve 时只匹配 base_url 为当前 url 前缀者,
     #                     跨系统不再撞键(系统甲/乙的 /login 互不污染);同 base_url 多 suite 共享
     url_pattern: str  # /order/{id}

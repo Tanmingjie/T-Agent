@@ -110,6 +110,7 @@ class ExecutionRecordRow(SQLModel, table=True):
 class PageVocabularyRow(SQLModel, table=True):
     __tablename__ = "page_vocabulary"
     id: int | None = Field(default=None, primary_key=True)
+    project_id: str = Field(default="", index=True)  # 多租户作用域(T-P04b),见 PageVocabulary
     base_url: str = Field(default="", index=True)  # 作用域键(跨系统隔离),见 PageVocabulary
     url_pattern: str = Field(default="", index=True)
     page_title: str = ""
@@ -236,9 +237,13 @@ class Store:
     def _migrate_add_missing_columns(sync_conn) -> None:  # noqa: ANN001
         insp = inspect(sync_conn)
         existing_tables = set(insp.get_table_names())
+        # 表名 → SQLModel 类,用于查字段的「模型默认值」(SQLModel 列默认 nullable=True,
+        # 无法靠 col.nullable 区分 ``str=""``(应回填空串)与 ``str|None=None``(应留 NULL))。
+        name_to_cls = {m.local_table.name: m.class_ for m in SQLModel._sa_registry.mappers}
         for table in SQLModel.metadata.sorted_tables:
             if table.name not in existing_tables:
                 continue
+            cls = name_to_cls.get(table.name)
             have = {c["name"] for c in insp.get_columns(table.name)}
             for col in table.columns:
                 if col.name in have:
@@ -256,6 +261,20 @@ class Store:
                             f'WHERE "{col.name}" IS NULL'
                         )
                     )
+                else:
+                    # 非可选字符串列(如 project_id/version_id,模型 ``str = ""``)旧行 NULL 会让
+                    # 领域模型(期望 str)校验失败 → 按模型默认值回填。可选列(``str|None=None``)
+                    # 默认 None,跳过,保持 NULL 语义正确。
+                    field = cls.model_fields.get(col.name) if cls else None
+                    default = getattr(field, "default", None)
+                    if isinstance(default, str):
+                        sync_conn.execute(
+                            text(
+                                f'UPDATE "{table.name}" SET "{col.name}" = :d '
+                                f'WHERE "{col.name}" IS NULL'
+                            ),
+                            {"d": default},
+                        )
                 logger.info("DB 迁移:%s 补列 %s %s", table.name, col.name, coltype)
 
     async def close(self) -> None:
@@ -350,6 +369,7 @@ class Store:
         data["updated_at"] = time.time()
         async with self._sf() as s:
             stmt = select(PageVocabularyRow).where(
+                PageVocabularyRow.project_id == v.project_id,
                 PageVocabularyRow.base_url == v.base_url,
                 PageVocabularyRow.url_pattern == v.url_pattern,
                 PageVocabularyRow.page_title == v.page_title,
@@ -365,10 +385,16 @@ class Store:
             await s.commit()
 
     async def get_vocabulary(
-        self, url_pattern: str, page_title: str, login_role: str, base_url: str = ""
+        self,
+        url_pattern: str,
+        page_title: str,
+        login_role: str,
+        base_url: str = "",
+        project_id: str = "",
     ) -> PageVocabulary | None:
         async with self._sf() as s:
             stmt = select(PageVocabularyRow).where(
+                PageVocabularyRow.project_id == project_id,
                 PageVocabularyRow.base_url == base_url,
                 PageVocabularyRow.url_pattern == url_pattern,
                 PageVocabularyRow.page_title == page_title,
@@ -381,9 +407,13 @@ class Store:
             data.pop("id", None)  # 领域模型无 id 字段
             return PageVocabulary(**data)
 
-    async def list_vocabularies(self) -> list[PageVocabulary]:
+    async def list_vocabularies(self, project_id: str | None = None) -> list[PageVocabulary]:
+        # 租户过滤:None=不过滤(向后兼容,单机/CLI);传值则按项目隔离。
+        stmt = select(PageVocabularyRow)
+        if project_id is not None:
+            stmt = stmt.where(PageVocabularyRow.project_id == project_id)
         async with self._sf() as s:
-            rows = (await s.exec(select(PageVocabularyRow))).all()
+            rows = (await s.exec(stmt)).all()
             out = []
             for r in rows:
                 data = r.model_dump()

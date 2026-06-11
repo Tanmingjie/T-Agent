@@ -94,12 +94,17 @@ class ExecutionRepository(ABC):
 class VocabularyRepository(ABC):
     @abstractmethod
     async def list_vocabularies(
-        self, page: int = 1, query: str | None = None
+        self, page: int = 1, query: str | None = None, project_id: str | None = None
     ) -> list[PageVocabulary]: ...
 
     @abstractmethod
     async def get_vocabulary(
-        self, url_pattern: str, page_title: str, login_role: str, base_url: str = ""
+        self,
+        url_pattern: str,
+        page_title: str,
+        login_role: str,
+        base_url: str = "",
+        project_id: str = "",
     ) -> PageVocabulary | None: ...
 
     @abstractmethod
@@ -110,7 +115,12 @@ class VocabularyRepository(ABC):
 
     @abstractmethod
     async def delete_by_key(
-        self, url_pattern: str, page_title: str, login_role: str, base_url: str = ""
+        self,
+        url_pattern: str,
+        page_title: str,
+        login_role: str,
+        base_url: str = "",
+        project_id: str = "",
     ) -> bool: ...
 
 
@@ -291,14 +301,21 @@ class SQLModelRepository(
     # ── Vocabulary ──
 
     async def list_vocabularies(
-        self, page: int = 1, query: str | None = None
+        self, page: int = 1, query: str | None = None, project_id: str | None = None
     ) -> list[PageVocabulary]:
-        return await self._store.list_vocabularies()
+        return await self._store.list_vocabularies(project_id=project_id)
 
     async def get_vocabulary(
-        self, url_pattern: str, page_title: str, login_role: str, base_url: str = ""
+        self,
+        url_pattern: str,
+        page_title: str,
+        login_role: str,
+        base_url: str = "",
+        project_id: str = "",
     ) -> PageVocabulary | None:
-        return await self._store.get_vocabulary(url_pattern, page_title, login_role, base_url)
+        return await self._store.get_vocabulary(
+            url_pattern, page_title, login_role, base_url, project_id
+        )
 
     async def save(self, vocab: PageVocabulary) -> None:
         await self._store.save_vocabulary(vocab)
@@ -309,12 +326,18 @@ class SQLModelRepository(
         return len(entries)
 
     async def delete_by_key(
-        self, url_pattern: str, page_title: str, login_role: str, base_url: str = ""
+        self,
+        url_pattern: str,
+        page_title: str,
+        login_role: str,
+        base_url: str = "",
+        project_id: str = "",
     ) -> bool:
         from storage.db import PageVocabularyRow
 
         async with self._store._sf() as s:
             stmt = sql_delete(PageVocabularyRow).where(
+                PageVocabularyRow.project_id == project_id,
                 PageVocabularyRow.base_url == base_url,
                 PageVocabularyRow.url_pattern == url_pattern,
                 PageVocabularyRow.page_title == page_title,

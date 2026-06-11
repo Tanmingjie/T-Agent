@@ -130,3 +130,43 @@ async def test_legacy_suite_defaults_empty_tenant(store):
     got = await store.get_suite("s1")
     assert got.project_id == ""
     assert got.version_id == ""
+
+
+# ── 轻量迁移:旧库缺新增字符串列时回填空串(防 NULL 读崩)──────
+
+
+async def test_migration_backfills_missing_str_column(tmp_path):
+    """模拟旧库:page_vocabulary 缺 project_id 列、有一条旧行(列值 NULL)。
+    init() 的轻量迁移应 ADD COLUMN + 回填 '' → 领域模型可正常读回(不抛 ValidationError)。
+    """
+    from sqlalchemy import text
+
+    url = f"sqlite+aiosqlite:///{tmp_path}/legacy.db"
+    # 1) 手工建一张缺 project_id 的旧表 + 插一条旧行
+    s0 = Store(url)
+    async with s0.engine.begin() as conn:
+        await conn.execute(
+            text(
+                "CREATE TABLE page_vocabulary ("
+                "id INTEGER PRIMARY KEY, base_url TEXT, url_pattern TEXT, "
+                "page_title TEXT, login_role TEXT, vocabulary TEXT, action_map TEXT, "
+                "stale INTEGER, scanned_at REAL, updated_at REAL)"
+            )
+        )
+        await conn.execute(
+            text(
+                "INSERT INTO page_vocabulary "
+                "(base_url, url_pattern, page_title, login_role, vocabulary, action_map, "
+                "stale, scanned_at, updated_at) VALUES "
+                "('https://x', '/p', 't', 'r', '{}', '[]', 0, 0.0, 0.0)"
+            )
+        )
+    await s0.close()
+
+    # 2) 正常 Store.init() 触发迁移:补 project_id 列并回填 ''
+    s = Store(url)
+    await s.init()
+    vocs = await s.list_vocabularies()  # 读回旧行 → 不应因 project_id=NULL 崩
+    assert len(vocs) == 1
+    assert vocs[0].project_id == ""  # 回填为默认空串
+    await s.close()
