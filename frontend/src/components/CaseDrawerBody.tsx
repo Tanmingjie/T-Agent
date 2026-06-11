@@ -1,4 +1,5 @@
 import {
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -461,6 +462,103 @@ function CodeBlock({ code }: { code: string }) {
   );
 }
 
+// 单个时间线步骤(React.memo:仅当自身 props 变化才重渲染——故思考流逐 token 推进时
+// 只有「当前运行步」(liveThinking 在变)重渲染,其余已落定步原地不动 → 消卡顿)。
+const TimelineStep = memo(function TimelineStep({
+  step,
+  open,
+  liveThinking,
+  promptShown,
+  onToggle,
+  onTogglePrompt,
+  shotUrl,
+}: {
+  step: DisplayStep;
+  open: boolean;
+  liveThinking?: string;
+  promptShown: boolean;
+  onToggle: (no: number) => void;
+  onTogglePrompt: (no: number) => void;
+  shotUrl: (no: number) => string;
+}) {
+  const running = step.state === "running";
+  const thinking = running ? liveThinking : step.reasoning;
+  return (
+    <li className="relative ml-5">
+      <span className="absolute -left-[1.42rem] top-1.5">
+        {running ? (
+          <Loader2 size={14} className="text-blue-600 animate-spin" />
+        ) : (
+          <CheckCircle size={14} className="text-brand-600" />
+        )}
+      </span>
+      <button
+        onClick={() => onToggle(step.no)}
+        className="w-full text-left flex items-center gap-2"
+      >
+        <span className="text-sm text-surface-900 font-medium">{step.label}</span>
+        {!!step.healCount && step.healCount > 0 && (
+          <span className="inline-flex items-center gap-0.5 text-[10px] text-blue-700 bg-blue-50 border border-blue-200 rounded px-1">
+            <Wrench size={10} /> 自愈{step.healCount}
+          </span>
+        )}
+        <ChevronDown
+          size={14}
+          className={`ml-auto text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
+        />
+      </button>
+      {open && (
+        <div className="mt-1.5 space-y-2">
+          {thinking && (
+            <div>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+                思考
+              </p>
+              <pre className="rounded bg-gray-50 border border-gray-200 p-2 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words max-h-56 overflow-auto">
+                {thinking}
+                {running && <BlinkCursor />}
+              </pre>
+            </div>
+          )}
+          {step.url && (
+            <p className="text-[11px] text-gray-400 break-all">URL: {step.url}</p>
+          )}
+          {step.hasShot && (
+            <div className="max-w-sm">
+              <Shot src={shotUrl(step.no)} alt={step.label} />
+            </div>
+          )}
+          {step.prompt && (
+            <div>
+              <div className="flex items-center gap-3">
+                <button
+                  onClick={() => onTogglePrompt(step.no)}
+                  className="text-[11px] font-medium text-brand-700 hover:text-brand-800"
+                >
+                  {promptShown ? "收起 prompt" : "查看 prompt"}
+                </button>
+                {promptShown && (
+                  <button
+                    onClick={() => navigator.clipboard?.writeText(step.prompt ?? "")}
+                    className="text-[11px] text-gray-400 hover:text-gray-600"
+                  >
+                    复制
+                  </button>
+                )}
+              </div>
+              {promptShown && (
+                <pre className="mt-1 text-[11px] bg-surface-900 text-gray-100 border border-gray-800 rounded-md p-3 whitespace-pre-wrap max-h-80 overflow-auto leading-relaxed">
+                  {step.prompt}
+                </pre>
+              )}
+            </div>
+          )}
+        </div>
+      )}
+    </li>
+  );
+});
+
 // 过程时间线:把整条用例的执行**全过程**收在一处,执行中流式、执行后回溯。
 // 顺序:翻译规格 → 逐步(思考/工具/自愈/截图)→ 结构化断言 → 最终结果。
 function TimelineView({
@@ -483,28 +581,37 @@ function TimelineView({
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [promptOpen, setPromptOpen] = useState<Set<number>>(new Set());
   const [showCode, setShowCode] = useState(false);
-  const togglePrompt = (no: number) =>
-    setPromptOpen((p) => {
-      const n = new Set(p);
-      n.has(no) ? n.delete(no) : n.add(no);
-      return n;
-    });
+  const togglePrompt = useCallback(
+    (no: number) =>
+      setPromptOpen((p) => {
+        const n = new Set(p);
+        n.has(no) ? n.delete(no) : n.add(no);
+        return n;
+      }),
+    [],
+  );
+  const toggle = useCallback(
+    (no: number) =>
+      setExpanded((p) => {
+        const n = new Set(p);
+        n.has(no) ? n.delete(no) : n.add(no);
+        return n;
+      }),
+    [],
+  );
   const bottomRef = useRef<HTMLDivElement | null>(null);
-  const runningNo = steps.find((s) => s.state === "running")?.no ?? null;
   const phase = liveState?.phases?.[liveState.phases.length - 1]?.phase;
 
-  // 执行中自动滚到底,跟随最新过程
+  // 只展示真实执行步骤(done/running),不展示翻译前的占位步骤(spec)——翻译后步骤会变,
+  // 初始不该先摆一份会被替换的「测试步骤」。
+  const realSteps = useMemo(() => steps.filter((s) => s.state !== "spec"), [steps]);
+  const runningNo = realSteps.find((s) => s.state === "running")?.no ?? null;
+
+  // 执行中自动滚到底:**仅在新步骤落定时**触发(不随思考流逐 token 触发,否则
+  // smooth 滚动风暴会让界面卡顿、点击无响应)。
   useEffect(() => {
     if (isRunning) bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-  }, [steps.length, liveState?.thinkStream, liveState?.specStream, isRunning]);
-
-  const isOpen = (no: number) => no === runningNo || expanded.has(no);
-  const toggle = (no: number) =>
-    setExpanded((p) => {
-      const n = new Set(p);
-      n.has(no) ? n.delete(no) : n.add(no);
-      return n;
-    });
+  }, [realSteps.length, isRunning]);
 
   const incomplete = /执行未完成|停因=max_steps/.test(result?.final_result ?? "");
 
@@ -514,7 +621,7 @@ function TimelineView({
       <section>
         <TimelineHeader
           label="翻译用例为执行规格 (TestSpec)"
-          done={!!result?.spec || !!liveState?.spec || steps.length > 0}
+          done={!!result?.spec || !!liveState?.spec || realSteps.length > 0}
           active={phase === "spec"}
         />
         {phase === "spec" && liveState?.specStream ? (
@@ -539,93 +646,25 @@ function TimelineView({
           active={isRunning && phase !== "spec"}
         />
         <ol className="ml-1 mt-2 border-l border-gray-200 space-y-3">
-          {steps.length === 0 && (
-            <li className="ml-5 text-xs text-gray-400">尚无步骤…</li>
+          {realSteps.length === 0 && (
+            <li className="ml-5 text-xs text-gray-400">
+              {isRunning ? "等待执行…" : "尚无步骤"}
+            </li>
           )}
-          {steps.map((s) => {
-            const open = isOpen(s.no);
-            const thinking =
-              s.state === "running" ? liveState?.thinkStream : s.reasoning;
-            return (
-              <li key={`${s.no}-${s.label}`} className="relative ml-5">
-                {/* 节点圆点 */}
-                <span className="absolute -left-[1.42rem] top-1.5">
-                  {s.state === "running" ? (
-                    <Loader2 size={14} className="text-blue-600 animate-spin" />
-                  ) : (
-                    <CheckCircle size={14} className="text-brand-600" />
-                  )}
-                </span>
-                <button
-                  onClick={() => toggle(s.no)}
-                  className="w-full text-left flex items-center gap-2"
-                >
-                  <span className="text-sm text-surface-900 font-medium">
-                    {s.label}
-                  </span>
-                  {!!s.healCount && s.healCount > 0 && (
-                    <span className="inline-flex items-center gap-0.5 text-[10px] text-blue-700 bg-blue-50 border border-blue-200 rounded px-1">
-                      <Wrench size={10} /> 自愈{s.healCount}
-                    </span>
-                  )}
-                  <ChevronDown
-                    size={14}
-                    className={`ml-auto text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
-                  />
-                </button>
-                {open && (
-                  <div className="mt-1.5 space-y-2">
-                    {thinking && (
-                      <div>
-                        <p className="text-[10px] font-medium uppercase tracking-wider text-gray-400 mb-1">
-                          思考
-                        </p>
-                        <pre className="rounded bg-gray-50 border border-gray-200 p-2 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words max-h-56 overflow-auto">
-                          {thinking}
-                          {s.state === "running" && <BlinkCursor />}
-                        </pre>
-                      </div>
-                    )}
-                    {s.url && (
-                      <p className="text-[11px] text-gray-400 break-all">URL: {s.url}</p>
-                    )}
-                    {s.hasShot && (
-                      <div className="max-w-sm">
-                        <Shot src={shotUrl(s.no)} alt={s.label} />
-                      </div>
-                    )}
-                    {s.prompt && (
-                      <div>
-                        <div className="flex items-center gap-3">
-                          <button
-                            onClick={() => togglePrompt(s.no)}
-                            className="text-[11px] font-medium text-brand-700 hover:text-brand-800"
-                          >
-                            {promptOpen.has(s.no) ? "收起 prompt" : "查看 prompt"}
-                          </button>
-                          {promptOpen.has(s.no) && (
-                            <button
-                              onClick={() =>
-                                navigator.clipboard?.writeText(s.prompt ?? "")
-                              }
-                              className="text-[11px] text-gray-400 hover:text-gray-600"
-                            >
-                              复制
-                            </button>
-                          )}
-                        </div>
-                        {promptOpen.has(s.no) && (
-                          <pre className="mt-1 text-[11px] bg-surface-900 text-gray-100 border border-gray-800 rounded-md p-3 whitespace-pre-wrap max-h-80 overflow-auto leading-relaxed">
-                            {s.prompt}
-                          </pre>
-                        )}
-                      </div>
-                    )}
-                  </div>
-                )}
-              </li>
-            );
-          })}
+          {realSteps.map((s) => (
+            <TimelineStep
+              key={`${s.no}-${s.label}`}
+              step={s}
+              open={s.no === runningNo || expanded.has(s.no)}
+              // 思考:仅运行中的步传实时流(只有它会逐 token 变),其余用定格 reasoning →
+              // 配合 React.memo,思考流推进时只重渲染当前步,不动其余步(消卡顿关键)。
+              liveThinking={s.no === runningNo ? liveState?.thinkStream : undefined}
+              promptShown={promptOpen.has(s.no)}
+              onToggle={toggle}
+              onTogglePrompt={togglePrompt}
+              shotUrl={shotUrl}
+            />
+          ))}
         </ol>
       </section>
 
@@ -918,8 +957,11 @@ export default function CaseDrawerBody({
   }, [result, liveState?.steps, caseInfo.steps]);
 
   const pill = STATUS_PILL[status] ?? STATUS_PILL.pending;
-  const shotUrl = (no: number) =>
-    `/api/screenshots/${runId}/${caseInfo.id}/step_${pad3(no)}.png`;
+  // 稳定引用(供时间线步骤 memo);随 run/用例变化才重建
+  const shotUrl = useCallback(
+    (no: number) => `/api/screenshots/${runId}/${caseInfo.id}/step_${pad3(no)}.png`,
+    [runId, caseInfo.id],
+  );
 
   return (
     <div className="flex flex-col h-full">
