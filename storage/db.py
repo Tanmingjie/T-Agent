@@ -171,6 +171,34 @@ class RunQueueRow(SQLModel, table=True):
     created_at: float = 0.0
 
 
+class RunEventRow(SQLModel, table=True):
+    """跨进程进度事件(平台化 T-P09)。worker 追加,API /stream 尾随转 SSE。
+
+    durable(可重放给晚到订阅者)+ 方言可移植(SQLite/PG 通用)。raw LISTEN/NOTIFY
+    是延迟优化,留 M3。
+    """
+
+    __tablename__ = "run_event"
+    seq: int | None = Field(default=None, primary_key=True)  # 自增,严格递增供尾随
+    run_id: str = Field(default="", index=True)
+    event_type: str = ""
+    data: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    created_at: float = 0.0
+
+
+class PermissionRequestRow(SQLModel, table=True):
+    """跨进程权限审批工单(平台化 T-P09)。worker 写 pending 后轮询;API 端审批解决。"""
+
+    __tablename__ = "permission_request"
+    id: str = Field(primary_key=True)
+    run_id: str = Field(default="", index=True)
+    status: str = Field(default="pending", index=True)  # pending | approved | denied
+    tool_name: str = ""
+    reason: str = ""
+    created_at: float = 0.0
+    resolved_at: float | None = None
+
+
 # ── 多租户表(平台化 T-P04)──────────────────────────────────────
 
 
@@ -731,3 +759,62 @@ class Store:
     async def get_queued_run(self, run_id: str) -> RunQueueRow | None:
         async with self._sf() as s:
             return await s.get(RunQueueRow, run_id)
+
+    # —— 跨进程进度事件(T-P09)——
+
+    async def append_run_event(self, run_id: str, event_type: str, data: dict) -> None:
+        async with self._sf() as s:
+            s.add(
+                RunEventRow(run_id=run_id, event_type=event_type, data=data, created_at=time.time())
+            )
+            await s.commit()
+
+    async def list_run_events(self, run_id: str, after_seq: int = 0) -> list[RunEventRow]:
+        async with self._sf() as s:
+            stmt = (
+                select(RunEventRow)
+                .where(RunEventRow.run_id == run_id, RunEventRow.seq > after_seq)
+                .order_by(RunEventRow.seq)
+            )
+            return list((await s.exec(stmt)).all())
+
+    # —— 跨进程权限审批工单(T-P09)——
+
+    async def create_permission_request(
+        self, req_id: str, run_id: str, tool_name: str, reason: str
+    ) -> None:
+        async with self._sf() as s:
+            s.add(
+                PermissionRequestRow(
+                    id=req_id,
+                    run_id=run_id,
+                    status="pending",
+                    tool_name=tool_name,
+                    reason=reason,
+                    created_at=time.time(),
+                )
+            )
+            await s.commit()
+
+    async def get_permission_request(self, req_id: str) -> PermissionRequestRow | None:
+        async with self._sf() as s:
+            return await s.get(PermissionRequestRow, req_id)
+
+    async def resolve_permission_request(self, req_id: str, approved: bool) -> bool:
+        async with self._sf() as s:
+            row = await s.get(PermissionRequestRow, req_id)
+            if row is None or row.status != "pending":
+                return False
+            row.status = "approved" if approved else "denied"
+            row.resolved_at = time.time()
+            s.add(row)
+            await s.commit()
+            return True
+
+    async def list_pending_permission_requests(self, run_id: str) -> list[PermissionRequestRow]:
+        async with self._sf() as s:
+            stmt = select(PermissionRequestRow).where(
+                PermissionRequestRow.run_id == run_id,
+                PermissionRequestRow.status == "pending",
+            )
+            return list((await s.exec(stmt)).all())

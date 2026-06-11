@@ -21,9 +21,23 @@ from pydantic import BaseModel
 from api.auth import require_suite_access
 from api.execution_worker import make_sse_bridge, schedule_queue_cleanup, spawn_run
 from api.repository import get_suite_settings, set_suite_settings
-from api.server import get_repo, get_store
 
 router = APIRouter(tags=["execution"])
+
+
+# get_repo/get_store 用惰性包装(不在模块加载期 import api.server),打断
+# execution→server→(router 块)→execution 的循环导入(execution 被直接 import 时尤甚)。
+def get_repo():
+    from api.server import get_repo as _g
+
+    return _g()
+
+
+def get_store():
+    from api.server import get_store as _g
+
+    return _g()
+
 
 # suite 维度鉴权(单机/无 project_id 放行)。SSE /stream 因 EventSource 无法带 header,
 # 单机隐式 admin 放行;平台 SSE 鉴权随 T-P09 双进程改造引入 token。
@@ -148,22 +162,54 @@ async def trigger_run(
 
 
 @router.get("/suites/{suite_id}/stream")
-async def stream_events(suite_id: str, run_id: str):
+async def stream_events(suite_id: str, run_id: str, store=Depends(get_store)):
     queue = _sse_queues.get(run_id)
-    if queue is None:
-        raise HTTPException(404, "Run not found or already finished")
 
-    async def _generate():
-        yield ": keepalive\n\n"
-        while True:
-            try:
-                msg = await asyncio.wait_for(queue.get(), timeout=15.0)
-                yield msg
-                # Terminate stream on suite_done or error events
-                if msg.startswith("event: suite_done") or msg.startswith("event: error"):
-                    break
-            except asyncio.TimeoutError:
-                yield ": keepalive\n\n"
+    if queue is not None:
+        # embedded 模式:内存队列(实时,单机)
+        async def _generate():
+            yield ": keepalive\n\n"
+            while True:
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield msg
+                    if msg.startswith("event: suite_done") or msg.startswith("event: error"):
+                        break
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
+
+    else:
+        # queue 模式(双进程):尾随 run_event 表(worker 跨进程写)。在场即从头重放,
+        # 晚到订阅者也能拿到完整进度;suite_done/error 收尾。run 不存在则 404。
+        from api.execution_worker import format_sse
+
+        run = await store.get_run(run_id)
+        if run is None and await store.get_queued_run(run_id) is None:
+            raise HTTPException(404, "Run not found")
+
+        async def _generate():
+            yield ": keepalive\n\n"
+            last_seq = 0
+            idle = 0
+            while True:
+                events = await store.list_run_events(run_id, after_seq=last_seq)
+                if events:
+                    idle = 0
+                    for ev in events:
+                        last_seq = ev.seq
+                        yield format_sse(ev.event_type, ev.data)
+                        if ev.event_type in ("suite_done", "error"):
+                            return
+                else:
+                    idle += 1
+                    yield ": keepalive\n\n"
+                    # 兜底:run 已落终态且无新事件 → 收尾(防 worker 没发 suite_done)
+                    if idle >= 4:
+                        cur = await store.get_run(run_id)
+                        if cur and cur["status"] in ("completed", "failed", "aborted"):
+                            yield format_sse("suite_done", {"run_id": run_id, "sentinel": True})
+                            return
+                await asyncio.sleep(0.5)
 
     return StreamingResponse(
         _generate(),
