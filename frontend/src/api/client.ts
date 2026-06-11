@@ -1,4 +1,6 @@
 // API/SSE 根路径:dev 走 Vite 代理(同源 /api,免 CORS),生产由反代统一服务。
+import { authHeaders } from "../lib/session";
+
 const BASE = "/api";
 const TIMEOUT_MS = 30000;
 
@@ -14,6 +16,8 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     const r = await fetch(`${BASE}${path}`, {
       ...init,
+      // 注入鉴权 header(X-User);平台模式做 RBAC,单机模式忽略(隐式放行)。
+      headers: { ...authHeaders(), ...(init?.headers || {}) },
       signal: controller.signal,
     });
     if (!r.ok) throw new Error(await r.text());

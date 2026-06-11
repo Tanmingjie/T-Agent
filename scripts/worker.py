@@ -39,18 +39,45 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s [worke
 logger = logging.getLogger("worker")
 
 
-async def _noop_sse(_event: str, _data: dict) -> None:
-    return None
-
-
 async def _run_one(db_url: str, claimed) -> None:
-    """执行一条领到的任务,期间定时心跳防被回收。"""
+    """执行一条领到的任务,期间定时心跳防被回收。
+
+    进度经 run_event 表落库(API /stream 尾随转 SSE,T-P09);审批走 permission_request
+    工单表(写 pending 后轮询,超时默认拒绝,保守)。
+    """
+    import uuid
+
     from api.run_executor import execute_run
     from storage.db import Store
 
     hb_store = Store(url=db_url)
     await hb_store.init()
     stop = asyncio.Event()
+    approve_timeout = float(os.getenv("WORKER_APPROVE_TIMEOUT", "300"))
+
+    async def _sse_cb(event: str, data: dict) -> None:
+        try:
+            await hb_store.append_run_event(claimed.run_id, event, data)
+        except Exception:  # noqa: BLE001
+            logger.exception("写进度事件失败 run=%s event=%s", claimed.run_id, event)
+
+    async def _approver(req) -> bool:
+        req_id = uuid.uuid4().hex[:12]
+        await hb_store.create_permission_request(
+            req_id, claimed.run_id, getattr(req, "tool_name", ""), getattr(req, "reason", "")
+        )
+        await _sse_cb(
+            "permission",
+            {"event_id": req_id, "action": getattr(req, "tool_name", ""),
+             "reason": getattr(req, "reason", "")},
+        )
+        deadline = asyncio.get_event_loop().time() + approve_timeout
+        while asyncio.get_event_loop().time() < deadline:
+            row = await hb_store.get_permission_request(req_id)
+            if row is not None and row.status != "pending":
+                return row.status == "approved"
+            await asyncio.sleep(1.0)
+        return False  # 超时默认拒绝(保守)
 
     async def _heartbeat() -> None:
         while not stop.is_set():
@@ -70,7 +97,8 @@ async def _run_one(db_url: str, claimed) -> None:
             run_id=claimed.run_id,
             suite_id=claimed.suite_id,
             case_id=claimed.case_id,
-            sse_cb=_noop_sse,
+            sse_cb=_sse_cb,
+            perm_approver=_approver,
         )
         status = "done"
     except Exception:  # noqa: BLE001

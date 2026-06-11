@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { apiGet, apiPost, apiDelete } from "../api/client";
+import { withProject, getProjectId } from "../lib/session";
 import { Plus, Trash2, Play, Layers, Search } from "lucide-react";
 
 interface Suite {
@@ -34,7 +35,7 @@ export default function SuiteListPage() {
 
   async function load() {
     try {
-      setSuites(await apiGet<Suite[]>("/suites"));
+      setSuites(await apiGet<Suite[]>(withProject("/suites")));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -46,7 +47,11 @@ export default function SuiteListPage() {
 
   async function create() {
     try {
-      await apiPost("/suites", { name, base_url: baseUrl });
+      await apiPost("/suites", {
+        name,
+        base_url: baseUrl,
+        project_id: getProjectId(),
+      });
       setShowCreate(false);
       setName("");
       setBaseUrl("");

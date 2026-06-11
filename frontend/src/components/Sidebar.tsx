@@ -1,5 +1,6 @@
 import { NavLink } from "react-router-dom";
 import { Layers, BookOpen, Zap } from "lucide-react";
+import ProjectBar from "./ProjectBar";
 
 const groups = [
   {
@@ -56,10 +57,8 @@ export default function Sidebar() {
         ))}
       </nav>
 
-      {/* Footer */}
-      <div className="px-5 py-4 border-t border-gray-200 text-xs text-gray-400">
-        AI Test Automation
-      </div>
+      {/* 用户 + 项目切换(T-P11) */}
+      <ProjectBar />
     </aside>
   );
 }

@@ -1,5 +1,6 @@
 import { Fragment, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPost, apiPut } from "../api/client";
+import { withProject } from "../lib/session";
 
 /** 词条:业务词 → 页面真实元素。selector(CSS)最稳健,优先于 role+name。 */
 interface VocabEntry {
@@ -55,7 +56,7 @@ export default function VocabularyPage() {
 
   async function load() {
     const r = await apiGet<{ items: Vocab[] }>(
-      `/vocabulary?query=${encodeURIComponent(query)}`,
+      withProject(`/vocabulary?query=${encodeURIComponent(query)}`),
     );
     setItems(r.items.map((v) => ({ ...v, vocabulary: v.vocabulary || {} })));
   }
