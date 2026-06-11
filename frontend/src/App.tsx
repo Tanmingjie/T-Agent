@@ -8,6 +8,7 @@ import SuiteRunDetailPage from "./pages/SuiteRunDetailPage";
 import SuiteSettingsPage from "./pages/SuiteSettingsPage";
 import VocabularyPage from "./pages/VocabularyPage";
 import ProjectSettingsPage from "./pages/ProjectSettingsPage";
+import ProjectReportsPage from "./pages/ProjectReportsPage";
 
 export default function App() {
   return (
@@ -19,6 +20,7 @@ export default function App() {
         <Route path="/suites" element={<SuiteListPage />} />
         <Route path="/vocabulary" element={<VocabularyPage />} />
         <Route path="/project-settings" element={<ProjectSettingsPage />} />
+        <Route path="/project-reports" element={<ProjectReportsPage />} />
       </Route>
 
       {/* Suite workspace layout (suite-scoped nav + breadcrumb) */}

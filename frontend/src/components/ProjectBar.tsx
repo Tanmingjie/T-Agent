@@ -3,7 +3,7 @@
 // (本应用为按页取数、无全局 store,刷新最稳)。单机模式下不设用户也能用。
 import { useEffect, useState } from "react";
 import { NavLink } from "react-router-dom";
-import { Settings, FolderGit2, UserRound } from "lucide-react";
+import { Settings, FolderGit2, UserRound, BarChart3 } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import { getUser, setUser, getProjectId, setProjectId } from "../lib/session";
 
@@ -102,12 +102,20 @@ export default function ProjectBar() {
           + 新建项目
         </button>
         {pid && (
-          <NavLink
-            to="/project-settings"
-            className="flex items-center gap-1 text-gray-500 hover:text-surface-900"
-          >
-            <Settings size={13} /> 设置
-          </NavLink>
+          <div className="flex items-center gap-3">
+            <NavLink
+              to="/project-reports"
+              className="flex items-center gap-1 text-gray-500 hover:text-surface-900"
+            >
+              <BarChart3 size={13} /> 报告
+            </NavLink>
+            <NavLink
+              to="/project-settings"
+              className="flex items-center gap-1 text-gray-500 hover:text-surface-900"
+            >
+              <Settings size={13} /> 设置
+            </NavLink>
+          </div>
         )}
       </div>
     </div>
