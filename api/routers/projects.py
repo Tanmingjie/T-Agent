@@ -25,7 +25,15 @@ from api.auth import (
 )
 from api.server import get_store
 from harness.llm import build_llm_client
-from input.models import Project, ProjectHttpTool, ProjectLLMConfig, ProjectMember, Version
+from input.models import (
+    Project,
+    ProjectHttpTool,
+    ProjectLLMConfig,
+    ProjectMember,
+    ProjectSkill,
+    SessionProfile,
+    Version,
+)
 from storage import crypto
 
 router = APIRouter(tags=["projects"])
@@ -314,6 +322,109 @@ async def delete_http_tool(
 ):
     if not await store.delete_http_tool(project_id, name):
         raise HTTPException(404, "工具不存在")
+    return {"ok": True}
+
+
+# ── 项目级 Skill(M2;admin 改,成员看)──────────────────────
+
+
+class SkillIn(BaseModel):
+    name: str
+    content: str = ""
+
+
+@router.get("/projects/{project_id}/skills")
+async def list_skills(
+    project_id: str, _role: str = Depends(require_member), store=Depends(get_store)
+):
+    return [s.model_dump() for s in await store.list_skills(project_id)]
+
+
+@router.put("/projects/{project_id}/skills/{name}")
+async def put_skill(
+    project_id: str,
+    name: str,
+    body: SkillIn,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    await store.save_skill(ProjectSkill(project_id=project_id, name=name, content=body.content))
+    return {"ok": True, "name": name}
+
+
+@router.delete("/projects/{project_id}/skills/{name}")
+async def delete_skill(
+    project_id: str,
+    name: str,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    if not await store.delete_skill(project_id, name):
+        raise HTTPException(404, "Skill 不存在")
+    return {"ok": True}
+
+
+# ── 项目级 SessionProfile(M2;admin 改,成员看;cookies 不返明文)────
+
+
+class SessionProfileIn(BaseModel):
+    name: str
+    base_url: str = ""
+    login_aw: str = ""
+    cookie_store: str = ""
+    cookies: list = []  # 可选:直接存 cookie(加密落库)
+    valid_until: float | None = None
+
+
+@router.get("/projects/{project_id}/session-profiles")
+async def list_session_profiles(
+    project_id: str, _role: str = Depends(require_member), store=Depends(get_store)
+):
+    profs = await store.list_session_profiles(project_id)
+    return [
+        {
+            "name": p.name,
+            "base_url": p.base_url,
+            "login_aw": p.login_aw,
+            "cookie_store": p.cookie_store,
+            "has_cookies": bool(p.cookies),  # 不返 cookie 明文
+            "valid_until": p.valid_until,
+        }
+        for p in profs
+    ]
+
+
+@router.put("/projects/{project_id}/session-profiles/{name}")
+async def put_session_profile(
+    project_id: str,
+    name: str,
+    body: SessionProfileIn,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    await store.save_session_profile(
+        SessionProfile(
+            name=name,
+            login_aw=body.login_aw,
+            cookie_store=body.cookie_store,
+            valid_until=body.valid_until,
+            base_url=body.base_url,
+            project_id=project_id,
+            cookies=body.cookies,
+        )
+    )
+    return {"ok": True, "name": name}
+
+
+@router.delete("/projects/{project_id}/session-profiles/{name}")
+async def delete_session_profile(
+    project_id: str,
+    name: str,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    if not await store.delete_session_profile(name):
+        raise HTTPException(404, "SessionProfile 不存在")
     return {"ok": True}
 
 

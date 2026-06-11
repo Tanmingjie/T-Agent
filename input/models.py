@@ -152,12 +152,26 @@ class SessionProfile(BaseModel):
 
     name: str
     login_aw: str  # 登录 AW 引用(用户已有 pytest 脚本)
-    cookie_store: str  # Cookie 持久化路径
+    cookie_store: str  # Cookie 持久化路径(文件型,向后兼容)
     valid_until: float | None = None
     base_url: str
+    project_id: str = ""  # 多租户作用域(平台化 M2);单机留空
+    cookies: list = []  # Cookie 列表(平台化 M2:落库时加密;空则用 cookie_store 文件)
 
     # —— 预留同步字段(实现原则 4) ——
     owner: str | None = None
+    updated_at: float = Field(default_factory=time.time)
+
+
+class ProjectSkill(BaseModel):
+    """项目级 Skill(平台化 M2:项目业务常识,作为常注入 DomainSkill 接入执行链)。
+
+    主键 (project_id, name)。content 是注入 System Prompt 的业务提示文本。
+    """
+
+    project_id: str
+    name: str
+    content: str = ""
     updated_at: float = Field(default_factory=time.time)
 
 

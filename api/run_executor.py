@@ -104,9 +104,20 @@ async def execute_run(
                     suite.session_profile,
                 )
 
+        # 项目级 Skill(M2):作为常注入 DomainSkill 接入(项目业务常识)。
+        extra_skills = []
+        if suite.project_id:
+            from harness.skills import DomainSkill
+
+            for sk in await store.list_skills(suite.project_id):
+                if sk.content.strip():
+                    extra_skills.append(DomainSkill(name=sk.name, content=sk.content.strip()))
+
         @asynccontextmanager
         async def make_agent():
-            skills = build_skill_manager(custom_prompt=suite.custom_prompt)
+            skills = build_skill_manager(
+                custom_prompt=suite.custom_prompt, extra=extra_skills or None
+            )
             async with MCPClient(args=mcp_args) as mcp:
                 hooks = (
                     build_session_hooks(session_profile, mcp)

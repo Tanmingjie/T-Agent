@@ -38,6 +38,7 @@ from input.models import (
     ProjectHttpTool,
     ProjectLLMConfig,
     ProjectMember,
+    ProjectSkill,
     SessionProfile,
     Suite,
     TestCase,
@@ -89,7 +90,17 @@ class SessionProfileRow(SQLModel, table=True):
     cookie_store: str = ""
     valid_until: float | None = None
     base_url: str = ""
+    project_id: str = Field(default="", index=True)  # 多租户(M2)
+    cookies_encrypted: str = ""  # Cookie JSON 密文(M2;凭据,加密落库)
     owner: str | None = None
+    updated_at: float = 0.0
+
+
+class ProjectSkillRow(SQLModel, table=True):
+    __tablename__ = "project_skill"
+    project_id: str = Field(primary_key=True)
+    name: str = Field(primary_key=True)
+    content: str = ""
     updated_at: float = 0.0
 
 
@@ -434,15 +445,85 @@ class Store:
             rows = (await s.exec(stmt)).all()
             return [Suite(**r.model_dump()) for r in rows]
 
-    # —— SessionProfile ——
+    # —— SessionProfile(cookies 加密落库,M2)——
 
     async def save_session_profile(self, p: SessionProfile) -> None:
-        await self._upsert(SessionProfileRow, p)
+        row = SessionProfileRow(
+            name=p.name,
+            login_aw=p.login_aw,
+            cookie_store=p.cookie_store,
+            valid_until=p.valid_until,
+            base_url=p.base_url,
+            project_id=p.project_id,
+            cookies_encrypted=(
+                crypto.encrypt(json.dumps(p.cookies, ensure_ascii=False)) if p.cookies else ""
+            ),
+            owner=p.owner,
+            updated_at=time.time(),
+        )
+        async with self._sf() as s:
+            await s.merge(row)
+            await s.commit()
+
+    def _session_from_row(self, row: SessionProfileRow) -> SessionProfile:
+        cookies: list = []
+        if row.cookies_encrypted:
+            raw = crypto.decrypt(row.cookies_encrypted)
+            try:
+                cookies = json.loads(raw) if raw else []
+            except (json.JSONDecodeError, ValueError):
+                cookies = []
+        return SessionProfile(
+            name=row.name,
+            login_aw=row.login_aw,
+            cookie_store=row.cookie_store,
+            valid_until=row.valid_until,
+            base_url=row.base_url,
+            project_id=row.project_id,
+            cookies=cookies,
+            owner=row.owner,
+            updated_at=row.updated_at,
+        )
 
     async def get_session_profile(self, name: str) -> SessionProfile | None:
         async with self._sf() as s:
             row = await s.get(SessionProfileRow, name)
-            return SessionProfile(**row.model_dump()) if row else None
+            return self._session_from_row(row) if row else None
+
+    async def list_session_profiles(self, project_id: str | None = None) -> list[SessionProfile]:
+        stmt = select(SessionProfileRow)
+        if project_id is not None:
+            stmt = stmt.where(SessionProfileRow.project_id == project_id)
+        async with self._sf() as s:
+            return [self._session_from_row(r) for r in (await s.exec(stmt)).all()]
+
+    async def delete_session_profile(self, name: str) -> bool:
+        async with self._sf() as s:
+            row = await s.get(SessionProfileRow, name)
+            if row is None:
+                return False
+            await s.delete(row)
+            await s.commit()
+            return True
+
+    # —— ProjectSkill(项目级业务常识,M2)——
+
+    async def save_skill(self, skill: ProjectSkill) -> None:
+        await self._upsert(ProjectSkillRow, skill)
+
+    async def list_skills(self, project_id: str) -> list[ProjectSkill]:
+        async with self._sf() as s:
+            stmt = select(ProjectSkillRow).where(ProjectSkillRow.project_id == project_id)
+            return [ProjectSkill(**r.model_dump()) for r in (await s.exec(stmt)).all()]
+
+    async def delete_skill(self, project_id: str, name: str) -> bool:
+        async with self._sf() as s:
+            row = await s.get(ProjectSkillRow, (project_id, name))
+            if row is None:
+                return False
+            await s.delete(row)
+            await s.commit()
+            return True
 
     # —— PageVocabulary(按缓存键 upsert)——
 
