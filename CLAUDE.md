@@ -70,8 +70,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `api/run_executor.py` — **与进程无关的共享执行核** `execute_run`(API 单机线程 + worker 进程都复用)。
 - `scripts/worker.py` — **执行 worker 进程**(`RUN_MODE=queue` 时 API 入队,worker `claim_next_run` 领取执行;多开横向扩);进度落 run_event 表、审批走 permission_request 工单。
 - 执行两形态:**embedded**(默认,进程内线程,SSE 实时,单机)/ **queue**(`RUN_MODE=queue`,双进程,SSE 尾随 run_event 表)。
-- `frontend/` — React + Vite + Tailwind 前端控制台(Suite 管理、执行控制台、结果详情含 Monaco 编辑器、词汇表)。
-  - 平台化:`lib/session.ts`(X-User/项目)+ `ProjectBar`(用户/项目切换)+ `ProjectSettingsPage`(LLM 配置)。
+- `frontend/` — React + Vite + Tailwind 前端控制台(测试任务管理、执行、结果详情、词汇表)。
+  - 平台化:`lib/session.ts`(项目从 `?project=<id>` URL 锁定只读 + 版本在平台内选择,落 localStorage;身份 `authHeaders` 留壳给 M4 IDaaS,本期不传)+ `ProjectSettingsPage`(LLM 配置)。
+  - **集成入口模型**:内网系统维护项目/版本,登录后选项目跳转本平台(带 `?project=`);本平台**只展示不建管**项目与版本。本地联调用 `scripts/seed_demo.py` 种 saucedemo 为 demo 项目/版本/任务,`?project=demo` 走真实后端端到端可点通(无前端 mock)。
   - **Design Tokens** (`tailwind.config.js`): `brand` (cyan 系, 50–950)、`surface` (slate 系, 50–950)、`shadow-card` / `shadow-elevated`。
   - **UI Skills 已安装**: `frontend-design`(anthropics)、`ui-ux-pro-max` + 6 CKM skills(nextlevelbuilder)。通过 `npx skills add` 安装，各环境自行拉取。
 
@@ -101,7 +102,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 阶段三 ✅ T-20~T-22(`codegen/`BDDGenerator / `storage/db.py` SQLModel 持久化 / `intelligence/`词汇表+Scanner)。
 - 阶段四 ✅ T-23~T-27(FastAPI 后端 5 路由+SSE / Repository 抽象层 / React 前端控制台(Suite 管理、执行控制台、结果详情、词汇表)/ BDD `step_N` 标记)。
 - **UI Redesign (TestSprite 风格,已落地一轮)** — 参照 TestSprite 控制台重构前端,设计语言:**森林绿**强调色(`brand` 令牌已由 cyan 改 green)、**浅色分组侧栏**、**表格**列表、**双栏抽屉**。关键结构(以 git 历史/当前代码为准,不逐项追踪):
-  - 布局:`RootLayout`(全局浅色侧栏:测试套件/词汇表)+ `SuiteLayout`(进入套件后切换为**套件内导航**:用例/执行历史/设置 + 面包屑)。
+  - 布局:`RootLayout`(项目级:只读项目顶栏 + 浅色侧栏 概览/测试任务/词汇表/设置)+ `SuiteLayout`(进入测试任务后切换为**任务内导航**:用例/执行历史/报告/设置 + 面包屑)。
+  - **信息架构(M2-UI,2026-06-11 定稿)**:项目 → 版本 → 测试任务 三级。**「测试套件」全平台改名「测试任务」**(用户可见文案改,代码标识符 `Suite`/`SuiteLayout`/路由 `/suites/:id` 不动)。「测试任务」页(`TasksPage`,`/tasks`)是 **版本→任务的树**:每版本一行可展开,列出其下任务(用例数/最近执行状态/更新时间);新建任务挂在各版本行(就近建)。**版本不再是独立页面/工作区**(已删 `VersionLayout`/`VersionListPage`/`VersionReportsPage`/`SuiteListPage`)。**报告归入任务**(`SuiteReportsPage`,任务工作区 tab,与执行历史并列;当前基础版,趋势/通过率维度后续补)。`ProjectOverviewPage`(`/`)是落地概览页。
   - 用例页(`SuiteCasesPage`):状态列 + 顶部进度条 + **原地执行**(`hooks/useSuiteRun` 封装 SSE,不再跳独立控制台页);点用例 → **双栏抽屉**(`CaseDrawerBody`):左=信息/测试结果卡/步骤卡,右=测试结果(Preview 最终态截图 / 代码 / 断言结果)或单步截图。
   - 执行历史 → run 详情(`SuiteRunDetailPage`,挂 SuiteLayout 下)点用例**复用同一抽屉**(绑定该次 runId),不再三页跳转。
   - 已删死代码:`RunConsolePage`/`RunOverviewPage`/`CaseResultPage`/`CodeViewerPage`/`ProgressBar`/`FileTree`/`StepListPanel`/旧 `SuiteDetailPage`(`@monaco-editor/react` 随之不再被引用,dep 留着无害)。
@@ -286,6 +288,9 @@ python scripts/serve.py
 # ⚠️ 别直接 `uvicorn api.server:app --reload`:codegen 执行通过后写 storage/generated/*.py,
 #    默认 reload 监视项目目录会因此重启后端、打断正在跑的 run、令所有请求 pending。
 
+# 种联调数据(saucedemo → demo 项目/版本/任务;幂等,前端 ?project=demo 进入)
+python scripts/seed_demo.py
+
 # 启动前端开发服务器
 cd frontend && npm install && npm run dev
 # 前端构建 / 类型检查(无独立 ESLint;`build` 先跑 `tsc`,即类型检查门禁)
@@ -337,7 +342,7 @@ T-agent/
 ├── storage/          # SQLModel 模型 + SQLite 持久化(screenshots/ + generated/)
 ├── frontend/         # React + Vite + Tailwind 控制台(:5173)
 │   └── src/
-│       ├── pages/    #   SuiteList/SuiteCases/SuiteHistory/SuiteRunDetail/SuiteSettings/Vocabulary
+│       ├── pages/    #   ProjectOverview/Tasks(版本→任务树)/SuiteCases/SuiteHistory/SuiteReports/SuiteRunDetail/SuiteSettings/ProjectSettings/Vocabulary
 │       ├── components/ # RootLayout/SuiteLayout/IconRail/Drawer/CaseDrawerBody/Sidebar/…
 │       └── api/     #   client.ts(API 封装)
 ├── cli/              # 命令行入口(run_case.py)
