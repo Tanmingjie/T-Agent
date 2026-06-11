@@ -26,6 +26,7 @@ export interface CaseRunState {
   steps: StepStatus[];
   phases: PhaseStatus[]; // 生命周期阶段流(翻译/执行/断言/代码),最后一个为当前进行中
   spec?: unknown; // 翻译阶段完成后实时推送的 TestSpec(执行中也能看执行规格)
+  specStream?: string; // 翻译阶段逐 token 流式增量(执行中实时显示,spec_ready 后被结构化 spec 取代)
 }
 
 export interface PermReq {
@@ -103,6 +104,16 @@ export function useSuiteRun(suiteId: string | undefined) {
             status: "running",
             steps: [],
             phases: [],
+            specStream: "",
+          }));
+        });
+
+        es.addEventListener("spec_delta", (e) => {
+          const d = safeParse((e as MessageEvent).data);
+          if (!d) return;
+          upd(d.case_id as string, (c) => ({
+            ...c,
+            specStream: (c.specStream ?? "") + ((d.delta as string) ?? ""),
           }));
         });
 

@@ -268,6 +268,72 @@ class LiteLLMClient(LLMClient):
             raw=resp,
         )
 
+    async def chat_stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        on_delta=None,
+        **kwargs: Any,
+    ) -> LLMResponse:
+        """流式对话(无 tools 场景,如 TestSpec 翻译)。逐 chunk 文本增量回调 ``on_delta(text)``,
+        累积成完整 content 返回。
+
+        关键:``stream=True`` 让网关 / 内网代理见到持续字节流,避免慢模型长生成被
+        300s 空闲超时切断(等价于"为慢模型保活")。用 ``acompletion`` 异步迭代,与调用方
+        同 loop(执行已在独立 worker loop),``on_delta`` 可直接 await,无需跨线程桥接。
+        """
+        call_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            **self.extra_completion_kwargs,
+            **kwargs,
+            "stream": True,
+            "stream_options": {"include_usage": True},  # 末 chunk 带 usage
+        }
+        if self.api_base:
+            call_kwargs["api_base"] = self.api_base
+        if self.api_key:
+            call_kwargs["api_key"] = self.api_key
+        call_kwargs["timeout"] = self.timeout
+        call_kwargs.setdefault("num_retries", self.num_retries)
+        call_kwargs.setdefault("max_retries", self.num_retries)
+
+        chunks: list[str] = []
+        usage = Usage()
+        try:
+            resp = await litellm.acompletion(**call_kwargs)
+            async for chunk in resp:
+                try:
+                    delta = chunk.choices[0].delta.content or ""
+                except (AttributeError, IndexError, TypeError):
+                    delta = ""
+                if delta:
+                    chunks.append(delta)
+                    if on_delta is not None:
+                        await on_delta(delta)
+                u = getattr(chunk, "usage", None)
+                if u is not None:
+                    usage = Usage(
+                        prompt_tokens=getattr(u, "prompt_tokens", 0) or 0,
+                        completion_tokens=getattr(u, "completion_tokens", 0) or 0,
+                        total_tokens=getattr(u, "total_tokens", 0) or 0,
+                    )
+        except Exception as e:
+            detail = str(e).replace("\n", " ")
+            if len(detail) > 500:
+                detail = detail[:500] + "…(截断)"
+            logger.error(
+                "LLM 流式调用失败:%s | model=%s api_base=%s | %s",
+                type(e).__name__,
+                self.model,
+                self.api_base or "(default)",
+                detail,
+            )
+            raise
+        self.total_usage.add(usage)
+        return LLMResponse(content="".join(chunks), tool_calls=[], usage=usage)
+
     def usage_summary(self) -> Usage:
         """累计 token 用量(跨多次 chat)。"""
         return self.total_usage

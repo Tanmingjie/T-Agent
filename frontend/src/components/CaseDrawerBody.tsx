@@ -459,10 +459,15 @@ function CodeBlock({ code }: { code: string }) {
 function RunningView({
   phases,
   status,
+  specStream,
 }: {
   phases: PhaseStatus[];
   status: CaseRunStatus;
+  specStream?: string;
 }) {
+  const activePhase = phases[phases.length - 1]?.phase;
+  // 翻译阶段进行中 + 有流式增量 → 展示逐 token 文本(慢模型保活的可见证据)
+  const showStream = activePhase === "spec" && !!specStream;
   return (
     <div className="p-6 space-y-5 max-w-2xl">
       <div className="flex items-center gap-2 text-blue-600">
@@ -500,6 +505,19 @@ function RunningView({
           );
         })}
       </ul>
+
+      {/* 翻译阶段流式输出(逐 token);慢模型下既显进度又证明连接存活 */}
+      {showStream && (
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
+            翻译输出(流式)
+          </p>
+          <pre className="max-h-64 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
+            {specStream}
+            <span className="inline-block w-1.5 h-3.5 bg-blue-500 animate-pulse align-middle ml-0.5" />
+          </pre>
+        </div>
+      )}
     </div>
   );
 }
@@ -865,7 +883,11 @@ export default function CaseDrawerBody({
             </div>
           ) : isRunning && !result ? (
             /* Running view: 生命周期阶段清单(执行中无结果时,参考 TestSprite) */
-            <RunningView phases={liveState?.phases ?? []} status={status} />
+            <RunningView
+              phases={liveState?.phases ?? []}
+              status={status}
+              specStream={liveState?.specStream}
+            />
           ) : (
             /* Result view: Preview/Code tabs + assertions */
             <div className="flex flex-col min-h-full">

@@ -277,16 +277,25 @@ class SpecGenerator:
         self.fallback_on_error = fallback_on_error
 
     async def generate(
-        self, case: TestCase, precondition_items: list[PreconditionItem] | None = None
+        self,
+        case: TestCase,
+        precondition_items: list[PreconditionItem] | None = None,
+        *,
+        on_delta=None,
     ) -> TestSpec:
         """生成 TestSpec。LLM 或解析失败时按配置降级或抛出。
 
         ``precondition_items``:预置条件三分类结果(规格 §5.2)。给定时按类分组下发,
         引导 LLM 只把 action_step 放进 given(state_hook 交给 Hook)。
+        ``on_delta``:给定则走流式(逐 token 回调),让慢模型长生成不被网关空闲超时切断。
         """
         messages = build_spec_messages(case, precondition_items)
         try:
-            resp = await self.llm.chat(messages)
+            resp = await (
+                self.llm.chat_stream(messages, on_delta=on_delta)
+                if on_delta is not None
+                else self.llm.chat(messages)
+            )
             return parse_spec_response(resp.content, case)
         except Exception as e:  # noqa: BLE001 — 翻译层兜底,避免炸管线
             logger.warning("TestSpec 生成失败(%s):%s", case.id, e)
@@ -295,17 +304,22 @@ class SpecGenerator:
             raise
 
     async def generate_with_classification(
-        self, case: TestCase
+        self, case: TestCase, *, on_delta=None
     ) -> tuple[TestSpec, dict[str, dict]]:
         """**合并模式**:一次 LLM 调用同时生成 TestSpec + 预置条件分类。
 
         返回 ``(spec, raw_classification)``,``raw_classification`` 为 {text: {type,...}},
         交由 ``PreconditionClassifier.classify_from_raw`` 做确定性建项(不再单独调 LLM)。
         失败时降级 ``(naive_fallback_spec, {})``(分类为空 → 下游全 ambiguous)。
+        ``on_delta``:给定则走流式(逐 token 回调),长生成不被网关空闲超时切断。
         """
         messages = build_spec_messages(case, request_classification=True)
         try:
-            resp = await self.llm.chat(messages)
+            resp = await (
+                self.llm.chat_stream(messages, on_delta=on_delta)
+                if on_delta is not None
+                else self.llm.chat(messages)
+            )
             spec = parse_spec_response(resp.content, case)
             classification = parse_classification(resp.content)
             return spec, classification

@@ -127,6 +127,63 @@ def _patch_completion(monkeypatch, responses):
     return calls
 
 
+# ── chat_stream:流式路径 ──────────────────────────────────────
+
+
+def _chunk(content=None, usage=None):
+    ns = SimpleNamespace(
+        choices=[SimpleNamespace(delta=SimpleNamespace(content=content))],
+        usage=SimpleNamespace(**usage) if usage else None,
+    )
+    return ns
+
+
+def _patch_acompletion(monkeypatch, chunks):
+    calls = {"kwargs": []}
+
+    async def fake_acompletion(**kwargs):
+        calls["kwargs"].append(kwargs)
+
+        async def gen():
+            for c in chunks:
+                yield c
+
+        return gen()
+
+    monkeypatch.setattr(llm_mod.litellm, "acompletion", fake_acompletion)
+    return calls
+
+
+async def test_chat_stream_accumulates_and_callbacks(monkeypatch):
+    chunks = [
+        _chunk("翻译"),
+        _chunk("中…"),
+        _chunk(None, usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}),
+    ]
+    calls = _patch_acompletion(monkeypatch, chunks)
+
+    client = LiteLLMClient(model="test/model")
+    seen = []
+
+    async def on_delta(t):
+        seen.append(t)
+
+    out = await client.chat_stream([{"role": "user", "content": "hi"}], on_delta=on_delta)
+    assert out.content == "翻译中…"
+    assert seen == ["翻译", "中…"]  # 空 content 的末 chunk 不回调
+    assert out.usage.total_tokens == 15
+    assert not out.has_tool_calls
+    # 必须开 stream(网关保活的关键)
+    assert calls["kwargs"][0]["stream"] is True
+
+
+async def test_chat_stream_no_on_delta_still_accumulates(monkeypatch):
+    _patch_acompletion(monkeypatch, [_chunk("a"), _chunk("b")])
+    client = LiteLLMClient(model="test/model")
+    out = await client.chat_stream([{"role": "user", "content": "hi"}])
+    assert out.content == "ab"
+
+
 # ── chat:标准路径 ─────────────────────────────────────────────
 
 

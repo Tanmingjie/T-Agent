@@ -252,7 +252,7 @@ class TestCaseAgent:
         # 最近一次分类结果(供 run() 写入 ctx / 日志;generate_spec 与 run 解耦时复用)
         self._last_precondition_items: list[PreconditionItem] = []
 
-    async def generate_spec(self, case: TestCase) -> TestSpec:
+    async def generate_spec(self, case: TestCase, *, on_delta=None) -> TestSpec:
         """生成 TestSpec(供 CLI 先打印给用户审查)。
 
         含预置条件三分类(规格 §5.1/§5.2)。**默认合并**:当有待分类的预置条件时,用
@@ -275,7 +275,9 @@ class TestCaseAgent:
 
         if valid_pre and supports_merge and pending:
             # —— 合并:一次调用同时分类 + 翻译 ——
-            spec, raw = await self.spec_generator.generate_with_classification(case)
+            spec, raw = await self.spec_generator.generate_with_classification(
+                case, on_delta=on_delta
+            )
             try:
                 items = classifier.classify_from_raw(case.preconditions, raw)
             except Exception as e:  # noqa: BLE001 — 分类不阻断翻译,降级为不分类
@@ -290,7 +292,9 @@ class TestCaseAgent:
 
         # —— 无待分类:分类不耗 LLM(空 / 全命中 memory),单独翻译 ——
         items = await self._classify_preconditions(case)
-        spec = await self.spec_generator.generate(case, precondition_items=items or None)
+        spec = await self.spec_generator.generate(
+            case, precondition_items=items or None, on_delta=on_delta
+        )
         if items:
             spec = self._merge_given_from_preconditions(spec, items)
         return spec
@@ -424,9 +428,29 @@ class TestCaseAgent:
                 await self.hooks.run(AFTER_CASE, ctx)
                 return record
 
+        # 流式增量合批:LLM↔网关保活靠 acompletion 的 stream=True(自动),浏览器侧增量
+        # 仅供 UX,故按 ~50 字符合批转发,削减 SSE 事件数 / queue 模式 run_event 行数。
+        _delta_buf: list[str] = []
+
+        async def _flush_delta() -> None:
+            if cb is None or not _delta_buf:
+                return
+            text = "".join(_delta_buf)
+            _delta_buf.clear()
+            try:
+                await cb("spec_delta", {"case_id": case.id, "delta": text})
+            except Exception:  # noqa: BLE001
+                pass
+
+        async def emit_spec_delta(text: str) -> None:
+            _delta_buf.append(text)
+            if sum(len(s) for s in _delta_buf) >= 50:
+                await _flush_delta()
+
         await emit_phase("spec", "翻译用例为执行规格 (TestSpec)")
         if spec is None:
-            spec = await self.generate_spec(case)
+            spec = await self.generate_spec(case, on_delta=emit_spec_delta)
+            await _flush_delta()  # 冲刷尾部不足 50 字符的增量
             # 词汇表增强(规格 §5.2):用页面真实文案改写模糊业务词("提交"→"保存并提交")。
             # 仅当本次自动生成 spec 时增强;调用方显式传入(如 CLI 审查后)的 spec 不动。
             spec = await self._enhance_spec_with_vocab(spec, case)
