@@ -141,6 +141,7 @@ class Recorder:
                         "url": s.url,
                         "screenshot": s.screenshot,
                         "assertion_results": s.assertion_results,
+                        "heal_attempts": s.heal_attempts,  # 操作侧自愈(过程时间线展示)
                         "is_custom_tool": s.is_custom_tool,
                         "is_hook_action": s.is_hook_action,
                         "duration_ms": s.duration_ms,

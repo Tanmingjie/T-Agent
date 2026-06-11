@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { apiGet, apiPut } from "../api/client";
 import {
   CheckCircle,
@@ -14,12 +21,9 @@ import {
   Check,
   Play,
   AlertTriangle,
+  ChevronDown,
 } from "lucide-react";
-import type {
-  CaseRunState,
-  CaseRunStatus,
-  PhaseStatus,
-} from "../hooks/useSuiteRun";
+import type { CaseRunState, CaseRunStatus } from "../hooks/useSuiteRun";
 
 interface PreconditionItem {
   text: string;
@@ -63,6 +67,7 @@ interface StepDetail {
     tool_result: string;
     url: string;
     screenshot: string | null;
+    heal_attempts?: unknown[];
     duration_ms: number;
   };
 }
@@ -456,87 +461,280 @@ function CodeBlock({ code }: { code: string }) {
   );
 }
 
-/** 执行中视图:生命周期阶段清单(末项进行中转圈,其余打勾)+ 运行提示。参考 TestSprite。 */
-function RunningView({
-  phases,
+// 过程时间线:把整条用例的执行**全过程**收在一处,执行中流式、执行后回溯。
+// 顺序:翻译规格 → 逐步(思考/工具/自愈/截图)→ 结构化断言 → 最终结果。
+function TimelineView({
+  steps,
+  liveState,
+  result,
+  isRunning,
   status,
-  specStream,
-  thinkStream,
+  shotUrl,
+  code,
 }: {
-  phases: PhaseStatus[];
+  steps: DisplayStep[];
+  liveState?: CaseRunState;
+  result: CaseResult | null;
+  isRunning: boolean;
   status: CaseRunStatus;
-  specStream?: string;
-  thinkStream?: string;
+  shotUrl: (no: number) => string;
+  code: string | null;
 }) {
-  const activePhase = phases[phases.length - 1]?.phase;
-  // 翻译阶段进行中 + 有流式增量 → 展示逐 token 文本(慢模型保活的可见证据)
-  const showStream = activePhase === "spec" && !!specStream;
-  // 执行阶段:展示当前步「思考过程」逐 token 流(step_change 落定即清,显示下一步)
-  const showThink = activePhase === "executing" && !!thinkStream;
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
+  const [showCode, setShowCode] = useState(false);
+  const bottomRef = useRef<HTMLDivElement | null>(null);
+  const runningNo = steps.find((s) => s.state === "running")?.no ?? null;
+  const phase = liveState?.phases?.[liveState.phases.length - 1]?.phase;
+
+  // 执行中自动滚到底,跟随最新过程
+  useEffect(() => {
+    if (isRunning) bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+  }, [steps.length, liveState?.thinkStream, liveState?.specStream, isRunning]);
+
+  const isOpen = (no: number) => no === runningNo || expanded.has(no);
+  const toggle = (no: number) =>
+    setExpanded((p) => {
+      const n = new Set(p);
+      n.has(no) ? n.delete(no) : n.add(no);
+      return n;
+    });
+
+  const incomplete = /执行未完成|停因=max_steps/.test(result?.final_result ?? "");
+
   return (
-    <div className="p-6 space-y-5 max-w-2xl">
-      <div className="flex items-center gap-2 text-blue-600">
-        <Loader2 size={18} className="animate-spin" />
-        <span className="text-sm font-medium">
-          {status === "healing" ? "自愈中…" : "测试运行中…"}
-        </span>
-      </div>
-      <p className="text-xs text-gray-400">
-        代码与最终态截图将在执行完成后出现。
-      </p>
-      <ul className="space-y-2.5">
-        {phases.length === 0 && (
-          <li className="flex items-center gap-2.5 text-sm text-gray-500">
-            <Loader2 size={15} className="text-blue-600 animate-spin" />
-            正在准备执行环境…
-          </li>
+    <div className="p-6 space-y-6 max-w-3xl">
+      {/* ── 1. 翻译规格 ── */}
+      <section>
+        <TimelineHeader
+          label="翻译用例为执行规格 (TestSpec)"
+          done={!!result?.spec || !!liveState?.spec || steps.length > 0}
+          active={phase === "spec"}
+        />
+        {phase === "spec" && liveState?.specStream ? (
+          <pre className="ml-6 mt-1 max-h-56 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
+            {liveState.specStream}
+            <BlinkCursor />
+          </pre>
+        ) : (
+          <p className="ml-6 mt-1 text-xs text-gray-400">
+            {result?.spec || liveState?.spec
+              ? "已生成执行规格（详见左侧「用例信息」）。"
+              : "等待翻译…"}
+          </p>
         )}
-        {phases.map((p, i) => {
-          const active = i === phases.length - 1;
-          return (
-            <li key={p.phase} className="flex items-center gap-2.5 text-sm">
-              {active ? (
-                <Loader2
-                  size={15}
-                  className="text-blue-600 animate-spin shrink-0"
-                />
-              ) : (
-                <CheckCircle size={15} className="text-brand-600 shrink-0" />
-              )}
-              <span className={active ? "text-surface-900" : "text-gray-500"}>
-                {p.label}
+      </section>
+
+      {/* ── 2. 执行过程(逐步) ── */}
+      <section>
+        <TimelineHeader
+          label="驱动浏览器逐步执行"
+          done={!!result}
+          active={isRunning && phase !== "spec"}
+        />
+        <ol className="ml-1 mt-2 border-l border-gray-200 space-y-3">
+          {steps.length === 0 && (
+            <li className="ml-5 text-xs text-gray-400">尚无步骤…</li>
+          )}
+          {steps.map((s) => {
+            const open = isOpen(s.no);
+            const thinking =
+              s.state === "running" ? liveState?.thinkStream : s.reasoning;
+            return (
+              <li key={`${s.no}-${s.label}`} className="relative ml-5">
+                {/* 节点圆点 */}
+                <span className="absolute -left-[1.42rem] top-1.5">
+                  {s.state === "running" ? (
+                    <Loader2 size={14} className="text-blue-600 animate-spin" />
+                  ) : (
+                    <CheckCircle size={14} className="text-brand-600" />
+                  )}
+                </span>
+                <button
+                  onClick={() => toggle(s.no)}
+                  className="w-full text-left flex items-center gap-2"
+                >
+                  <span className="text-sm text-surface-900 font-medium">
+                    {s.label}
+                  </span>
+                  {!!s.healCount && s.healCount > 0 && (
+                    <span className="inline-flex items-center gap-0.5 text-[10px] text-blue-700 bg-blue-50 border border-blue-200 rounded px-1">
+                      <Wrench size={10} /> 自愈{s.healCount}
+                    </span>
+                  )}
+                  <ChevronDown
+                    size={14}
+                    className={`ml-auto text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
+                  />
+                </button>
+                {open && (
+                  <div className="mt-1.5 space-y-2">
+                    {thinking && (
+                      <div>
+                        <p className="text-[10px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+                          思考
+                        </p>
+                        <pre className="rounded bg-gray-50 border border-gray-200 p-2 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words max-h-56 overflow-auto">
+                          {thinking}
+                          {s.state === "running" && <BlinkCursor />}
+                        </pre>
+                      </div>
+                    )}
+                    {s.url && (
+                      <p className="text-[11px] text-gray-400 break-all">URL: {s.url}</p>
+                    )}
+                    {s.hasShot && (
+                      <div className="max-w-sm">
+                        <Shot src={shotUrl(s.no)} alt={s.label} />
+                      </div>
+                    )}
+                  </div>
+                )}
+              </li>
+            );
+          })}
+        </ol>
+      </section>
+
+      {/* ── 3. 结构化断言(执行完成后) ── */}
+      {result && (
+        <section>
+          <TimelineHeader label="结构化断言裁决" done active={false} />
+          {incomplete && (
+            <div className="ml-6 mt-1 mb-2 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+              <AlertTriangle size={14} className="shrink-0 mt-0.5" />
+              <span>
+                执行未完成、步骤没走完，用例已直接判 <strong>FAIL</strong>；下面断言在半路
+                页面上跑，仅供参考、不作裁决依据。
               </span>
-            </li>
-          );
-        })}
-      </ul>
-
-      {/* 翻译阶段流式输出(逐 token);慢模型下既显进度又证明连接存活 */}
-      {showStream && (
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
-            翻译输出(流式)
-          </p>
-          <pre className="max-h-64 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
-            {specStream}
-            <span className="inline-block w-1.5 h-3.5 bg-blue-500 animate-pulse align-middle ml-0.5" />
-          </pre>
-        </div>
+            </div>
+          )}
+          <ul className="ml-6 mt-1 space-y-1.5">
+            {result.case_assertions.length === 0 && (
+              <li className="text-sm text-gray-400">无断言记录</li>
+            )}
+            {result.case_assertions.map((a, i) => (
+              <li key={i} className="flex items-start gap-2 text-sm">
+                <span className="mt-0.5 shrink-0">
+                  <AssertIcon status={a.status} />
+                </span>
+                <span className="text-gray-700">
+                  <span className="text-gray-400">[{a.type}]</span> {a.target}
+                  {a.expected != null && a.expected !== "" && (
+                    <span className="text-gray-400"> == {a.expected}</span>
+                  )}
+                  {a.ai_judged && (
+                    <span className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200 align-middle">
+                      AI判定·低置信
+                    </span>
+                  )}
+                  {a.healed && (
+                    <span
+                      className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200 align-middle"
+                      title={a.heal_note ? `经自愈重定位后通过:${a.heal_note}` : "经自愈重定位后通过"}
+                    >
+                      已自愈
+                    </span>
+                  )}
+                  {a.status === "fail" && (a.actual || a.reason) && (
+                    <span className="block text-xs text-red-600 mt-0.5">
+                      实际: {a.actual ?? "—"}
+                      {a.reason ? ` · ${a.reason}` : ""}
+                    </span>
+                  )}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </section>
       )}
 
-      {/* 执行阶段当前步「思考过程」流式(逐 token);step_change 落定即清 */}
-      {showThink && (
-        <div>
-          <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
-            思考过程（流式）
-          </p>
-          <pre className="max-h-64 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
-            {thinkStream}
-            <span className="inline-block w-1.5 h-3.5 bg-blue-500 animate-pulse align-middle ml-0.5" />
-          </pre>
-        </div>
+      {/* ── 4. 最终结果 ── */}
+      {result && (
+        <section>
+          <TimelineHeader
+            label="最终结果"
+            done
+            active={false}
+            icon={
+              result.passed ? (
+                <CheckCircle size={15} className="text-brand-600" />
+              ) : (
+                <XCircle size={15} className="text-red-600" />
+              )
+            }
+          />
+          <div className="ml-6 mt-1 space-y-2">
+            <p className={`text-sm font-medium ${result.passed ? "text-brand-700" : "text-red-600"}`}>
+              {result.passed ? "测试通过" : "测试失败"}
+            </p>
+            <p className="text-xs text-gray-400">
+              Token {result.token_usage} · 自愈 {result.heal_count} 次
+              {(() => {
+                const m = result.final_result?.match(/停因=([^)]+)/);
+                return m ? ` · 停因 ${m[1]}` : "";
+              })()}
+            </p>
+            {code && (
+              <div>
+                <button
+                  onClick={() => setShowCode((v) => !v)}
+                  className="text-xs font-medium text-brand-700 hover:text-brand-800"
+                >
+                  {showCode ? "收起生成代码" : "查看生成代码"}
+                </button>
+                {showCode && (
+                  <div className="mt-1.5">
+                    <CodeBlock code={code} />
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        </section>
       )}
+
+      {isRunning && (
+        <p className="text-xs text-gray-400 flex items-center gap-1.5">
+          <Loader2 size={13} className="animate-spin text-blue-600" />
+          {status === "healing" ? "自愈中…" : "执行中…"}
+        </p>
+      )}
+      <div ref={bottomRef} />
     </div>
+  );
+}
+
+function TimelineHeader({
+  label,
+  done,
+  active,
+  icon,
+}: {
+  label: string;
+  done: boolean;
+  active: boolean;
+  icon?: ReactNode;
+}) {
+  return (
+    <div className="flex items-center gap-2">
+      {icon ??
+        (active ? (
+          <Loader2 size={15} className="text-blue-600 animate-spin" />
+        ) : done ? (
+          <CheckCircle size={15} className="text-brand-600" />
+        ) : (
+          <span className="w-[15px] h-[15px] rounded-full border-2 border-gray-300 inline-block" />
+        ))}
+      <h4 className={`text-sm font-semibold ${active ? "text-blue-700" : "text-surface-900"}`}>
+        {label}
+      </h4>
+    </div>
+  );
+}
+
+function BlinkCursor() {
+  return (
+    <span className="inline-block w-1.5 h-3.5 bg-blue-500 animate-pulse align-middle ml-0.5" />
   );
 }
 
@@ -554,6 +752,7 @@ interface DisplayStep {
   toolResult?: string;
   url?: string;
   prompt?: string;
+  healCount?: number;
 }
 
 export default function CaseDrawerBody({
@@ -577,7 +776,6 @@ export default function CaseDrawerBody({
   const [code, setCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState<Selection>({ kind: "info" });
-  const [rightTab, setRightTab] = useState<"preview" | "code">("preview");
   const [showPrompt, setShowPrompt] = useState(false);
   // 执行中自动跟随当前步骤(逐步展开);用户手动点任意条目即停止跟随,自由回看
   const [followLive, setFollowLive] = useState(true);
@@ -630,7 +828,6 @@ export default function CaseDrawerBody({
   useEffect(() => {
     setResult(null);
     setCode(null);
-    setRightTab("preview");
     setSel(isRunning ? { kind: "result" } : { kind: "info" });
     if (!isRunning) loadResult(true);
     return () => reqRef.current?.abort(); // 关抽屉/切换时取消在途请求
@@ -665,6 +862,7 @@ export default function CaseDrawerBody({
           toolResult: s.action_result.tool_result,
           url: s.action_result.url,
           prompt: s.model_output.prompt,
+          healCount: s.action_result.heal_attempts?.length ?? 0,
         }));
     }
     if (liveState?.steps?.length) {
@@ -680,7 +878,10 @@ export default function CaseDrawerBody({
           hasShot: !!s.screenshot,
           state: s.status === "done" ? ("done" as const) : ("running" as const),
           reasoning: s.reasoning,
+          toolResult: s.toolResult,
+          url: s.url,
           prompt: s.prompt ?? undefined,
+          healCount: s.healCount,
         }));
     }
     return caseInfo.steps.map((s, i) => ({
@@ -692,11 +893,6 @@ export default function CaseDrawerBody({
     // 仅依赖 steps 数组(其引用在 think_delta 高频更新时保持稳定),不依赖整个 liveState
     // → 思考流逐 token 推进时不重算步骤列表,消除流式期间点击切换的卡顿。
   }, [result, liveState?.steps, caseInfo.steps]);
-
-  const finalShotNo = useMemo(() => {
-    const withShot = steps.filter((s) => s.hasShot);
-    return withShot.length ? withShot[withShot.length - 1].no : null;
-  }, [steps]);
 
   // 执行中自动跟随最新步骤(只在有新步骤落定时触发——deps 取稳定的 steps 引用,
   // 思考流逐 token 推进不会重触发);用户手动点过(followLive=false)则不跟随。
@@ -943,144 +1139,17 @@ export default function CaseDrawerBody({
                 </div>
               )}
             </div>
-          ) : isRunning && !result ? (
-            /* Running view: 生命周期阶段清单(执行中无结果时,参考 TestSprite) */
-            <RunningView
-              phases={liveState?.phases ?? []}
-              status={status}
-              specStream={liveState?.specStream}
-              thinkStream={liveState?.thinkStream}
-            />
           ) : (
-            /* Result view: Preview/Code tabs + assertions */
-            <div className="flex flex-col min-h-full">
-              {/* Right tabs */}
-              <div className="px-6 border-b border-gray-200 bg-white flex gap-4 shrink-0">
-                {(["preview", "code"] as const).map((t) => (
-                  <button
-                    key={t}
-                    onClick={() => setRightTab(t)}
-                    className={`py-2.5 text-sm font-medium border-b-2 -mb-px transition-colors ${
-                      rightTab === t
-                        ? "border-brand-600 text-surface-900"
-                        : "border-transparent text-gray-500 hover:text-surface-900"
-                    }`}
-                  >
-                    {t === "preview" ? "Preview" : "代码"}
-                  </button>
-                ))}
-              </div>
-
-              <div className="p-6 space-y-5">
-                {rightTab === "preview" ? (
-                  runId && finalShotNo != null ? (
-                    <div className="max-w-xl">
-                      <Shot src={shotUrl(finalShotNo)} alt="最终态截图" />
-                    </div>
-                  ) : (
-                    <p className="text-sm text-gray-400">
-                      {runId ? "无最终态截图。" : "该用例尚无执行记录。"}
-                    </p>
-                  )
-                ) : code ? (
-                  <CodeBlock code={code} />
-                ) : (
-                  <p className="text-sm text-gray-400">
-                    {runId
-                      ? "暂无生成代码（执行通过后生成）。"
-                      : "执行后可查看生成代码。"}
-                  </p>
-                )}
-
-                {/* Assertions + healing (TestSprite: 在 preview 下方) */}
-                {result && (
-                  <section className="border-t border-gray-200 pt-4">
-                    <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2">
-                      断言结果
-                    </h4>
-                    {/* 执行未完成显式告警:步骤没走完(步数上限/早停/卡死)→ 用例已直接判 FAIL,
-                        下面断言是在半路页面上跑的,仅供参考、不作裁决依据。 */}
-                    {/执行未完成|停因=max_steps/.test(result.final_result ?? "") && (
-                      <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
-                        <AlertTriangle size={15} className="shrink-0 mt-0.5" />
-                        <span>
-                          <span className="font-medium">执行未完成，步骤没走完</span>
-                          ，用例已直接判 <strong>FAIL</strong>。下面的断言是在
-                          <strong>半路页面</strong>上跑的，仅供参考、不作裁决依据。
-                          {/停因=max_steps/.test(result.final_result ?? "") && (
-                            <>
-                              {" "}原因是步数上限，可调大
-                              <code className="mx-0.5">AGENT_MAX_STEPS</code>后重跑。
-                            </>
-                          )}
-                        </span>
-                      </div>
-                    )}
-                    {result.case_assertions.length === 0 ? (
-                      <p className="text-sm text-gray-400">无断言记录</p>
-                    ) : (
-                      <ul className="space-y-1.5">
-                        {result.case_assertions.map((a, i) => (
-                          <li
-                            key={i}
-                            className="flex items-start gap-2 text-sm"
-                          >
-                            <span className="mt-0.5 shrink-0">
-                              <AssertIcon status={a.status} />
-                            </span>
-                            <span className="text-gray-700">
-                              <span className="text-gray-400">[{a.type}]</span>{" "}
-                              {a.target}
-                              {a.expected != null && a.expected !== "" && (
-                                <span className="text-gray-400">
-                                  {" "}
-                                  == {a.expected}
-                                </span>
-                              )}
-                              {a.ai_judged && (
-                                <span
-                                  className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200 align-middle"
-                                  title="由 LLM 兜底判定,低置信,建议人工复核"
-                                >
-                                  AI判定·低置信
-                                </span>
-                              )}
-                              {a.healed && (
-                                <span
-                                  className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200 align-middle"
-                                  title={
-                                    a.heal_note
-                                      ? `经自愈重定位后通过:${a.heal_note}`
-                                      : "经自愈重定位后通过(原定位失效)"
-                                  }
-                                >
-                                  已自愈
-                                </span>
-                              )}
-                              {a.status === "fail" &&
-                                (a.actual || a.reason) && (
-                                  <span className="block text-xs text-red-600 mt-0.5">
-                                    实际: {a.actual ?? "—"}
-                                    {a.reason ? ` · ${a.reason}` : ""}
-                                  </span>
-                                )}
-                            </span>
-                          </li>
-                        ))}
-                      </ul>
-                    )}
-                    <p className="mt-3 text-xs text-gray-400">
-                      Token {result.token_usage} · 自愈 {result.heal_count} 次
-                      {(() => {
-                        // final_result 首行含「(停因=…)」,抽出来便于诊断早停
-                        const m = result.final_result?.match(/停因=([^)]+)/);
-                        return m ? ` · 停因 ${m[1]}` : "";
-                      })()}
-                    </p>
-                  </section>
-                )}
-              </div>
-            </div>
+            /* 过程时间线:执行中流式、执行后回溯,全过程一处可见 */
+            <TimelineView
+              steps={steps}
+              liveState={liveState}
+              result={result}
+              isRunning={isRunning}
+              status={status}
+              shotUrl={shotUrl}
+              code={code}
+            />
           )}
         </section>
       </div>

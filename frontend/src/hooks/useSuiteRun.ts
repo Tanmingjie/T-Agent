@@ -14,7 +14,10 @@ export interface StepStatus {
   description: string;
   screenshot?: string | null; // 该步真实截图文件名(None=无图,如快照/失败步)
   prompt?: string | null; // 本轮发给 LLM 的请求(供执行中「查看 prompt」)
-  reasoning?: string; // 该步「思考过程」(由流式 think_delta 在落定时定格,执行中即可回看)
+  reasoning?: string; // 该步「思考过程」(后端权威 reasoning,缺则流式 thinkStream 兜底)
+  toolResult?: string; // 工具观察文本(过程时间线展示)
+  url?: string; // 该步执行后页面 URL
+  healCount?: number; // 该步操作侧自愈次数
 }
 
 export interface PhaseStatus {
@@ -164,8 +167,12 @@ export function useSuiteRun(suiteId: string | undefined) {
                   description: d.description as string,
                   screenshot: (d.screenshot as string | null) ?? null,
                   prompt: (d.prompt as string | null) ?? null,
-                  // 本步思考:本次累积的 thinkStream;同轮多 tool_call 时后续步沿用已有
-                  reasoning: c.thinkStream || existing?.reasoning || "",
+                  // 本步思考:优先后端权威 reasoning,缺则用本次累积的 thinkStream 兜底
+                  reasoning:
+                    (d.reasoning as string) || c.thinkStream || existing?.reasoning || "",
+                  toolResult: (d.tool_result as string) ?? undefined,
+                  url: (d.url as string) ?? undefined,
+                  healCount: (d.heal_count as number) ?? 0,
                 },
               ],
             };

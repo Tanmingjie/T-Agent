@@ -435,6 +435,10 @@ class TestCaseAgent:
                         # 不再一律假设有图(否则失败/重试步会去取不存在的 step_NNN.png 报 404)
                         "screenshot": step.screenshot,
                         "prompt": step.prompt,  # 本轮请求,供执行中「查看 prompt」
+                        "reasoning": step.reasoning,  # 该步思考(后端权威,前端 thinkStream 兜底)
+                        "tool_result": step.tool_result,  # 工具观察(过程时间线展示)
+                        "url": step.url,
+                        "heal_count": len(step.heal_attempts),  # 操作侧自愈次数(自愈可见)
                     },
                 )
             except Exception:  # noqa: BLE001

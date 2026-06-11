@@ -81,6 +81,7 @@ def _build_history(record):
                     "url": s.url,
                     "screenshot": s.screenshot,
                     "assertion_results": s.assertion_results,
+                    "heal_attempts": s.heal_attempts,  # 操作侧自愈(过程时间线展示)
                     "is_custom_tool": s.is_custom_tool,
                     "duration_ms": s.duration_ms,
                 },
