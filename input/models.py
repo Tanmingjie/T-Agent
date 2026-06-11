@@ -173,6 +173,10 @@ class Suite(BaseModel):
     custom_prompt: str = ""
     hooks: dict = {}  # {"before_case": [...], "after_case": [...]}
 
+    # —— 多租户(平台化 T-P04b;单机/CLI 留空,空=默认租户,向后兼容)——
+    project_id: str = ""
+    version_id: str = ""  # Suite 绑版本(已拍板)
+
     # —— 预留同步字段(实现原则 4) ——
     external_id: str | None = None
     owner: str | None = None

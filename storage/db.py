@@ -52,6 +52,8 @@ class SuiteRow(SQLModel, table=True):
     code_generator: str = "BDDGenerator"
     custom_prompt: str = ""
     hooks: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    project_id: str = Field(default="", index=True)  # 多租户(T-P04b)
+    version_id: str = Field(default="", index=True)
     external_id: str | None = None
     owner: str | None = None
     updated_at: float = 0.0
@@ -125,6 +127,8 @@ class RunRecordRow(SQLModel, table=True):
     __tablename__ = "run_record"
     id: str = Field(primary_key=True)  # UUID
     suite_id: str = Field(default="", index=True)
+    project_id: str = Field(default="", index=True)  # 多租户(T-P04b)
+    version_id: str = Field(default="", index=True)
     status: str = "running"  # running | completed | aborted | failed
     total_cases: int = 0
     passed_cases: int = 0
@@ -316,9 +320,17 @@ class Store:
             row = await s.get(SuiteRow, suite_id)
             return Suite(**row.model_dump()) if row else None
 
-    async def list_suites(self) -> list[Suite]:
+    async def list_suites(
+        self, project_id: str | None = None, version_id: str | None = None
+    ) -> list[Suite]:
+        # 租户过滤:None=不过滤(向后兼容,单机/CLI 不传);传值则按项目/版本作用域隔离。
+        stmt = select(SuiteRow)
+        if project_id is not None:
+            stmt = stmt.where(SuiteRow.project_id == project_id)
+        if version_id is not None:
+            stmt = stmt.where(SuiteRow.version_id == version_id)
         async with self._sf() as s:
-            rows = (await s.exec(select(SuiteRow))).all()
+            rows = (await s.exec(stmt)).all()
             return [Suite(**r.model_dump()) for r in rows]
 
     # —— SessionProfile ——

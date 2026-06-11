@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from input.models import Project, ProjectMember, User, Version
+from input.models import Project, ProjectMember, Suite, User, Version
 from storage.db import Store
 
 
@@ -98,3 +98,35 @@ async def test_member_delete(store):
     assert await store.delete_member("p1", "alice") is True
     assert await store.get_member("p1", "alice") is None
     assert await store.delete_member("p1", "nope") is False
+
+
+# ── Suite 租户过滤(T-P04b)───────────────────────────────────
+
+
+async def test_suite_tenant_columns_roundtrip(store):
+    await store.save_suite(
+        Suite(id="s1", name="冒烟", base_url="https://x", project_id="p1", version_id="v1")
+    )
+    got = await store.get_suite("s1")
+    assert got.project_id == "p1"
+    assert got.version_id == "v1"
+
+
+async def test_list_suites_filtered_by_project_and_version(store):
+    await store.save_suite(Suite(id="s1", name="a", base_url="x", project_id="p1", version_id="v1"))
+    await store.save_suite(Suite(id="s2", name="b", base_url="x", project_id="p1", version_id="v2"))
+    await store.save_suite(Suite(id="s3", name="c", base_url="x", project_id="p2", version_id="v1"))
+    # 不传 = 全部(向后兼容,单机/CLI)
+    assert len(await store.list_suites()) == 3
+    # 按项目隔离
+    assert {s.id for s in await store.list_suites(project_id="p1")} == {"s1", "s2"}
+    # 按项目+版本隔离
+    assert {s.id for s in await store.list_suites(project_id="p1", version_id="v1")} == {"s1"}
+
+
+async def test_legacy_suite_defaults_empty_tenant(store):
+    # 旧建法不传 project_id/version_id → 空串(默认租户),不报错
+    await store.save_suite(Suite(id="s1", name="a", base_url="x"))
+    got = await store.get_suite("s1")
+    assert got.project_id == ""
+    assert got.version_id == ""
