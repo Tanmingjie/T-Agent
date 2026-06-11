@@ -38,6 +38,10 @@ async def lifespan(app: FastAPI):
     _store = Store(url=db_url)
     await _store.init()
     _repo = SQLModelRepository(_store)
+    # 鉴权(T-P05):一期 header 透传用户名;M4 换 IDaaS 只换 provider 实现。
+    from api.auth import HeaderAuthProvider, set_auth_provider
+
+    set_auth_provider(HeaderAuthProvider(_store))
     yield
     await _store.close()
 

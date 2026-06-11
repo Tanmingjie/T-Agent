@@ -1,24 +1,172 @@
-"""项目级配置路由(平台化 T-P06):LLM 配置 CRUD + 连通自检。
+"""项目路由(平台化 T-P05/T-P06):项目/成员/版本 CRUD + RBAC + LLM 配置。
 
-api_key **加密落库**(storage.crypto),回显只露尾号(mask),绝不返明文。
-执行链按项目构造 LLMClient(harness.llm.build_llm_client);CLI/单机仍走 env。
-注:完整项目 CRUD + 路由租户化在 T-P07;此处先把 LLM 配置闭环(本期重点)。
+- T-P05:项目自助开通(创建者→admin)、成员管理(admin)、版本建/克隆;三角色 RBAC 闸门
+  (require_member / require_project_admin / require_platform_admin)。
+- T-P06:LLM 配置 CRUD + 自检;api_key **加密落库**(storage.crypto),回显只露尾号,绝不返明文。
+  执行链按项目构造 LLMClient(harness.llm.build_llm_client);CLI/单机仍走 env。
+注:suites/execution/results/vocabulary 的租户化在 T-P07。
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from api.auth import (
+    ROLE_ADMIN,
+    ROLE_TESTER,
+    Principal,
+    get_principal,
+    require_member,
+    require_project_admin,
+)
 from api.server import get_store
 from harness.llm import build_llm_client
-from input.models import ProjectLLMConfig
+from input.models import Project, ProjectLLMConfig, ProjectMember, Version
 from storage import crypto
 
 router = APIRouter(tags=["projects"])
 logger = logging.getLogger(__name__)
+
+
+# ── 项目 CRUD(自助开通:创建者自动成为项目管理员;平台审批流留 M4)─────
+
+
+class ProjectIn(BaseModel):
+    name: str
+    description: str = ""
+
+
+@router.post("/projects")
+async def create_project(
+    body: ProjectIn, principal: Principal = Depends(get_principal), store=Depends(get_store)
+):
+    pid = uuid.uuid4().hex
+    await store.save_project(
+        Project(id=pid, name=body.name, description=body.description, owner=principal.user_id)
+    )
+    # 注册用户(若首次出现)+ 创建者即项目管理员
+    if await store.get_user(principal.user_id) is None:
+        from input.models import User
+
+        await store.save_user(User(id=principal.user_id, display_name=principal.user_id))
+    await store.save_member(
+        ProjectMember(project_id=pid, user_id=principal.user_id, role=ROLE_ADMIN)
+    )
+    return {"id": pid, "name": body.name, "description": body.description}
+
+
+@router.get("/projects")
+async def list_my_projects(principal: Principal = Depends(get_principal), store=Depends(get_store)):
+    """当前用户加入的项目(平台管理员看全部)。"""
+    if principal.is_platform_admin:
+        projects = await store.list_projects()
+    else:
+        memberships = await store.list_memberships(principal.user_id)
+        pids = {m.project_id for m in memberships}
+        projects = [p for p in await store.list_projects() if p.id in pids]
+    return [p.model_dump() for p in projects]
+
+
+@router.get("/projects/{project_id}")
+async def get_project(
+    project_id: str, _role: str = Depends(require_member), store=Depends(get_store)
+):
+    p = await store.get_project(project_id)
+    if p is None:
+        raise HTTPException(404, "项目不存在")
+    return p.model_dump()
+
+
+# ── 成员管理(项目管理员)──────────────────────────────────────
+
+
+class MemberIn(BaseModel):
+    user_id: str
+    role: str = ROLE_TESTER  # admin | tester
+
+
+@router.get("/projects/{project_id}/members")
+async def list_members(
+    project_id: str, _role: str = Depends(require_member), store=Depends(get_store)
+):
+    return [m.model_dump() for m in await store.list_members(project_id)]
+
+
+@router.post("/projects/{project_id}/members")
+async def add_member(
+    project_id: str,
+    body: MemberIn,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    if body.role not in (ROLE_ADMIN, ROLE_TESTER):
+        raise HTTPException(400, "role 必须是 admin 或 tester")
+    if await store.get_user(body.user_id) is None:
+        from input.models import User
+
+        await store.save_user(User(id=body.user_id, display_name=body.user_id))
+    await store.save_member(
+        ProjectMember(project_id=project_id, user_id=body.user_id, role=body.role)
+    )
+    return {"ok": True, "user_id": body.user_id, "role": body.role}
+
+
+@router.delete("/projects/{project_id}/members/{user_id}")
+async def remove_member(
+    project_id: str,
+    user_id: str,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    if not await store.delete_member(project_id, user_id):
+        raise HTTPException(404, "成员不存在")
+    return {"ok": True}
+
+
+# ── 版本(项目管理员建/克隆,成员看)─────────────────────────────
+
+
+class VersionIn(BaseModel):
+    name: str
+
+
+@router.get("/projects/{project_id}/versions")
+async def list_versions(
+    project_id: str, _role: str = Depends(require_member), store=Depends(get_store)
+):
+    return [v.model_dump() for v in await store.list_versions(project_id)]
+
+
+@router.post("/projects/{project_id}/versions")
+async def create_version(
+    project_id: str,
+    body: VersionIn,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    vid = uuid.uuid4().hex
+    await store.save_version(Version(id=vid, project_id=project_id, name=body.name))
+    return {"id": vid, "project_id": project_id, "name": body.name}
+
+
+@router.post("/projects/{project_id}/versions/{version_id}/clone-suites")
+async def clone_version_suites(
+    project_id: str,
+    version_id: str,
+    from_version_id: str,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    """从 from_version_id 拷 Suite 到 version_id(版本继承,显式动作)。"""
+    try:
+        n = await store.clone_version_suites(from_version_id, version_id)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"ok": True, "cloned": n}
 
 
 class LLMConfigIn(BaseModel):
@@ -54,7 +202,9 @@ def _is_mask(value: str) -> bool:
 
 
 @router.get("/projects/{project_id}/llm-config", response_model=LLMConfigOut)
-async def get_llm_config(project_id: str, store=Depends(get_store)):
+async def get_llm_config(
+    project_id: str, _role: str = Depends(require_member), store=Depends(get_store)
+):
     cfg = await store.get_llm_config(project_id)
     if cfg is None:
         # 未配置:返回空壳(前端显示「未配置」)
@@ -63,7 +213,12 @@ async def get_llm_config(project_id: str, store=Depends(get_store)):
 
 
 @router.put("/projects/{project_id}/llm-config", response_model=LLMConfigOut)
-async def put_llm_config(project_id: str, body: LLMConfigIn, store=Depends(get_store)):
+async def put_llm_config(
+    project_id: str,
+    body: LLMConfigIn,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
     # api_key 留空或仍是掩码 → 保留已存 key(避免前端不重输就被清空)
     api_key = body.api_key
     if not api_key or _is_mask(api_key):
@@ -81,14 +236,18 @@ async def put_llm_config(project_id: str, body: LLMConfigIn, store=Depends(get_s
 
 
 @router.delete("/projects/{project_id}/llm-config")
-async def delete_llm_config(project_id: str, store=Depends(get_store)):
+async def delete_llm_config(
+    project_id: str, _: Principal = Depends(require_project_admin), store=Depends(get_store)
+):
     if not await store.delete_llm_config(project_id):
         raise HTTPException(404, "未找到该项目的 LLM 配置")
     return {"ok": True}
 
 
 @router.post("/projects/{project_id}/llm-config/check")
-async def check_llm_config(project_id: str, store=Depends(get_store)):
+async def check_llm_config(
+    project_id: str, _role: str = Depends(require_member), store=Depends(get_store)
+):
     """用项目已存配置发一条测试消息,验证连通。返回 {ok, model, reply?/error?}。"""
     cfg = await store.get_llm_config(project_id)
     if cfg is None or not cfg.model:
