@@ -7,6 +7,7 @@ import IconRail from "./IconRail";
 interface SuiteInfo {
   name: string;
   base_url: string;
+  version_id?: string;
   cases?: unknown[];
   runs?: unknown[];
 }
@@ -34,6 +35,9 @@ export default function SuiteLayout() {
     if (id) apiGet<SuiteInfo>(`/suites/${id}`).then(setSuite).catch(() => {});
   }, [id]);
 
+  // 回到所属版本的套件列表(套件 id 全局唯一,故套件工作区路由保持 /suites/:id)。
+  const backTo = suite?.version_id ? `/versions/${suite.version_id}` : "/versions";
+
   return (
     <div className="flex h-screen bg-white text-surface-900">
       <IconRail />
@@ -41,7 +45,7 @@ export default function SuiteLayout() {
       <aside className="w-60 bg-white border-r border-gray-200 flex flex-col shrink-0">
         <div className="px-4 h-14 flex items-center border-b border-gray-200">
           <button
-            onClick={() => navigate("/suites")}
+            onClick={() => navigate(backTo)}
             className="flex items-center gap-1.5 text-sm text-gray-600 hover:text-surface-900 transition-colors min-w-0"
           >
             <ChevronLeft size={16} className="shrink-0" />
@@ -86,8 +90,8 @@ export default function SuiteLayout() {
       <main className="flex-1 overflow-auto bg-canvas">
         {/* Breadcrumb */}
         <div className="h-12 border-b border-gray-200 bg-white px-8 flex items-center text-sm text-gray-500">
-          <Link to="/suites" className="hover:text-surface-900 transition-colors">
-            测试套件
+          <Link to={backTo} className="hover:text-surface-900 transition-colors">
+            套件
           </Link>
           <span className="mx-2 text-gray-300">/</span>
           <span className="text-surface-900 font-medium truncate">

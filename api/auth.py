@@ -62,7 +62,13 @@ class HeaderAuthProvider(AuthProvider):
 
 
 async def role_in_project(store: Store, user_id: str, project_id: str) -> str | None:
-    """某人在某项目的有效角色:平台管理员→admin 等效;否则查成员表;非成员→None。"""
+    """某人在某项目的有效角色:平台管理员→admin 等效;否则查成员表;非成员→None。
+
+    **单机/开放模式**(未配置 AuthProvider):全员等效项目管理员,保留无登录全开放
+    + 向后兼容(隐式 ``system`` 主体不在用户表,故须在此短路,否则项目级路由会误判 403)。
+    """
+    if _auth_provider is None:
+        return ROLE_ADMIN
     user = await store.get_user(user_id)
     if user and user.is_platform_admin:
         return ROLE_ADMIN

@@ -50,3 +50,4 @@ storage/ui_research/
 # 开发辅助脚本(serve.py 是文档化的官方启动器,需纳入版本控制)
 scripts/*
 !scripts/serve.py
+!scripts/seed_demo.py

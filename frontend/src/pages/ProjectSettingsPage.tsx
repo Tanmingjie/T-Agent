@@ -12,7 +12,11 @@ export default function ProjectSettingsPage() {
   const [tab, setTab] = useState<Tab>("llm");
 
   if (!pid) {
-    return <div className="text-sm text-gray-500">请先在左下角选择一个项目。</div>;
+    return (
+      <div className="text-sm text-gray-500">
+        未指定项目。请通过内网系统进入,或在 URL 加 ?project=&lt;id&gt;。
+      </div>
+    );
   }
 
   const tabs: { id: Tab; label: string }[] = [

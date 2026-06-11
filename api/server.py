@@ -38,10 +38,14 @@ async def lifespan(app: FastAPI):
     _store = Store(url=db_url)
     await _store.init()
     _repo = SQLModelRepository(_store)
-    # 鉴权(T-P05):一期 header 透传用户名;M4 换 IDaaS 只换 provider 实现。
+    # 鉴权(T-P05):默认**关闭**(开放/单机模式,无需登录,过渡期与本地开发用)。
+    # 平台部署设 TAGENT_AUTH=header(M4 接 IDaaS 时换 provider 实现)启用真实 RBAC。
     from api.auth import HeaderAuthProvider, set_auth_provider
 
-    set_auth_provider(HeaderAuthProvider(_store))
+    if os.getenv("TAGENT_AUTH", "").lower() in ("1", "header", "true", "on"):
+        set_auth_provider(HeaderAuthProvider(_store))
+    else:
+        set_auth_provider(None)
     yield
     await _store.close()
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useOutletContext } from "react-router-dom";
 import { apiGet, apiPost, apiDelete } from "../api/client";
 import { withProject, getProjectId } from "../lib/session";
 import { Plus, Trash2, Play, Layers, Search } from "lucide-react";
@@ -32,10 +32,12 @@ export default function SuiteListPage() {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
+  const { versionId } = useOutletContext<{ versionId: string }>();
 
   async function load() {
     try {
-      setSuites(await apiGet<Suite[]>(withProject("/suites")));
+      const path = `/suites?version_id=${encodeURIComponent(versionId)}`;
+      setSuites(await apiGet<Suite[]>(withProject(path)));
       setError(null);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
@@ -43,7 +45,7 @@ export default function SuiteListPage() {
   }
   useEffect(() => {
     load();
-  }, []);
+  }, [versionId]);
 
   async function create() {
     try {
@@ -51,6 +53,7 @@ export default function SuiteListPage() {
         name,
         base_url: baseUrl,
         project_id: getProjectId(),
+        version_id: versionId,
       });
       setShowCreate(false);
       setName("");
