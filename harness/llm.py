@@ -239,11 +239,21 @@ class LiteLLMClient(LLMClient):
         self,
         messages: list[dict[str, Any]],
         tools: list[dict[str, Any]] | None = None,
+        on_delta=None,
         **kwargs: Any,
     ) -> LLMResponse:
-        """一次对话。tools 非空时启用 tool-calling 并做格式容错。"""
+        """一次对话。tools 非空时启用 tool-calling 并做格式容错。
+
+        ``on_delta`` 非空时**首轮走流式**(逐 token 回调 reasoning 文本):既在执行期
+        显示「思考过程」,又让 ReAct 期每次 LLM 调用对网关/代理保持字节流不被空闲超时
+        切断(与 spec 翻译同理)。tool_call 仍由 `stream_chunk_builder` 聚合后经 `_parse`
+        容错解析,语义与非流式一致。容错重试走非流式 `_complete`。
+        """
         expect_tools = bool(tools)
-        resp = await self._complete(messages, tools, **kwargs)
+        if on_delta is not None:
+            resp = await self._complete_stream(messages, tools, on_delta, **kwargs)
+        else:
+            resp = await self._complete(messages, tools, **kwargs)
         parsed = self._parse(resp, expect_tools)
 
         # 仅当「模型疑似尝试调用工具但格式坏了」时才重试
@@ -397,6 +407,62 @@ class LiteLLMClient(LLMClient):
                 detail,
             )
             raise
+
+    async def _complete_stream(
+        self,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None,
+        on_delta,
+        **kwargs: Any,
+    ) -> Any:
+        """流式补全(支持 tools):逐 chunk 回调 reasoning 文本增量,收齐后用 litellm
+        ``stream_chunk_builder`` 重建标准响应对象,交回 `_parse`(tool_call 聚合 + 容错
+        语义与非流式一致)。用 `acompletion` 原生异步,与调用方同 loop、不占线程。
+        """
+        call_kwargs: dict[str, Any] = {
+            "model": self.model,
+            "messages": messages,
+            "temperature": self.temperature,
+            **self.extra_completion_kwargs,
+            **kwargs,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        }
+        if self.api_base:
+            call_kwargs["api_base"] = self.api_base
+        if self.api_key:
+            call_kwargs["api_key"] = self.api_key
+        if tools:
+            call_kwargs["tools"] = tools
+        call_kwargs["timeout"] = self.timeout
+        call_kwargs.setdefault("num_retries", self.num_retries)
+        call_kwargs.setdefault("max_retries", self.num_retries)
+
+        chunks: list[Any] = []
+        try:
+            resp_stream = await litellm.acompletion(**call_kwargs)
+            async for chunk in resp_stream:
+                chunks.append(chunk)
+                try:
+                    delta = chunk.choices[0].delta.content or ""
+                except (AttributeError, IndexError, TypeError):
+                    delta = ""
+                if delta and on_delta is not None:
+                    await on_delta(delta)
+        except Exception as e:
+            detail = str(e).replace("\n", " ")
+            if len(detail) > 500:
+                detail = detail[:500] + "…(截断)"
+            logger.error(
+                "LLM 流式调用失败:%s | model=%s api_base=%s | %s",
+                type(e).__name__,
+                self.model,
+                self.api_base or "(default)",
+                detail,
+            )
+            raise
+        # 重建标准响应对象(聚合 content + tool_calls + usage),复用 _parse 容错。
+        return litellm.stream_chunk_builder(chunks, messages=messages)
 
     def _parse(self, resp: Any, expect_tools: bool = True) -> "_Parsed":
         """从 litellm 响应解析出规范化结果 + 容错。

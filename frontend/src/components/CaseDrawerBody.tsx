@@ -461,14 +461,18 @@ function RunningView({
   phases,
   status,
   specStream,
+  thinkStream,
 }: {
   phases: PhaseStatus[];
   status: CaseRunStatus;
   specStream?: string;
+  thinkStream?: string;
 }) {
   const activePhase = phases[phases.length - 1]?.phase;
   // 翻译阶段进行中 + 有流式增量 → 展示逐 token 文本(慢模型保活的可见证据)
   const showStream = activePhase === "spec" && !!specStream;
+  // 执行阶段:展示当前步「思考过程」逐 token 流(step_change 落定即清,显示下一步)
+  const showThink = activePhase === "executing" && !!thinkStream;
   return (
     <div className="p-6 space-y-5 max-w-2xl">
       <div className="flex items-center gap-2 text-blue-600">
@@ -515,6 +519,19 @@ function RunningView({
           </p>
           <pre className="max-h-64 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
             {specStream}
+            <span className="inline-block w-1.5 h-3.5 bg-blue-500 animate-pulse align-middle ml-0.5" />
+          </pre>
+        </div>
+      )}
+
+      {/* 执行阶段当前步「思考过程」流式(逐 token);step_change 落定即清 */}
+      {showThink && (
+        <div>
+          <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
+            思考过程（流式）
+          </p>
+          <pre className="max-h-64 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
+            {thinkStream}
             <span className="inline-block w-1.5 h-3.5 bg-blue-500 animate-pulse align-middle ml-0.5" />
           </pre>
         </div>
@@ -888,6 +905,7 @@ export default function CaseDrawerBody({
               phases={liveState?.phases ?? []}
               status={status}
               specStream={liveState?.specStream}
+              thinkStream={liveState?.thinkStream}
             />
           ) : (
             /* Result view: Preview/Code tabs + assertions */

@@ -184,6 +184,30 @@ async def test_chat_stream_no_on_delta_still_accumulates(monkeypatch):
     assert out.content == "ab"
 
 
+async def test_chat_with_tools_streams_reasoning_via_on_delta(monkeypatch):
+    """ReAct 路径:chat(tools=, on_delta=) 流式回调 reasoning,tool_call 经
+    stream_chunk_builder 重建 + _parse 解析(语义同非流式)。"""
+    _patch_acompletion(monkeypatch, [_chunk("思考"), _chunk("中"), _chunk(None)])
+    # stream_chunk_builder 把 chunks 重建为带 tool_call 的标准响应
+    built = _resp(_msg(content="思考中", tool_calls=[_tc("browser_click", '{"ref": "e1"}')]))
+    monkeypatch.setattr(
+        llm_mod.litellm, "stream_chunk_builder", lambda chunks, messages=None: built
+    )
+    client = LiteLLMClient(model="test/model")
+    seen = []
+
+    async def on_delta(t):
+        seen.append(t)
+
+    out = await client.chat(
+        [{"role": "user", "content": "go"}], tools=[{"x": 1}], on_delta=on_delta
+    )
+    assert seen == ["思考", "中"]  # reasoning 逐 chunk 回调
+    assert out.has_tool_calls
+    assert out.tool_calls[0].name == "browser_click"
+    assert out.tool_calls[0].arguments == {"ref": "e1"}
+
+
 # ── chat:标准路径 ─────────────────────────────────────────────
 
 

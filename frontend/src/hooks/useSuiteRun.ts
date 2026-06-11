@@ -27,6 +27,7 @@ export interface CaseRunState {
   phases: PhaseStatus[]; // 生命周期阶段流(翻译/执行/断言/代码),最后一个为当前进行中
   spec?: unknown; // 翻译阶段完成后实时推送的 TestSpec(执行中也能看执行规格)
   specStream?: string; // 翻译阶段逐 token 流式增量(执行中实时显示,spec_ready 后被结构化 spec 取代)
+  thinkStream?: string; // 执行期当前步「思考过程」逐 token 增量(step_change 落定即清,显示下一步思考)
 }
 
 export interface PermReq {
@@ -105,6 +106,7 @@ export function useSuiteRun(suiteId: string | undefined) {
             steps: [],
             phases: [],
             specStream: "",
+            thinkStream: "",
           }));
         });
 
@@ -114,6 +116,15 @@ export function useSuiteRun(suiteId: string | undefined) {
           upd(d.case_id as string, (c) => ({
             ...c,
             specStream: (c.specStream ?? "") + ((d.delta as string) ?? ""),
+          }));
+        });
+
+        es.addEventListener("think_delta", (e) => {
+          const d = safeParse((e as MessageEvent).data);
+          if (!d) return;
+          upd(d.case_id as string, (c) => ({
+            ...c,
+            thinkStream: (c.thinkStream ?? "") + ((d.delta as string) ?? ""),
           }));
         });
 
@@ -140,6 +151,8 @@ export function useSuiteRun(suiteId: string | undefined) {
           if (!d) return;
           upd(d.case_id as string, (c) => ({
             ...c,
+            // 本步落定 → 清空思考流(该步思考已并入步骤),为下一步思考腾位
+            thinkStream: "",
             steps: [
               ...c.steps.filter((s) => s.index !== d.step_index),
               {

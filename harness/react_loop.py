@@ -177,6 +177,7 @@ class ReActLoop:
         compactor=None,
         capture_screenshot=None,
         on_step=None,
+        on_llm_delta=None,
         vocab_resolver=None,
     ) -> None:
         self.llm = llm
@@ -191,6 +192,9 @@ class ReActLoop:
         self.capture_screenshot = capture_screenshot
         # 实时步骤回调:async (ActionStep) -> None;每步落定后立即回调(供 SSE 实时推送进度)
         self.on_step = on_step
+        # reasoning 流式回调:async (text) -> None;每轮 LLM 思考逐 token 推送(执行期
+        # 「思考过程」+ 慢模型下对网关保活,防 ReAct 期 LLM 调用空闲超时切 SSE)。
+        self.on_llm_delta = on_llm_delta
         # 词汇表解析器(可选):操作侧自愈时按业务词查真实页面名,作为 P1 候选(规格 §5.4
         # "词汇表第一优先查询")。无则自愈退回纯快照启发式。
         self.vocab_resolver = vocab_resolver
@@ -232,7 +236,7 @@ class ReActLoop:
             current_prompt = self._snapshot_prompt(messages)
 
             try:
-                resp = await self.llm.chat(messages, tools=self.tools)
+                resp = await self.llm.chat(messages, tools=self.tools, on_delta=self.on_llm_delta)
             except LLMToolCallError as e:
                 # 铁律3:偶发 tool_call 格式错误不得搞崩 ReAct 循环。还有未完成步骤时,
                 # 不直接终止,而是哑火续推(纠偏后让模型重出正确调用),仅在预算耗尽/

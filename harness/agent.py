@@ -394,7 +394,26 @@ class TestCaseAgent:
             except Exception:  # noqa: BLE001
                 pass
 
+        # 执行期「思考过程」流式(reasoning 逐 token):合批 ~50 字符转发,削减 SSE 事件数。
+        _think_buf: list[str] = []
+
+        async def _flush_think() -> None:
+            if cb is None or not _think_buf:
+                return
+            text = "".join(_think_buf)
+            _think_buf.clear()
+            try:
+                await cb("think_delta", {"case_id": case.id, "delta": text})
+            except Exception:  # noqa: BLE001
+                pass
+
+        async def emit_think_delta(text: str) -> None:
+            _think_buf.append(text)
+            if sum(len(s) for s in _think_buf) >= 50:
+                await _flush_think()
+
         async def emit_step(step) -> None:
+            await _flush_think()  # 步骤落定前冲刷该步思考尾巴,保证顺序:思考→步骤
             if cb is None:
                 return
             desc = (
@@ -568,6 +587,7 @@ class TestCaseAgent:
             compactor=ContextCompactor(),
             capture_screenshot=capture_screenshot,
             on_step=emit_step,  # 每步落定即时推送(实时进度)
+            on_llm_delta=emit_think_delta,  # 思考过程流式 + ReAct 期网关保活
             vocab_resolver=self.vocab_resolver,  # 操作侧自愈词汇表优先
         )
         await emit_phase("executing", "驱动浏览器逐步执行")
