@@ -293,6 +293,12 @@ cd frontend && npm run preview    # 本地预览生产构建
 #   MCP_SETTLE_TIMEOUT_MS=8000 / MCP_SETTLE_INTERVAL_MS=400 → settle 超时/轮询间隔
 #   HEAL_VISUAL=0                                  → 关视觉自愈截图双通道(默认开,需多模态模型)
 #   AGENT_MAX_STEPS=40                             → API 执行的 ReAct 最大步数(长流程如结算需调大)
+#   RUN_MODE=queue                                 → 双进程执行(API 入队,scripts/worker.py 领取);默认 embedded(进程内线程,SSE 实时)
+#   PLATFORM_SECRET_KEY=<Fernet key>               → 字段加密密钥(LLM key/Cookie);不设用开发兜底+告警(生产必设)
+#   WORKER_ID / WORKER_POLL_INTERVAL / WORKER_STALE_SECONDS / WORKER_MAX_PROJECT_CONC → worker 进程参数
+
+# 平台化双进程(T-P08):API 入队 + 独立 worker 领取执行
+python scripts/worker.py            # 起一个执行 worker(可多开横向扩并发);需 RUN_MODE=queue 让 API 入队
 ```
 
 测试配置:`pyproject.toml` 的 `[tool.pytest.ini_options]` 已设 `asyncio_mode = "auto"`(async 测试无需标记)。

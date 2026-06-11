@@ -20,7 +20,8 @@ import time
 import uuid
 from typing import Type, TypeVar
 
-from sqlalchemy import JSON, Column, event, inspect, text
+from sqlalchemy import JSON, Column, event, func, inspect, text
+from sqlalchemy import update as sa_update
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import Field, SQLModel, select
@@ -150,6 +151,24 @@ class SuiteSettingsRow(SQLModel, table=True):
     permission_mode: str = "trust"  # trust | approve
     parallelism: int = 1  # 并发执行用例数(1=串行)
     updated_at: float = 0.0
+
+
+class RunQueueRow(SQLModel, table=True):
+    """执行任务队列(平台化 T-P08)。API 只入队;worker 进程 SKIP LOCKED 领取。
+
+    心跳 claimed_at 供超时回收(worker 崩溃→任务回到 queued 重试)。
+    """
+
+    __tablename__ = "run_queue"
+    run_id: str = Field(primary_key=True)
+    suite_id: str = Field(default="", index=True)
+    project_id: str = Field(default="", index=True)
+    case_id: str | None = None
+    status: str = Field(default="queued", index=True)  # queued | claimed | done | failed
+    claimed_by: str = ""
+    claimed_at: float = 0.0  # 心跳时间(超时回收依据);0=未领取
+    attempts: int = 0
+    created_at: float = 0.0
 
 
 # ── 多租户表(平台化 T-P04)──────────────────────────────────────
@@ -606,3 +625,109 @@ class Store:
             await s.delete(row)
             await s.commit()
             return True
+
+    # —— 执行任务队列(T-P08:API 入队,worker 领取)——
+
+    async def enqueue_run(
+        self, run_id: str, suite_id: str, project_id: str = "", case_id: str | None = None
+    ) -> None:
+        async with self._sf() as s:
+            s.add(
+                RunQueueRow(
+                    run_id=run_id,
+                    suite_id=suite_id,
+                    project_id=project_id,
+                    case_id=case_id,
+                    status="queued",
+                    created_at=time.time(),
+                )
+            )
+            await s.commit()
+
+    async def claim_next_run(
+        self,
+        worker_id: str,
+        *,
+        stale_seconds: float = 120.0,
+        max_project_concurrency: int = 0,
+    ) -> RunQueueRow | None:
+        """领取下一条待执行任务(FIFO)。PG 用 FOR UPDATE SKIP LOCKED 防多 worker 抢同一条;
+        SQLite 单写无并发抢占问题。返回领到的行(已置 claimed),无则 None。
+
+        - 先回收**心跳超时**的 claimed 任务(worker 崩溃)→ queued 重试。
+        - ``max_project_concurrency>0`` 时,跳过已达该项目并发上限的项目任务(配额)。
+        """
+        now = time.time()
+        async with self._sf() as s:
+            # 1) 回收超时
+            await s.exec(
+                sa_update(RunQueueRow)
+                .where(
+                    RunQueueRow.status == "claimed",
+                    RunQueueRow.claimed_at < now - stale_seconds,
+                )
+                .values(status="queued", claimed_by="", claimed_at=0.0)
+            )
+            await s.commit()
+
+            # 2) 取候选 queued(FIFO),PG 上 SKIP LOCKED 防抢
+            stmt = (
+                select(RunQueueRow)
+                .where(RunQueueRow.status == "queued")
+                .order_by(RunQueueRow.created_at)
+            )
+            if not self.is_sqlite:
+                stmt = stmt.with_for_update(skip_locked=True)
+            candidates = (await s.exec(stmt)).all()
+            if not candidates:
+                return None
+
+            chosen = None
+            if max_project_concurrency > 0:
+                # 各项目当前 claimed 数(配额判定)
+                counts = dict(
+                    (
+                        await s.exec(
+                            select(RunQueueRow.project_id, func.count())
+                            .where(RunQueueRow.status == "claimed")
+                            .group_by(RunQueueRow.project_id)
+                        )
+                    ).all()
+                )
+                for row in candidates:
+                    if counts.get(row.project_id, 0) < max_project_concurrency:
+                        chosen = row
+                        break
+            else:
+                chosen = candidates[0]
+
+            if chosen is None:
+                return None
+            chosen.status = "claimed"
+            chosen.claimed_by = worker_id
+            chosen.claimed_at = now
+            chosen.attempts += 1
+            s.add(chosen)
+            await s.commit()
+            await s.refresh(chosen)
+            return chosen
+
+    async def heartbeat_run(self, run_id: str) -> None:
+        async with self._sf() as s:
+            await s.exec(
+                sa_update(RunQueueRow)
+                .where(RunQueueRow.run_id == run_id)
+                .values(claimed_at=time.time())
+            )
+            await s.commit()
+
+    async def complete_queued_run(self, run_id: str, status: str = "done") -> None:
+        async with self._sf() as s:
+            await s.exec(
+                sa_update(RunQueueRow).where(RunQueueRow.run_id == run_id).values(status=status)
+            )
+            await s.commit()
+
+    async def get_queued_run(self, run_id: str) -> RunQueueRow | None:
+        async with self._sf() as s:
+            return await s.get(RunQueueRow, run_id)
