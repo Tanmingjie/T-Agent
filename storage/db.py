@@ -227,6 +227,9 @@ class Store:
         self._sf = sessionmaker(self.engine, class_=AsyncSession, expire_on_commit=False)
 
     async def init(self) -> None:
+        # schema 策略(T-P03):**平台部署用 Alembic**(`alembic upgrade head`)管 schema。
+        # 这里的 create_all + 轻量迁移保留作**单机/CLI/测试的便利 fallback**(免每次跑 alembic)。
+        # 因 Alembic 基线就是同一份 metadata 的 create_all,两条路径建出的 schema 一致、不漂移。
         async with self.engine.begin() as conn:
             await conn.run_sync(SQLModel.metadata.create_all)
             # 轻量迁移:create_all 只建不存在的表、**不会给已存在的表加列**。新增模型字段

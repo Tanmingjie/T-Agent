@@ -9,6 +9,8 @@ sqlmodel>=0.0.22
 aiosqlite>=0.20.0
 # Postgres 异步驱动(平台化:DATABASE_URL=postgresql+asyncpg://...;单机仍用 sqlite)
 asyncpg>=0.30.0
+# Schema 迁移(平台化:alembic upgrade head;单机/测试仍可用 Store.init 的 create_all)
+alembic>=1.13.0
 # Excel 容错解析
 openpyxl>=3.1.5
 # Custom Tool / 配置 YAML 解析(litellm 已传递依赖,显式声明)
