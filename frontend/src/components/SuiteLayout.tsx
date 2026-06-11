@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { NavLink, Outlet, useParams, useNavigate, Link } from "react-router-dom";
 import { apiGet } from "../api/client";
-import { ListChecks, History, Settings, ChevronLeft } from "lucide-react";
+import { ListChecks, History, BarChart3, Settings, ChevronLeft } from "lucide-react";
 import IconRail from "./IconRail";
+import { setVersionId } from "../lib/session";
 
 interface SuiteInfo {
   name: string;
@@ -18,6 +19,7 @@ const navGroups = [
     links: [
       { to: "", label: "用例", icon: ListChecks, end: true },
       { to: "history", label: "执行历史", icon: History, end: false },
+      { to: "reports", label: "报告", icon: BarChart3, end: false },
     ],
   },
   {
@@ -32,11 +34,18 @@ export default function SuiteLayout() {
   const [suite, setSuite] = useState<SuiteInfo | null>(null);
 
   useEffect(() => {
-    if (id) apiGet<SuiteInfo>(`/suites/${id}`).then(setSuite).catch(() => {});
+    if (!id) return;
+    apiGet<SuiteInfo>(`/suites/${id}`)
+      .then((s) => {
+        setSuite(s);
+        // 把该任务所属版本写回 session,返回测试任务页时下拉自动定位到它。
+        if (s.version_id) setVersionId(s.version_id);
+      })
+      .catch(() => {});
   }, [id]);
 
-  // 回到所属版本的套件列表(套件 id 全局唯一,故套件工作区路由保持 /suites/:id)。
-  const backTo = suite?.version_id ? `/versions/${suite.version_id}` : "/versions";
+  // 返回测试任务列表(版本由 session 记忆,任务列表页下拉据此定位)。
+  const backTo = "/tasks";
 
   return (
     <div className="flex h-screen bg-white text-surface-900">

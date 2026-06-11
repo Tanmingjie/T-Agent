@@ -1,9 +1,15 @@
+// 测试任务(项目落地页之一):版本下拉 + 该版本下的测试任务表。
+// 版本层从独立页面降为这里的下拉(项目→[版本下拉]→任务);选中版本落 session 续存。
 import { useEffect, useMemo, useState } from "react";
-import { useNavigate, useOutletContext } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { apiGet, apiPost, apiDelete } from "../api/client";
-import { withProject, getProjectId } from "../lib/session";
-import { Plus, Trash2, Play, Layers, Search } from "lucide-react";
+import { withProject, getProjectId, getVersionId, setVersionId } from "../lib/session";
+import { Plus, Trash2, Play, Layers, Search, GitBranch, ChevronDown } from "lucide-react";
 
+interface Version {
+  id: string;
+  name: string;
+}
 interface LastRun {
   id: string;
   status: string;
@@ -40,16 +46,8 @@ function LastRunCell({ run }: { run?: LastRun | null }) {
   if (!run) return <span className="text-gray-300">未执行</span>;
   const ok = run.status === "completed" && run.failed_cases === 0;
   const running = run.status === "running";
-  const dot = running
-    ? "bg-blue-500"
-    : ok
-      ? "bg-brand-500"
-      : "bg-red-500";
-  const text = running
-    ? "text-blue-600"
-    : ok
-      ? "text-brand-700"
-      : "text-red-600";
+  const dot = running ? "bg-blue-500" : ok ? "bg-brand-500" : "bg-red-500";
+  const text = running ? "text-blue-600" : ok ? "text-brand-700" : "text-red-600";
   return (
     <span className="inline-flex items-center gap-2">
       <span className={`w-2 h-2 rounded-full ${dot}`} />
@@ -60,7 +58,10 @@ function LastRunCell({ run }: { run?: LastRun | null }) {
   );
 }
 
-export default function SuiteListPage() {
+export default function TasksPage() {
+  const pid = getProjectId();
+  const [versions, setVersions] = useState<Version[]>([]);
+  const [versionId, setVid] = useState<string>(getVersionId());
   const [suites, setSuites] = useState<Suite[]>([]);
   const [showCreate, setShowCreate] = useState(false);
   const [name, setName] = useState("");
@@ -68,11 +69,28 @@ export default function SuiteListPage() {
   const [query, setQuery] = useState("");
   const [error, setError] = useState<string | null>(null);
   const navigate = useNavigate();
-  const { versionId } = useOutletContext<{ versionId: string }>();
 
-  async function load() {
+  // 拉版本列表;选中版本缺省取 session 续存值,否则第一个。
+  useEffect(() => {
+    if (!pid) return;
+    apiGet<Version[]>(`/projects/${pid}/versions`)
+      .then((vs) => {
+        setVersions(vs);
+        const stored = getVersionId();
+        const pick = vs.find((v) => v.id === stored)?.id || vs[0]?.id || "";
+        setVid(pick);
+        setVersionId(pick);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)));
+  }, [pid]);
+
+  async function loadSuites(vid: string) {
+    if (!vid) {
+      setSuites([]);
+      return;
+    }
     try {
-      const path = `/suites?version_id=${encodeURIComponent(versionId)}&with_status=true`;
+      const path = `/suites?version_id=${encodeURIComponent(vid)}&with_status=true`;
       setSuites(await apiGet<Suite[]>(withProject(path)));
       setError(null);
     } catch (e) {
@@ -80,21 +98,26 @@ export default function SuiteListPage() {
     }
   }
   useEffect(() => {
-    load();
+    loadSuites(versionId);
   }, [versionId]);
+
+  function onPickVersion(vid: string) {
+    setVid(vid);
+    setVersionId(vid);
+  }
 
   async function create() {
     try {
       await apiPost("/suites", {
         name,
         base_url: baseUrl,
-        project_id: getProjectId(),
+        project_id: pid,
         version_id: versionId,
       });
       setShowCreate(false);
       setName("");
       setBaseUrl("");
-      load();
+      loadSuites(versionId);
     } catch (e) {
       alert("创建失败: " + (e instanceof Error ? e.message : String(e)));
     }
@@ -104,7 +127,7 @@ export default function SuiteListPage() {
     if (!window.confirm("确认删除此测试任务？此操作不可恢复。")) return;
     try {
       await apiDelete(`/suites/${id}`);
-      load();
+      loadSuites(versionId);
     } catch (e) {
       alert("删除失败: " + (e instanceof Error ? e.message : String(e)));
     }
@@ -120,19 +143,57 @@ export default function SuiteListPage() {
     );
   }, [suites, query]);
 
+  if (!pid) {
+    return (
+      <div className="max-w-md mt-10 text-center">
+        <h1 className="text-lg font-semibold text-surface-900 mb-2">未指定项目</h1>
+        <p className="text-sm text-gray-500">
+          请通过内网系统选择项目后进入，或在 URL 加 <code>?project=&lt;id&gt;</code>。
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div>
-      {/* Header */}
+      {/* Header:版本下拉 + 新建 */}
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h1 className="text-xl font-semibold text-surface-900">测试任务</h1>
+          <div className="flex items-center gap-3">
+            <h1 className="text-xl font-semibold text-surface-900">测试任务</h1>
+            {/* 版本下拉(版本层降为此选择器) */}
+            <div className="relative">
+              <GitBranch
+                size={14}
+                className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+              />
+              <ChevronDown
+                size={14}
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 pointer-events-none"
+              />
+              <select
+                value={versionId}
+                onChange={(e) => onPickVersion(e.target.value)}
+                className="appearance-none border border-gray-300 rounded-md pl-7 pr-7 py-1.5 text-sm bg-white text-surface-900 focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 cursor-pointer"
+                title="切换版本"
+              >
+                {versions.length === 0 && <option value="">无版本</option>}
+                {versions.map((v) => (
+                  <option key={v.id} value={v.id}>
+                    {v.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
           <p className="text-sm text-gray-500 mt-1">
-            管理该版本下的测试任务，上传用例并执行 AI 自动化测试。
+            管理当前版本下的测试任务，上传用例并执行 AI 自动化测试。版本由内网系统维护。
           </p>
         </div>
         <button
           onClick={() => setShowCreate((v) => !v)}
-          className="inline-flex items-center gap-1.5 bg-brand-600 text-white px-3.5 py-2 rounded-md text-sm font-medium hover:bg-brand-700 transition-colors"
+          disabled={!versionId}
+          className="inline-flex items-center gap-1.5 bg-brand-600 text-white px-3.5 py-2 rounded-md text-sm font-medium hover:bg-brand-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
         >
           <Plus size={16} /> 新建测试任务
         </button>
@@ -194,9 +255,7 @@ export default function SuiteListPage() {
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
-        <span className="text-xs text-gray-400 ml-auto">
-          共 {filtered.length} 个任务
-        </span>
+        <span className="text-xs text-gray-400 ml-auto">共 {filtered.length} 个任务</span>
       </div>
 
       {/* Table */}
@@ -217,9 +276,13 @@ export default function SuiteListPage() {
                 <td colSpan={5} className="px-5 py-16 text-center">
                   <Layers size={36} className="mx-auto text-gray-300 mb-3" />
                   <p className="text-gray-500 text-sm mb-1">
-                    {query ? "没有匹配的任务" : "还没有测试任务"}
+                    {query
+                      ? "没有匹配的任务"
+                      : versionId
+                        ? "该版本还没有测试任务"
+                        : "请先选择一个版本"}
                   </p>
-                  {!query && (
+                  {!query && versionId && (
                     <p className="text-xs text-gray-400">
                       点击「新建测试任务」创建你的第一个测试任务
                     </p>
@@ -243,9 +306,7 @@ export default function SuiteListPage() {
                     </span>
                   </div>
                 </td>
-                <td className="px-5 py-3.5 text-gray-500">
-                  {s.case_count ?? 0}
-                </td>
+                <td className="px-5 py-3.5 text-gray-500">{s.case_count ?? 0}</td>
                 <td className="px-5 py-3.5">
                   <LastRunCell run={s.last_run} />
                 </td>

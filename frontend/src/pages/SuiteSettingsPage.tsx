@@ -61,7 +61,7 @@ export default function SuiteSettingsPage() {
       return;
     try {
       await apiDelete(`/suites/${id}`);
-      navigate("/versions");
+      navigate("/tasks");
     } catch (e) {
       alert("删除失败: " + (e instanceof Error ? e.message : String(e)));
     }

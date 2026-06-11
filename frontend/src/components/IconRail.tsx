@@ -1,10 +1,10 @@
 import { NavLink } from "react-router-dom";
-import { LayoutDashboard, GitBranch, BookOpen, Settings, Zap } from "lucide-react";
+import { LayoutDashboard, Layers, BookOpen, Settings, Zap } from "lucide-react";
 
-// 深层工作区(版本/套件)左侧的细图标轨,用于快速跳回项目级页面。
+// 深层工作区(测试任务)左侧的细图标轨,用于快速跳回项目级页面。
 const items = [
   { to: "/", icon: LayoutDashboard, label: "概览", end: true },
-  { to: "/versions", icon: GitBranch, label: "版本", end: false },
+  { to: "/tasks", icon: Layers, label: "测试任务", end: false },
   { to: "/vocabulary", icon: BookOpen, label: "词汇表", end: false },
   { to: "/settings", icon: Settings, label: "设置", end: false },
 ];

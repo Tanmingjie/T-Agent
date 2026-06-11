@@ -1,7 +1,7 @@
 import { NavLink } from "react-router-dom";
 import {
   LayoutDashboard,
-  GitBranch,
+  Layers,
   BookOpen,
   Settings,
   Zap,
@@ -9,14 +9,14 @@ import {
 } from "lucide-react";
 
 // 项目级导航。作用域分两组:
-//   版本级入口(概览/版本)走上半组;项目级配置(词汇表/设置)走下半组。
-//   报告不在此 —— 它是版本级,挂在版本工作区(VersionLayout)内。
+//   概览 / 测试任务(版本降为任务页内的下拉)走上半组;项目级配置(词汇表/设置)走下半组。
+//   报告不在此 —— 它是任务级,挂在测试任务工作区(SuiteLayout)内。
 const groups = [
   {
     label: "项目",
     links: [
       { to: "/", label: "概览", icon: LayoutDashboard, end: true },
-      { to: "/versions", label: "版本", icon: GitBranch, end: false },
+      { to: "/tasks", label: "测试任务", icon: Layers, end: false },
     ],
   },
   {

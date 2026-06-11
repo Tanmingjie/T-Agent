@@ -11,6 +11,7 @@ interface Version {
 }
 interface Run {
   id: string;
+  suite_id: string;
   version_id: string;
   status: string;
   total_cases: number;
@@ -69,7 +70,7 @@ export default function ProjectOverviewPage() {
       {/* 状态卡 */}
       <div className="grid sm:grid-cols-3 gap-4 mb-8">
         <Link
-          to="/versions"
+          to="/tasks"
           className="bg-white border border-gray-200 rounded-lg p-5 border-l-4 border-l-brand-500 hover:shadow-card transition-shadow"
         >
           <div className="flex items-center gap-2 text-gray-500 text-xs mb-2">
@@ -112,7 +113,7 @@ export default function ProjectOverviewPage() {
           {(runs?.runs ?? []).slice(0, 12).map((r) => (
             <Link
               key={r.id}
-              to={`/versions/${r.version_id}/reports`}
+              to={`/suites/${r.suite_id}/runs/${r.id}`}
               className="flex items-center justify-between px-5 py-3 text-sm hover:bg-gray-50/70 transition-colors group"
             >
               <span className="flex items-center gap-2">
