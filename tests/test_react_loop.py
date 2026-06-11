@@ -175,6 +175,35 @@ async def test_guard_premature_mark_at_most_once():
     assert not any(s.tool_name == "browser_click" for s in result.action_steps)
 
 
+async def test_stream_dropped_toolcall_recovered_by_nonstream_recheck():
+    """流式偶发丢 tool_call → 无调用且有未完成步骤时非流式复核捞回,不误判哑火空转。"""
+    plan = _plan(1)
+    seq: list[bool] = []  # 记录每次 chat 是否走流式(on_delta 非空)
+
+    class _StreamDropLLM(LLMClient):
+        async def chat(self, messages, tools=None, on_delta=None, **kwargs):
+            streamed = on_delta is not None
+            seq.append(streamed)
+            if streamed:
+                return _resp(content="思考但没发工具调用")  # 流式:丢了 tool_call
+            return _resp(calls=[("browser_click", {"ref": "e1"})])  # 非流式复核:捞回
+
+    loop = ReActLoop(
+        _StreamDropLLM(),
+        tools=[{"x": 1}],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+        on_llm_delta=lambda t: None,  # 触发流式分支
+        max_steps=3,
+    )
+    result = await loop.run()
+    # 第一轮:流式(丢调用)→ 紧接非流式复核(捞回 click)
+    assert seq[0] is True and seq[1] is False
+    # 复核捞回的 browser_click 被真正执行(没被当哑火丢弃)
+    assert any(s.tool_name == "browser_click" for s in result.action_steps)
+
+
 async def test_llm_finished_without_toolcall():
     # 无待办步骤(空 plan,all_resolved 为真)时,模型不调工具并自报结果 → 正常结束
     plan = _plan(0)

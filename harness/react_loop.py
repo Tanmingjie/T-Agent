@@ -259,6 +259,19 @@ class ReActLoop:
                 )
                 continue
 
+            # 流式偶发丢 tool_call(stream_chunk_builder 重建有概率漏采)→ 无调用且仍有
+            # 未完成步骤时,**非流式复核一次**把漏采的调用捞回来,避免把「其实模型调了工具」
+            # 误判为哑火空转(治流式下 ReAct 期偶发的「连续未推进→终止」)。
+            if (
+                self.on_llm_delta is not None
+                and not resp.tool_calls
+                and not self.step_plan.all_resolved()
+            ):
+                try:
+                    resp = await self.llm.chat(messages, tools=self.tools)
+                except LLMToolCallError:
+                    pass  # 复核也失败 → 维持原结果,走下面哑火逻辑
+
             reasoning = resp.content or ""
             maybe_result = parse_test_result(reasoning)
             if maybe_result:
