@@ -29,8 +29,12 @@ async def main() -> int:
     from input.models import Suite
     from storage.db import Store
 
-    db_url = f"sqlite+aiosqlite:///{Path('storage/_tp08_smoke.db').resolve().as_posix()}"
-    Path("storage/_tp08_smoke.db").unlink(missing_ok=True)
+    # 默认 sqlite;设 DATABASE_URL 则用真库(T-P12:双进程+PG 形态重验)
+    db_url = os.getenv("DATABASE_URL")
+    if not db_url:
+        db_url = f"sqlite+aiosqlite:///{Path('storage/_tp08_smoke.db').resolve().as_posix()}"
+        Path("storage/_tp08_smoke.db").unlink(missing_ok=True)
+    print(f"DB = {db_url.split('@')[-1]}")
     store = Store(url=db_url)
     await store.init()
 

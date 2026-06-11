@@ -51,7 +51,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 工程化界面(阶段四)
 
-- `api/server.py` — FastAPI 应用入口,挂载 5 个路由子模块 + SSE 推送。
+- `api/server.py` — FastAPI 应用入口,挂载路由子模块(suites/execution/permission/results/vocabulary/projects)+ SSE 推送 + lifespan 注入 AuthProvider。
 - `api/repository.py` — **Repository 抽象层**。`SuiteRepo` / `RunRepo` / `VocabRepo` 三个抽象基类 + SQLModel 实现(`SQLModelSuiteRepo` 等),业务代码面向抽象、存储可替换。
 - `api/routers/suites.py` — Suite CRUD(创建/列表/详情/删除)。
 - `api/routers/execution.py` — 执行控制:**SSE 实时推送**执行进度;执行**搬离 API 事件循环**(见 `api/execution_worker.py`:每 run 一守护线程 + 独立 loop + 独立 Store),按 Suite 设置的 `parallelism` 跑 Orchestrator。
@@ -59,7 +59,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `api/routers/permission.py` — 权限审批(approve/deny)。
 - `api/routers/results.py` — 执行结果查询(用例列表/断言详情/代码查看)。
 - `api/routers/vocabulary.py` — 词汇表 CRUD + scan 触发。
+
+### 平台化(M1,多租户,见 `平台化设计草案.md`/`平台化开发路径.md`)
+
+- `storage/db.py` — 连接串走 `DATABASE_URL`(SQLite 缺省 / Postgres 平台);方言分支(WAL 仅 SQLite)。多租户表 Project/Version/User/ProjectMember/ProjectLLMConfig + run_queue/run_event/permission_request。`alembic`(`migrations/`)管 schema(`alembic upgrade head`);Store.init 的 create_all+轻量迁移作单机/测试 fallback。
+- `storage/crypto.py` — Fernet 字段加密(`PLATFORM_SECRET_KEY`);LLM api_key 等密文落库。
+- `storage/artifacts.py` — `ArtifactStore` 抽象(本地实现;M3 换对象存储),截图/代码按 run/case 分桶。
+- `api/auth.py` — `AuthProvider`(header 透传,IDaaS 可换)+ 三角色 RBAC 依赖;**未配 provider=单机模式(隐式平台管理员,全开放)**,平台部署 `set_auth_provider` 走真实 RBAC。
+- `api/routers/projects.py` — 项目/成员/版本 CRUD + 项目级 LLM 配置(掩码/自检)。
+- `api/run_executor.py` — **与进程无关的共享执行核** `execute_run`(API 单机线程 + worker 进程都复用)。
+- `scripts/worker.py` — **执行 worker 进程**(`RUN_MODE=queue` 时 API 入队,worker `claim_next_run` 领取执行;多开横向扩);进度落 run_event 表、审批走 permission_request 工单。
+- 执行两形态:**embedded**(默认,进程内线程,SSE 实时,单机)/ **queue**(`RUN_MODE=queue`,双进程,SSE 尾随 run_event 表)。
 - `frontend/` — React + Vite + Tailwind 前端控制台(Suite 管理、执行控制台、结果详情含 Monaco 编辑器、词汇表)。
+  - 平台化:`lib/session.ts`(X-User/项目)+ `ProjectBar`(用户/项目切换)+ `ProjectSettingsPage`(LLM 配置)。
   - **Design Tokens** (`tailwind.config.js`): `brand` (cyan 系, 50–950)、`surface` (slate 系, 50–950)、`shadow-card` / `shadow-elevated`。
   - **UI Skills 已安装**: `frontend-design`(anthropics)、`ui-ux-pro-max` + 6 CKM skills(nextlevelbuilder)。通过 `npx skills add` 安装，各环境自行拉取。
 
