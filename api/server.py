@@ -55,6 +55,7 @@ app.add_middleware(
 from api.routers import (  # noqa: E402
     execution,
     permission,
+    projects,
     results,
     suites,
     vocabulary,
@@ -65,6 +66,7 @@ app.include_router(execution.router, prefix="/api")
 app.include_router(permission.router, prefix="/api")
 app.include_router(results.router, prefix="/api")
 app.include_router(vocabulary.router, prefix="/api")
+app.include_router(projects.router, prefix="/api")
 
 
 # 纯 API 服务:前端由 Vite dev server(:5173)托管,不在此挂静态构建,

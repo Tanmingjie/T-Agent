@@ -393,6 +393,24 @@ class LiteLLMClient(LLMClient):
         )
 
 
+def build_llm_client(config: Any = None, **kwargs: Any) -> "LiteLLMClient":
+    """按**项目级配置**构造 LLMClient(平台化 T-P06);无配置/字段空则回退 env。
+
+    ``config`` 是 ``input.models.ProjectLLMConfig``(或任何带 model/api_base/api_key 属性者)。
+    执行路径传项目配置;CLI/单机路径传 None → ``LiteLLMClient`` 照旧读 env(LLM_MODEL 等)。
+    仅当配置字段非空时才覆盖 env(留空的字段继续走 env 兜底,便于「项目只配 model、
+    api_base/key 用平台默认」这类混合)。
+    """
+    model = getattr(config, "model", "") or None
+    api_base = getattr(config, "api_base", "") or None
+    api_key = getattr(config, "api_key", "") or None
+    extra: dict[str, Any] = {}
+    temperature = getattr(config, "temperature", None)
+    if temperature is not None:
+        extra["temperature"] = temperature
+    return LiteLLMClient(model=model, api_base=api_base, api_key=api_key, **{**extra, **kwargs})
+
+
 def _looks_like_tool_call(content: str) -> bool:
     return "<tool_call>" in content or '"name"' in content or "'name'" in content
 

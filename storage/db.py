@@ -32,6 +32,7 @@ from input.models import (
     ExecutionRecord,
     PageVocabulary,
     Project,
+    ProjectLLMConfig,
     ProjectMember,
     SessionProfile,
     Suite,
@@ -39,6 +40,7 @@ from input.models import (
     User,
     Version,
 )
+from storage import crypto
 
 # ── 表行定义(table=True) ──────────────────────────────────────
 
@@ -187,6 +189,16 @@ class ProjectMemberRow(SQLModel, table=True):
     project_id: str = Field(primary_key=True)
     user_id: str = Field(primary_key=True)
     role: str = "tester"  # admin | tester
+    updated_at: float = 0.0
+
+
+class ProjectLLMConfigRow(SQLModel, table=True):
+    __tablename__ = "project_llm_config"
+    project_id: str = Field(primary_key=True)  # 一项目一配置
+    model: str = ""
+    api_base: str = ""
+    api_key_encrypted: str = ""  # 密文落库(见 storage.crypto);领域模型回明文
+    temperature: float = 0.0
     updated_at: float = 0.0
 
 
@@ -551,6 +563,44 @@ class Store:
     async def delete_member(self, project_id: str, user_id: str) -> bool:
         async with self._sf() as s:
             row = await s.get(ProjectMemberRow, (project_id, user_id))
+            if row is None:
+                return False
+            await s.delete(row)
+            await s.commit()
+            return True
+
+    # —— ProjectLLMConfig(api_key 加密落库)——
+
+    async def save_llm_config(self, cfg: ProjectLLMConfig) -> None:
+        row = ProjectLLMConfigRow(
+            project_id=cfg.project_id,
+            model=cfg.model,
+            api_base=cfg.api_base,
+            api_key_encrypted=crypto.encrypt(cfg.api_key),  # 明文 → 密文落库
+            temperature=cfg.temperature,
+            updated_at=time.time(),
+        )
+        async with self._sf() as s:
+            await s.merge(row)
+            await s.commit()
+
+    async def get_llm_config(self, project_id: str) -> ProjectLLMConfig | None:
+        async with self._sf() as s:
+            row = await s.get(ProjectLLMConfigRow, project_id)
+            if row is None:
+                return None
+            return ProjectLLMConfig(
+                project_id=row.project_id,
+                model=row.model,
+                api_base=row.api_base,
+                api_key=crypto.decrypt(row.api_key_encrypted),  # 密文 → 明文回领域模型
+                temperature=row.temperature,
+                updated_at=row.updated_at,
+            )
+
+    async def delete_llm_config(self, project_id: str) -> bool:
+        async with self._sf() as s:
+            row = await s.get(ProjectLLMConfigRow, project_id)
             if row is None:
                 return False
             await s.delete(row)

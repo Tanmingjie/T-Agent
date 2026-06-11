@@ -92,7 +92,7 @@ async def trigger_run(
         # —— worker 线程/事件循环内:独立 Store(engine 绑定本 loop,不能共享 API 的) ——
         from api.repository import SQLModelRepository
         from harness.agent import TestCaseAgent
-        from harness.llm import LiteLLMClient
+        from harness.llm import build_llm_client
         from harness.orchestrator import Orchestrator
         from harness.permission import threading_event_approver
         from intelligence.vocabulary import VocabularyManager, VocabularyResolver
@@ -102,7 +102,14 @@ async def trigger_run(
         worker_store = Store(url=db_url)
         await worker_store.init()
         worker_repo = SQLModelRepository(worker_store)
-        vocab_resolver = VocabularyResolver(VocabularyManager(worker_store))
+        # 词汇表/LLM 都按 Suite 所属项目作用域(T-P04b/T-P06);单机/无项目时 project_id="" 走默认。
+        vocab_resolver = VocabularyResolver(
+            VocabularyManager(worker_store, project_id=suite.project_id)
+        )
+        # 项目级 LLM 配置(T-P06):有则按项目构造,字段留空处仍回退 env;无配置整体回退 env。
+        llm_config = (
+            await worker_store.get_llm_config(suite.project_id) if suite.project_id else None
+        )
         mcp_args = _mcp_args()
 
         # Custom Tool 注册表:env CUSTOM_TOOLS_YAML 指向 YAML 配置时加载(LLM 按需调用
@@ -165,7 +172,7 @@ async def trigger_run(
                     else None
                 )
                 agent = TestCaseAgent(
-                    llm=LiteLLMClient(),
+                    llm=build_llm_client(llm_config),
                     mcp=mcp,
                     vocab_resolver=vocab_resolver,
                     hooks=hooks,

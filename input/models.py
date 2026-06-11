@@ -253,3 +253,17 @@ class ProjectMember(BaseModel):
     user_id: str
     role: str = "tester"  # admin(项目管理员)| tester(测试人员)
     updated_at: float = Field(default_factory=time.time)
+
+
+class ProjectLLMConfig(BaseModel):
+    """项目级 LLM 配置(T-P06)。每项目一份;执行时按项目构造 LLMClient。
+
+    领域模型持**明文** api_key;加密是存储层职责(Store 存密文、读回解密),业务码不感知。
+    """
+
+    project_id: str  # 一项目一配置(主键)
+    model: str = ""  # 带 provider 前缀,如 openai/xxx、ollama/xxx
+    api_base: str = ""
+    api_key: str = ""  # 明文(落库时加密)
+    temperature: float = 0.0
+    updated_at: float = Field(default_factory=time.time)
