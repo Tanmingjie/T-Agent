@@ -17,8 +17,11 @@ import uuid
 from pathlib import Path
 
 from input.models import ActionStep, ExecutionRecord
+from storage.artifacts import get_artifact_store
 
-DEFAULT_SCREENSHOT_ROOT = "storage/screenshots"
+# 产物存储抽象(T-P10)单一真相:截图根目录从 ArtifactStore 取(env ARTIFACT_ROOT 可改),
+# 与 results 路由读取端一致;M3 换对象存储只换实现。
+DEFAULT_SCREENSHOT_ROOT = str(get_artifact_store().screenshots_root)
 
 
 class Recorder:

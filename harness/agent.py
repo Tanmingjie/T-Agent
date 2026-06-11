@@ -59,6 +59,7 @@ from input.models import (
 from intelligence.pre_analysis import SpecGenerator
 from intelligence.scanner import Scanner
 from intelligence.vocabulary import enhance_targets
+from storage.artifacts import get_artifact_store
 
 logger = logging.getLogger(__name__)
 
@@ -106,8 +107,8 @@ _SETTLE_INTERVAL = float(os.getenv("MCP_SETTLE_INTERVAL_MS", "400")) / 1000.0
 # 可选补充——避免它延后用例收尾(交互执行末尾多一次 LLM 往返)、避免与主动扫描两写入源。
 _INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "0") != "0"
 
-# 生成代码落盘目录(与 api/routers/results.py 的 GENERATED_ROOT 一致)
-_GENERATED_ROOT = "storage/generated"
+# 生成代码落盘目录:从 ArtifactStore 抽象取(T-P10),与 results 路由读取端单一真相
+_GENERATED_ROOT = str(get_artifact_store().generated_dir())
 
 # 预置条件「状态声明」关键词 → Hook 名 的默认映射(用户可在构造时覆盖)。
 # 命中即把该状态声明标为对应 Hook 负责(如「已登录」→ LoginHook,由 before_case 保证)。

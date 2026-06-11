@@ -7,10 +7,11 @@ import zipfile
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 
 from api.auth import require_suite_access
 from api.server import get_repo
+from storage.artifacts import get_artifact_store
 
 router = APIRouter(tags=["results"])
 
@@ -18,8 +19,9 @@ router = APIRouter(tags=["results"])
 # (单机/无 project_id 放行)。截图端点(get_screenshot)无 suite_id 且服务于 <img>,不在此列。
 _suite_guard = [Depends(require_suite_access)]
 
-SCREENSHOT_ROOT = Path("storage/screenshots")
-GENERATED_ROOT = Path("storage/generated")
+# 产物路径经 ArtifactStore 抽象(T-P10),不再散落字面量;M3 换对象存储只换实现。
+_artifacts = get_artifact_store()
+GENERATED_ROOT = _artifacts.generated_dir()
 
 
 @router.get("/suites/{suite_id}/runs", dependencies=_suite_guard)
@@ -95,17 +97,12 @@ async def get_case_code(suite_id: str, run_id: str, case_id: str, repo=Depends(g
         raise HTTPException(404, "Result not found")
 
     # 优先用本次 run 持久化的 generated_code(磁盘文件按 case_id 命名,会被后续
-    # run 覆盖,对 per-run 抽屉不准);无则回退磁盘文件。
+    # run 覆盖,对 per-run 抽屉不准);无则回退产物存储。
     files: dict[str, str] = {}
     if record.generated_code:
         files[f"{case_id}.py"] = record.generated_code
     else:
-        feat = GENERATED_ROOT / f"{case_id}.feature"
-        steps = GENERATED_ROOT / f"test_{case_id}.py"
-        if feat.exists():
-            files[f"{case_id}.feature"] = feat.read_text()
-        if steps.exists():
-            files[f"test_{case_id}.py"] = steps.read_text()
+        files = _artifacts.read_generated(case_id)
 
     return {"files": files, "case_id": case_id}
 
@@ -139,7 +136,7 @@ async def download_code(suite_id: str, run_id: str, case_id: str, repo=Depends(g
 
 @router.get("/screenshots/{run_id}/{case_id}/{step_index}")
 async def get_screenshot(run_id: str, case_id: str, step_index: str):
-    path = SCREENSHOT_ROOT / run_id / case_id / step_index
-    if not path.exists():
+    data = _artifacts.read_screenshot(run_id, case_id, step_index)
+    if data is None:
         raise HTTPException(404, "Screenshot not found")
-    return FileResponse(path)
+    return Response(content=data, media_type="image/png")
