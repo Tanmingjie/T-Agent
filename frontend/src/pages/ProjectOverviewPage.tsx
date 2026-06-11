@@ -1,7 +1,8 @@
 // 项目概览(默认落脚页)。项目级汇总:版本数 / LLM 配置状态 / 最近跨版本执行。
 import { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { GitBranch, Cpu, Activity, ChevronRight } from "lucide-react";
+import { Layers, Cpu, Activity, ChevronRight } from "lucide-react";
+import { withProject } from "../lib/session";
 import { apiGet } from "../api/client";
 import { getProjectId } from "../lib/session";
 
@@ -37,12 +38,16 @@ function statusColor(s: string): string {
 export default function ProjectOverviewPage() {
   const pid = getProjectId();
   const [versions, setVersions] = useState<Version[]>([]);
+  const [taskCount, setTaskCount] = useState(0);
   const [runs, setRuns] = useState<RunsResp | null>(null);
   const [llm, setLlm] = useState<LLMConfig | null>(null);
 
   useEffect(() => {
     if (!pid) return;
     apiGet<Version[]>(`/projects/${pid}/versions`).then(setVersions).catch(() => {});
+    apiGet<{ id: string }[]>(withProject("/suites"))
+      .then((s) => setTaskCount(s.length))
+      .catch(() => {});
     apiGet<RunsResp>(`/projects/${pid}/runs`).then(setRuns).catch(() => {});
     apiGet<LLMConfig>(`/projects/${pid}/llm-config`).then(setLlm).catch(() => {});
   }, [pid]);
@@ -74,9 +79,10 @@ export default function ProjectOverviewPage() {
           className="bg-white border border-gray-200 rounded-lg p-5 border-l-4 border-l-brand-500 hover:shadow-card transition-shadow"
         >
           <div className="flex items-center gap-2 text-gray-500 text-xs mb-2">
-            <GitBranch size={14} /> 版本
+            <Layers size={14} /> 测试任务
           </div>
-          <p className="text-2xl font-semibold text-surface-900">{versions.length}</p>
+          <p className="text-2xl font-semibold text-surface-900">{taskCount}</p>
+          <p className="text-xs text-gray-400 mt-1">跨 {versions.length} 个版本</p>
         </Link>
 
         <Link
