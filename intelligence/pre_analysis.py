@@ -128,6 +128,7 @@ def build_spec_messages(
     precondition_items: list[PreconditionItem] | None = None,
     *,
     request_classification: bool = False,
+    available_hooks: list[str] | None = None,
 ) -> list[dict]:
     """组装给 LLM 的消息(纯函数,便于单测)。
 
@@ -137,6 +138,10 @@ def build_spec_messages(
     ``request_classification=True``:**合并模式**——让模型在翻译的同时输出预置条件分类
     ("preconditions" 数组),省掉单独的分类 LLM 往返。此模式预置条件按原文平铺下发
     (不预分组,因为正要让模型分类)。
+
+    ``available_hooks``:当前**实际配置**的 Hook 名列表(合并模式下注入,告知 LLM
+    哪些 Hook 可用)。仅当状态声明能由可用 Hook 保证时才归 state_hook;无可用 Hook 时
+    引导归 action_step(测试内执行)/ ambiguous,避免「分类成 Hook 却没人执行」的静默漏洞。
     """
     pre_lines = _precondition_lines(case, None if request_classification else precondition_items)
     exp_lines = [f"  - {e}" for e in case.expected] or ["  (无)"]
@@ -153,6 +158,21 @@ def build_spec_messages(
         *exp_lines,
     ]
     system = _SYSTEM_PROMPT + (_CLASSIFY_APPENDIX if request_classification else "")
+    if request_classification:
+        if available_hooks:
+            system += (
+                "\n\n【可用 Hook】当前已配置的 Hook:"
+                + "、".join(available_hooks)
+                + "。仅当某状态声明能由上述 Hook 之一保证时,才归 state_hook 并在 hook_ref "
+                "写该 Hook 名;否则归 action_step(在测试步骤内实际执行)或 ambiguous,"
+                "**不要指定不存在的 Hook**。"
+            )
+        else:
+            system += (
+                "\n\n【可用 Hook】当前**没有配置任何 Hook**。状态类前提请尽量归 action_step"
+                "(在测试内实际执行,如先登录),确实无法执行的归 ambiguous;**不要归 state_hook**"
+                "(没有 Hook 会执行它,归 state_hook 等于该前提被静默忽略)。"
+            )
     return [
         {"role": "system", "content": system},
         {"role": "user", "content": "\n".join(user)},
@@ -304,7 +324,7 @@ class SpecGenerator:
             raise
 
     async def generate_with_classification(
-        self, case: TestCase, *, on_delta=None
+        self, case: TestCase, *, on_delta=None, available_hooks: list[str] | None = None
     ) -> tuple[TestSpec, dict[str, dict]]:
         """**合并模式**:一次 LLM 调用同时生成 TestSpec + 预置条件分类。
 
@@ -313,7 +333,9 @@ class SpecGenerator:
         失败时降级 ``(naive_fallback_spec, {})``(分类为空 → 下游全 ambiguous)。
         ``on_delta``:给定则走流式(逐 token 回调),长生成不被网关空闲超时切断。
         """
-        messages = build_spec_messages(case, request_classification=True)
+        messages = build_spec_messages(
+            case, request_classification=True, available_hooks=available_hooks
+        )
         try:
             resp = await (
                 self.llm.chat_stream(messages, on_delta=on_delta)

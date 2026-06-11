@@ -46,7 +46,7 @@ from harness.prompt import PromptBuilder
 from harness.react_loop import ReActLoop, ToolExecutor, ToolOutcome
 from harness.recorder import Recorder
 from harness.skills import SkillManager
-from harness.step_plan import StepPlan
+from harness.step_plan import StepPlan, StepStatus
 from harness.tools import ToolRegistry
 from input.models import (
     Assertion,
@@ -275,8 +275,11 @@ class TestCaseAgent:
 
         if valid_pre and supports_merge and pending:
             # —— 合并:一次调用同时分类 + 翻译 ——
+            # 把**实际配置**的 Hook 列表告知 LLM:有则引导只对可用 Hook 归 state_hook,
+            # 无则引导状态前提归 action_step/ambiguous(防「分类成 Hook 却没人执行」)。
+            available_hooks = self.hooks.hook_names() if self.hooks is not None else []
             spec, raw = await self.spec_generator.generate_with_classification(
-                case, on_delta=on_delta
+                case, on_delta=on_delta, available_hooks=available_hooks
             )
             try:
                 items = classifier.classify_from_raw(case.preconditions, raw)
@@ -585,7 +588,24 @@ class TestCaseAgent:
         a_results = await engine.verify_all(collect_assertions(spec))
         recorder.set_case_assertions([r.to_dict() for r in a_results])
         recorder.record.heal_count += sum(1 for r in a_results if r.healed)
-        passed = AssertionEngine.verdict(a_results)
+        assert_passed = AssertionEngine.verdict(a_results)
+
+        # —— 执行完整性闸门(原则:步骤未全部完成 → 用例直接 FAIL)——
+        # 任一步骤非 DONE(pending 未执行 / failed / skipped)即视为执行未完成:此时
+        # 终态断言是在**半路页面**上跑的,既可能误绿(碰巧通过)也可能误红(报成断言失败、
+        # 掩盖真因)。原则:不靠半路断言裁决、不静默跳过剩余步骤就收尾——直接判 FAIL 并
+        # 标明真因(停在第几步 / 停因)。only when 全步 DONE 才以断言裁决。
+        done_steps = sum(1 for st in plan.steps if st.status == StepStatus.DONE)
+        total_steps = len(plan.steps)
+        execution_complete = plan.all_done()
+        incomplete_reason = ""
+        if not execution_complete:
+            incomplete_reason = (
+                f"[FAIL] 执行未完成:仅完成 {done_steps}/{total_steps} 步"
+                f"(停因={result.stop_reason.value}),后续步骤未执行;不以半路断言裁决。"
+            )
+            logger.warning("用例 %s %s", case.id, incomplete_reason)
+        passed = assert_passed and execution_complete
 
         # 断言逐条记账(便于失败定位):全部走 DEBUG,失败/跳过额外 WARNING 抬到默认可见。
         for r in a_results:
@@ -631,7 +651,8 @@ class TestCaseAgent:
                 await self.hooks.run(ON_FAILURE, ctx)
             await self.hooks.run(AFTER_CASE, ctx)
 
-        record = recorder.finalize(passed=passed)
+        # 执行未完成时 final_result 显式标真因(优先于断言摘要),避免被半路断言红误导
+        record = recorder.finalize(passed=passed, final_result=incomplete_reason)
 
         # —— 代码生成(规格 §5.6):仅执行通过后产出 pytest-bdd 代码 ——
         if passed:

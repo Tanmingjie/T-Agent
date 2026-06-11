@@ -98,6 +98,11 @@ class HookManager:
     def hooks_for(self, event: str) -> list[Hook]:
         return list(self._hooks.get(event, []))
 
+    def hook_names(self) -> list[str]:
+        """已注册的 Hook 名(跨事件去重排序)。供预置条件分类把「可用 Hook」告知 LLM。"""
+        names = {_hook_name(h) for hooks in self._hooks.values() for h in hooks}
+        return sorted(names)
+
     async def run(self, event: str, ctx: ExecutionContext) -> HookResult:
         """顺序执行某事件的所有 hook。任一失败即停并返回失败结果。"""
         hooks = self._hooks.get(event, [])

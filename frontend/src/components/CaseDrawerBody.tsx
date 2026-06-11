@@ -936,15 +936,21 @@ export default function CaseDrawerBody({
                     <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2">
                       断言结果
                     </h4>
-                    {/* 步数耗尽显式告警:执行因 max_steps 中断 → 流程没走完,断言在半路页面跑,结果不可信 */}
-                    {/停因=max_steps/.test(result.final_result ?? "") && (
+                    {/* 执行未完成显式告警:步骤没走完(步数上限/早停/卡死)→ 用例已直接判 FAIL,
+                        下面断言是在半路页面上跑的,仅供参考、不作裁决依据。 */}
+                    {/执行未完成|停因=max_steps/.test(result.final_result ?? "") && (
                       <div className="mb-3 flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 px-3 py-2.5 text-xs text-amber-800">
                         <AlertTriangle size={15} className="shrink-0 mt-0.5" />
                         <span>
-                          <span className="font-medium">执行因步数上限（max_steps）中断</span>
-                          ，流程未走完，下面的断言是在<strong>半路页面</strong>上跑的，
-                          <strong>失败不代表用例真失败</strong>。请在执行设置或
-                          <code className="mx-0.5">AGENT_MAX_STEPS</code>调大步数后重跑。
+                          <span className="font-medium">执行未完成，步骤没走完</span>
+                          ，用例已直接判 <strong>FAIL</strong>。下面的断言是在
+                          <strong>半路页面</strong>上跑的，仅供参考、不作裁决依据。
+                          {/停因=max_steps/.test(result.final_result ?? "") && (
+                            <>
+                              {" "}原因是步数上限，可调大
+                              <code className="mx-0.5">AGENT_MAX_STEPS</code>后重跑。
+                            </>
+                          )}
                         </span>
                       </div>
                     )}

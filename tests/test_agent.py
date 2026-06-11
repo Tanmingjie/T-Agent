@@ -115,6 +115,33 @@ async def test_executor_routes_control_vs_mcp():
 # ── 断言驱动的最终判定 ────────────────────────────────────────
 
 
+async def test_run_fails_when_execution_incomplete_even_if_assertions_pass():
+    """原则:步骤没全做完 → 用例直接 FAIL,不靠半路断言裁决(即便断言碰巧能过)。"""
+    spec = TestSpec(
+        case_id="TC001",
+        name="两步流程",
+        base_url="https://intranet",
+        steps=[
+            SpecStep(action="click", target="提交按钮"),
+            SpecStep(action="click", target="确认按钮"),
+        ],
+        assertions=[Assertion(type="url_contains", target="URL", expected="/order/list")],
+    )
+    llm = _ScriptedLLM(
+        [
+            _resp(content="点提交", calls=[("browser_click", {"ref": "e3"})]),
+            _resp(content="完成第一步", calls=[("mark_step_done", {"step_no": 1})]),
+            # 第二步从不执行,一直哑火(无 tool_call)→ 哑火上限终止,step2 仍 pending
+            _resp(content="我觉得做完了 TEST_RESULT: PASS"),
+        ]
+    )
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=spec)
+    # 断言(url_contains /order/list)在 SNAPSHOT_OK 上本可过,但执行未完成 → 强制 FAIL
+    assert record.passed is False
+    assert "执行未完成" in record.final_result
+
+
 async def test_run_passes_when_assertions_pass():
     llm = _ScriptedLLM(
         [
