@@ -77,14 +77,22 @@ async def execute_run(
         mcp_args = _mcp_args()
 
         tools_registry = None
-        tools_yaml = os.getenv("CUSTOM_TOOLS_YAML")
-        if tools_yaml:
-            try:
-                from harness.tools import load_tool_registry_from_yaml
+        # 平台:项目级 HTTP 型 Custom Tool(M2)优先;无则回退 env YAML(单机/命令型)。
+        if suite.project_id:
+            http_tools = await store.list_http_tools(suite.project_id)
+            if http_tools:
+                from harness.tools import build_http_tool_registry
 
-                tools_registry = load_tool_registry_from_yaml(tools_yaml)
-            except Exception as e:  # noqa: BLE001
-                logger.warning("加载 Custom Tool 配置失败(%s):%s", tools_yaml, e)
+                tools_registry = build_http_tool_registry(http_tools)
+        if tools_registry is None:
+            tools_yaml = os.getenv("CUSTOM_TOOLS_YAML")
+            if tools_yaml:
+                try:
+                    from harness.tools import load_tool_registry_from_yaml
+
+                    tools_registry = load_tool_registry_from_yaml(tools_yaml)
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("加载 Custom Tool 配置失败(%s):%s", tools_yaml, e)
 
         session_profile = None
         if suite.session_profile:

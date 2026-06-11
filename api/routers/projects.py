@@ -25,7 +25,7 @@ from api.auth import (
 )
 from api.server import get_store
 from harness.llm import build_llm_client
-from input.models import Project, ProjectLLMConfig, ProjectMember, Version
+from input.models import Project, ProjectHttpTool, ProjectLLMConfig, ProjectMember, Version
 from storage import crypto
 
 router = APIRouter(tags=["projects"])
@@ -241,6 +241,79 @@ async def delete_llm_config(
 ):
     if not await store.delete_llm_config(project_id):
         raise HTTPException(404, "未找到该项目的 LLM 配置")
+    return {"ok": True}
+
+
+# ── HTTP 型 Custom Tool(M2;admin 管,headers 加密、列表不返明文)──────
+
+
+class HttpToolIn(BaseModel):
+    name: str
+    description: str = ""
+    method: str = "GET"
+    url: str = ""
+    headers: dict = {}
+    body: str = ""
+    parameters: dict = {}
+    when_to_use: str = ""
+    timeout_seconds: int = 30
+
+
+@router.get("/projects/{project_id}/http-tools")
+async def list_http_tools(
+    project_id: str, _role: str = Depends(require_member), store=Depends(get_store)
+):
+    tools = await store.list_http_tools(project_id)
+    # 不返 headers 明文,只示其 key(可能含凭据)
+    return [
+        {
+            "name": t.name,
+            "description": t.description,
+            "method": t.method,
+            "url": t.url,
+            "header_keys": sorted(t.headers.keys()),
+            "body": t.body,
+            "parameters": t.parameters,
+            "when_to_use": t.when_to_use,
+            "timeout_seconds": t.timeout_seconds,
+        }
+        for t in tools
+    ]
+
+
+@router.put("/projects/{project_id}/http-tools/{name}")
+async def put_http_tool(
+    project_id: str,
+    name: str,
+    body: HttpToolIn,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    tool = ProjectHttpTool(
+        project_id=project_id,
+        name=name,
+        description=body.description,
+        method=body.method,
+        url=body.url,
+        headers=body.headers,
+        body=body.body,
+        parameters=body.parameters,
+        when_to_use=body.when_to_use,
+        timeout_seconds=body.timeout_seconds,
+    )
+    await store.save_http_tool(tool)
+    return {"ok": True, "name": name}
+
+
+@router.delete("/projects/{project_id}/http-tools/{name}")
+async def delete_http_tool(
+    project_id: str,
+    name: str,
+    _: Principal = Depends(require_project_admin),
+    store=Depends(get_store),
+):
+    if not await store.delete_http_tool(project_id, name):
+        raise HTTPException(404, "工具不存在")
     return {"ok": True}
 
 

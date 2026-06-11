@@ -255,6 +255,26 @@ class ProjectMember(BaseModel):
     updated_at: float = Field(default_factory=time.time)
 
 
+class ProjectHttpTool(BaseModel):
+    """项目级 HTTP 型 Custom Tool(平台化 M2:替代 shell,受控 HTTP 调用 + SSRF 防护)。
+
+    headers 可能含凭据(Authorization),领域模型持明文,存储层加密落库。
+    url/body 支持 {arg} 占位。主键 (project_id, name)。
+    """
+
+    project_id: str
+    name: str
+    description: str = ""
+    method: str = "GET"
+    url: str = ""
+    headers: dict = {}  # 明文(落库加密);可含 Authorization 等凭据
+    body: str = ""
+    parameters: dict = {}  # JSON Schema(LLM 调用参数)
+    when_to_use: str = ""
+    timeout_seconds: int = 30
+    updated_at: float = Field(default_factory=time.time)
+
+
 class ProjectLLMConfig(BaseModel):
     """项目级 LLM 配置(T-P06)。每项目一份;执行时按项目构造 LLMClient。
 

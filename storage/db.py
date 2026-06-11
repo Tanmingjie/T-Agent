@@ -29,10 +29,13 @@ from sqlmodel.ext.asyncio.session import AsyncSession
 
 logger = logging.getLogger(__name__)
 
+import json
+
 from input.models import (
     ExecutionRecord,
     PageVocabulary,
     Project,
+    ProjectHttpTool,
     ProjectLLMConfig,
     ProjectMember,
     SessionProfile,
@@ -246,6 +249,22 @@ class ProjectLLMConfigRow(SQLModel, table=True):
     api_base: str = ""
     api_key_encrypted: str = ""  # 密文落库(见 storage.crypto);领域模型回明文
     temperature: float = 0.0
+    updated_at: float = 0.0
+
+
+class ProjectHttpToolRow(SQLModel, table=True):
+    __tablename__ = "project_http_tool"
+    # 复合主键 (project_id, name)
+    project_id: str = Field(primary_key=True)
+    name: str = Field(primary_key=True)
+    description: str = ""
+    method: str = "GET"
+    url: str = ""
+    headers_encrypted: str = ""  # headers JSON 密文(可含凭据)
+    body: str = ""
+    parameters: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    when_to_use: str = ""
+    timeout_seconds: int = 30
     updated_at: float = 0.0
 
 
@@ -648,6 +667,60 @@ class Store:
     async def delete_llm_config(self, project_id: str) -> bool:
         async with self._sf() as s:
             row = await s.get(ProjectLLMConfigRow, project_id)
+            if row is None:
+                return False
+            await s.delete(row)
+            await s.commit()
+            return True
+
+    # —— ProjectHttpTool(headers 加密落库)——
+
+    async def save_http_tool(self, tool: ProjectHttpTool) -> None:
+        row = ProjectHttpToolRow(
+            project_id=tool.project_id,
+            name=tool.name,
+            description=tool.description,
+            method=tool.method,
+            url=tool.url,
+            headers_encrypted=crypto.encrypt(json.dumps(tool.headers, ensure_ascii=False)),
+            body=tool.body,
+            parameters=tool.parameters,
+            when_to_use=tool.when_to_use,
+            timeout_seconds=tool.timeout_seconds,
+            updated_at=time.time(),
+        )
+        async with self._sf() as s:
+            await s.merge(row)
+            await s.commit()
+
+    def _http_tool_from_row(self, row: ProjectHttpToolRow) -> ProjectHttpTool:
+        raw = crypto.decrypt(row.headers_encrypted)
+        try:
+            headers = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, ValueError):
+            headers = {}
+        return ProjectHttpTool(
+            project_id=row.project_id,
+            name=row.name,
+            description=row.description,
+            method=row.method,
+            url=row.url,
+            headers=headers,
+            body=row.body,
+            parameters=row.parameters,
+            when_to_use=row.when_to_use,
+            timeout_seconds=row.timeout_seconds,
+            updated_at=row.updated_at,
+        )
+
+    async def list_http_tools(self, project_id: str) -> list[ProjectHttpTool]:
+        async with self._sf() as s:
+            stmt = select(ProjectHttpToolRow).where(ProjectHttpToolRow.project_id == project_id)
+            return [self._http_tool_from_row(r) for r in (await s.exec(stmt)).all()]
+
+    async def delete_http_tool(self, project_id: str, name: str) -> bool:
+        async with self._sf() as s:
+            row = await s.get(ProjectHttpToolRow, (project_id, name))
             if row is None:
                 return False
             await s.delete(row)
