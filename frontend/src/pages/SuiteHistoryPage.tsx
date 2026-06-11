@@ -45,7 +45,7 @@ export default function SuiteHistoryPage() {
     <div>
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-surface-900">执行历史</h1>
-        <p className="text-sm text-gray-500 mt-1">查看该套件的历次执行记录与结果。</p>
+        <p className="text-sm text-gray-500 mt-1">查看该测试任务的历次执行记录与结果。</p>
       </div>
 
       <div className="bg-white border border-gray-200 rounded-lg overflow-hidden">

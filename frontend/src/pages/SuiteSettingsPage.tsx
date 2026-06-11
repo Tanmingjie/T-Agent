@@ -55,7 +55,7 @@ export default function SuiteSettingsPage() {
   async function remove() {
     if (
       !window.confirm(
-        "确认删除此套件？此操作不可恢复，将一并删除其用例与执行记录。",
+        "确认删除此测试任务？此操作不可恢复，将一并删除其用例与执行记录。",
       )
     )
       return;
@@ -71,7 +71,7 @@ export default function SuiteSettingsPage() {
     <div>
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-surface-900">设置</h1>
-        <p className="text-sm text-gray-500 mt-1">套件基本信息与管理操作。</p>
+        <p className="text-sm text-gray-500 mt-1">测试任务基本信息与管理操作。</p>
       </div>
 
       {/* Info card */}
@@ -126,7 +126,7 @@ export default function SuiteSettingsPage() {
         </div>
         <div className="flex items-center justify-between px-5 py-4">
           <div>
-            <p className="text-sm font-medium text-surface-900">删除套件</p>
+            <p className="text-sm font-medium text-surface-900">删除测试任务</p>
             <p className="text-xs text-gray-500 mt-0.5">
               一并删除其用例与执行记录，不可恢复。
             </p>

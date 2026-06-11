@@ -47,6 +47,7 @@ class UploadResult(BaseModel):
 async def list_suites(
     project_id: str = "",
     version_id: str = "",
+    with_status: bool = False,
     principal: Principal = Depends(get_principal),
     store=Depends(get_store),
     repo=Depends(get_repo),
@@ -55,6 +56,11 @@ async def list_suites(
     if project_id:
         if await role_in_project(store, principal.user_id, project_id) is None:
             raise HTTPException(403, "无权访问该项目")
+        # with_status:版本工作区套件表用,顺带返回用例数 + 最近执行摘要(避免前端 N+1)。
+        if with_status:
+            return await store.list_suite_status(
+                project_id=project_id, version_id=version_id or None
+            )
         suites = await store.list_suites(project_id=project_id, version_id=version_id or None)
     else:
         if not principal.is_platform_admin:

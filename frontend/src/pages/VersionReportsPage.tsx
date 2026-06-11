@@ -39,7 +39,7 @@ export default function VersionReportsPage() {
     <div className="max-w-3xl">
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-surface-900">报告</h1>
-        <p className="text-sm text-gray-500 mt-1">当前版本各套件的执行汇总。</p>
+        <p className="text-sm text-gray-500 mt-1">当前版本各测试任务的执行汇总。</p>
       </div>
 
       {runs && (

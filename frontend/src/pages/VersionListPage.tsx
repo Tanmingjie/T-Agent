@@ -31,7 +31,7 @@ export default function VersionListPage() {
       <div className="mb-6">
         <h1 className="text-xl font-semibold text-surface-900">版本</h1>
         <p className="text-sm text-gray-500 mt-1">
-          选择一个版本进入其测试套件与报告。版本由内网系统维护。
+          选择一个版本进入其测试任务与报告。版本由内网系统维护。
         </p>
       </div>
 

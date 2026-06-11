@@ -291,7 +291,7 @@ function ScanFormPanel({
     <div className="bg-white border rounded p-4 mb-4">
       <h3 className="font-semibold mb-1">主动扫描</h3>
       <p className="text-xs text-gray-500 mb-3">
-        起浏览器逐页提炼业务词→元素映射。需登录的页面请先在套件设置里配好 Session
+        起浏览器逐页提炼业务词→元素映射。需登录的页面请先在测试任务设置里配好 Session
         并跑一次以落盘 Cookie,再在此填其名称。
       </p>
       <div className="grid grid-cols-2 gap-3">

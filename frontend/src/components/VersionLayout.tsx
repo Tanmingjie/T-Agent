@@ -34,7 +34,7 @@ export default function VersionLayout() {
   }, [pid, vid]);
 
   const links = [
-    { to: "", label: "套件", icon: Layers, end: true },
+    { to: "", label: "测试任务", icon: Layers, end: true },
     { to: "reports", label: "报告", icon: BarChart3, end: false },
   ];
 

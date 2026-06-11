@@ -458,6 +458,56 @@ class Store:
             rows = (await s.exec(stmt)).all()
             return [Suite(**r.model_dump()) for r in rows]
 
+    async def list_suite_status(
+        self, project_id: str | None = None, version_id: str | None = None
+    ) -> list[dict]:
+        """套件列表 + 每套件用例数 + 最近一次执行摘要(版本工作区套件表用)。
+
+        两条分组查询替代逐套件 N+1:用例数 group by、最近 run 按 started_at desc 取首条。
+        """
+        suites = await self.list_suites(project_id=project_id, version_id=version_id)
+        ids = [s.id for s in suites]
+        if not ids:
+            return []
+        async with self._sf() as s:
+            # 用例数
+            cc_rows = (
+                await s.exec(
+                    select(TestCaseRow.suite_id, func.count(TestCaseRow.id))
+                    .where(TestCaseRow.suite_id.in_(ids))
+                    .group_by(TestCaseRow.suite_id)
+                )
+            ).all()
+            case_counts = {sid: n for sid, n in cc_rows}
+            # 最近 run(取每套件 started_at 最新一条)
+            run_rows = (
+                await s.exec(
+                    select(RunRecordRow)
+                    .where(RunRecordRow.suite_id.in_(ids))
+                    .order_by(RunRecordRow.started_at.desc())
+                )
+            ).all()
+        last_run: dict[str, dict] = {}
+        for r in run_rows:
+            if r.suite_id not in last_run:  # 已按 desc 排序,首见即最新
+                last_run[r.suite_id] = {
+                    "id": r.id,
+                    "status": r.status,
+                    "total_cases": r.total_cases,
+                    "passed_cases": r.passed_cases,
+                    "failed_cases": r.failed_cases,
+                    "finished_at": r.finished_at,
+                    "started_at": r.started_at,
+                }
+        return [
+            {
+                **suite.model_dump(),
+                "case_count": case_counts.get(suite.id, 0),
+                "last_run": last_run.get(suite.id),
+            }
+            for suite in suites
+        ]
+
     # —— SessionProfile(cookies 加密落库,M2)——
 
     async def save_session_profile(self, p: SessionProfile) -> None:

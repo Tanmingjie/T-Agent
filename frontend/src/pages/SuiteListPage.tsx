@@ -4,11 +4,22 @@ import { apiGet, apiPost, apiDelete } from "../api/client";
 import { withProject, getProjectId } from "../lib/session";
 import { Plus, Trash2, Play, Layers, Search } from "lucide-react";
 
+interface LastRun {
+  id: string;
+  status: string;
+  total_cases: number;
+  passed_cases: number;
+  failed_cases: number;
+  finished_at?: number | null;
+  started_at?: number | null;
+}
 interface Suite {
   id: string;
   name: string;
   base_url: string;
   updated_at?: string | null;
+  case_count?: number;
+  last_run?: LastRun | null;
 }
 
 function fmtDate(v?: string | null): string {
@@ -24,6 +35,31 @@ function fmtDate(v?: string | null): string {
   });
 }
 
+// 最近执行单元格:状态点 + 通过/总数。无执行记录显示「未执行」。
+function LastRunCell({ run }: { run?: LastRun | null }) {
+  if (!run) return <span className="text-gray-300">未执行</span>;
+  const ok = run.status === "completed" && run.failed_cases === 0;
+  const running = run.status === "running";
+  const dot = running
+    ? "bg-blue-500"
+    : ok
+      ? "bg-brand-500"
+      : "bg-red-500";
+  const text = running
+    ? "text-blue-600"
+    : ok
+      ? "text-brand-700"
+      : "text-red-600";
+  return (
+    <span className="inline-flex items-center gap-2">
+      <span className={`w-2 h-2 rounded-full ${dot}`} />
+      <span className={text}>
+        {run.passed_cases}/{run.total_cases} 通过
+      </span>
+    </span>
+  );
+}
+
 export default function SuiteListPage() {
   const [suites, setSuites] = useState<Suite[]>([]);
   const [showCreate, setShowCreate] = useState(false);
@@ -36,7 +72,7 @@ export default function SuiteListPage() {
 
   async function load() {
     try {
-      const path = `/suites?version_id=${encodeURIComponent(versionId)}`;
+      const path = `/suites?version_id=${encodeURIComponent(versionId)}&with_status=true`;
       setSuites(await apiGet<Suite[]>(withProject(path)));
       setError(null);
     } catch (e) {
@@ -65,7 +101,7 @@ export default function SuiteListPage() {
   }
 
   async function remove(id: string) {
-    if (!window.confirm("确认删除此 Suite？此操作不可恢复。")) return;
+    if (!window.confirm("确认删除此测试任务？此操作不可恢复。")) return;
     try {
       await apiDelete(`/suites/${id}`);
       load();
@@ -89,16 +125,16 @@ export default function SuiteListPage() {
       {/* Header */}
       <div className="flex items-start justify-between mb-6">
         <div>
-          <h1 className="text-xl font-semibold text-surface-900">测试套件</h1>
+          <h1 className="text-xl font-semibold text-surface-900">测试任务</h1>
           <p className="text-sm text-gray-500 mt-1">
-            管理你的测试 Suite，上传用例并执行 AI 自动化测试。
+            管理该版本下的测试任务，上传用例并执行 AI 自动化测试。
           </p>
         </div>
         <button
           onClick={() => setShowCreate((v) => !v)}
           className="inline-flex items-center gap-1.5 bg-brand-600 text-white px-3.5 py-2 rounded-md text-sm font-medium hover:bg-brand-700 transition-colors"
         >
-          <Plus size={16} /> 新建 Suite
+          <Plus size={16} /> 新建测试任务
         </button>
       </div>
 
@@ -111,11 +147,11 @@ export default function SuiteListPage() {
       {/* Create form */}
       {showCreate && (
         <div className="mb-5 p-4 bg-white border border-gray-200 rounded-lg">
-          <h3 className="font-medium text-surface-900 mb-3 text-sm">新建 Suite</h3>
+          <h3 className="font-medium text-surface-900 mb-3 text-sm">新建测试任务</h3>
           <div className="grid sm:grid-cols-2 gap-3 mb-3">
             <input
               className="border border-gray-300 px-3 py-2 rounded-md text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500"
-              placeholder="Suite 名称"
+              placeholder="任务名称"
               value={name}
               onChange={(e) => setName(e.target.value)}
             />
@@ -153,13 +189,13 @@ export default function SuiteListPage() {
           />
           <input
             className="w-64 border border-gray-300 rounded-md pl-9 pr-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500"
-            placeholder="搜索套件…"
+            placeholder="搜索任务…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
           />
         </div>
         <span className="text-xs text-gray-400 ml-auto">
-          共 {filtered.length} 个套件
+          共 {filtered.length} 个任务
         </span>
       </div>
 
@@ -169,7 +205,8 @@ export default function SuiteListPage() {
           <thead>
             <tr className="border-b border-gray-200 text-left text-xs font-medium text-gray-500">
               <th className="px-5 py-3 font-medium">名称</th>
-              <th className="px-5 py-3 font-medium">Base URL</th>
+              <th className="px-5 py-3 font-medium">用例数</th>
+              <th className="px-5 py-3 font-medium">最近执行</th>
               <th className="px-5 py-3 font-medium">更新时间</th>
               <th className="px-5 py-3 font-medium w-px"></th>
             </tr>
@@ -177,14 +214,14 @@ export default function SuiteListPage() {
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-5 py-16 text-center">
+                <td colSpan={5} className="px-5 py-16 text-center">
                   <Layers size={36} className="mx-auto text-gray-300 mb-3" />
                   <p className="text-gray-500 text-sm mb-1">
-                    {query ? "没有匹配的套件" : "还没有 Suite"}
+                    {query ? "没有匹配的任务" : "还没有测试任务"}
                   </p>
                   {!query && (
                     <p className="text-xs text-gray-400">
-                      点击"新建 Suite"创建你的第一个测试套件
+                      点击「新建测试任务」创建你的第一个测试任务
                     </p>
                   )}
                 </td>
@@ -207,7 +244,10 @@ export default function SuiteListPage() {
                   </div>
                 </td>
                 <td className="px-5 py-3.5 text-gray-500">
-                  {s.base_url || <span className="text-gray-300">未设置</span>}
+                  {s.case_count ?? 0}
+                </td>
+                <td className="px-5 py-3.5">
+                  <LastRunCell run={s.last_run} />
                 </td>
                 <td className="px-5 py-3.5 text-gray-500">{fmtDate(s.updated_at)}</td>
                 <td className="px-5 py-3.5">
