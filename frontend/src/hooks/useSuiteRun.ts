@@ -14,6 +14,7 @@ export interface StepStatus {
   description: string;
   screenshot?: string | null; // 该步真实截图文件名(None=无图,如快照/失败步)
   prompt?: string | null; // 本轮发给 LLM 的请求(供执行中「查看 prompt」)
+  reasoning?: string; // 该步「思考过程」(由流式 think_delta 在落定时定格,执行中即可回看)
 }
 
 export interface PhaseStatus {
@@ -149,21 +150,26 @@ export function useSuiteRun(suiteId: string | undefined) {
         es.addEventListener("step_change", (e) => {
           const d = safeParse((e as MessageEvent).data);
           if (!d) return;
-          upd(d.case_id as string, (c) => ({
-            ...c,
-            // 本步落定 → 清空思考流(该步思考已并入步骤),为下一步思考腾位
-            thinkStream: "",
-            steps: [
-              ...c.steps.filter((s) => s.index !== d.step_index),
-              {
-                index: d.step_index as number,
-                status: d.status as string,
-                description: d.description as string,
-                screenshot: (d.screenshot as string | null) ?? null,
-                prompt: (d.prompt as string | null) ?? null,
-              },
-            ],
-          }));
+          upd(d.case_id as string, (c) => {
+            const existing = c.steps.find((s) => s.index === d.step_index);
+            return {
+              ...c,
+              // 本步落定 → 把累积的思考流**定格**到该步(retain,可回看),再清空给下一步
+              thinkStream: "",
+              steps: [
+                ...c.steps.filter((s) => s.index !== d.step_index),
+                {
+                  index: d.step_index as number,
+                  status: d.status as string,
+                  description: d.description as string,
+                  screenshot: (d.screenshot as string | null) ?? null,
+                  prompt: (d.prompt as string | null) ?? null,
+                  // 本步思考:本次累积的 thinkStream;同轮多 tool_call 时后续步沿用已有
+                  reasoning: c.thinkStream || existing?.reasoning || "",
+                },
+              ],
+            };
+          });
         });
 
         es.addEventListener("step_done", (e) => {

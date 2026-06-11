@@ -579,6 +579,13 @@ export default function CaseDrawerBody({
   const [sel, setSel] = useState<Selection>({ kind: "info" });
   const [rightTab, setRightTab] = useState<"preview" | "code">("preview");
   const [showPrompt, setShowPrompt] = useState(false);
+  // 执行中自动跟随当前步骤(逐步展开);用户手动点任意条目即停止跟随,自由回看
+  const [followLive, setFollowLive] = useState(true);
+  const pickSel = useCallback((s: Selection) => {
+    setFollowLive(false);
+    setSel(s);
+    setShowPrompt(false);
+  }, []);
 
   const isRunning = status === "running" || status === "healing";
   // 进行中的结果请求:重新加载时先 abort 上一次,避免 /result+/code 在 HTTP/1.1
@@ -672,6 +679,7 @@ export default function CaseDrawerBody({
           // 一律假设有图会去取不存在的 step_NNN.png 报 404 显示「无截图」
           hasShot: !!s.screenshot,
           state: s.status === "done" ? ("done" as const) : ("running" as const),
+          reasoning: s.reasoning,
           prompt: s.prompt ?? undefined,
         }));
     }
@@ -681,12 +689,31 @@ export default function CaseDrawerBody({
       hasShot: false,
       state: "spec" as const,
     }));
-  }, [result, liveState, caseInfo.steps]);
+    // 仅依赖 steps 数组(其引用在 think_delta 高频更新时保持稳定),不依赖整个 liveState
+    // → 思考流逐 token 推进时不重算步骤列表,消除流式期间点击切换的卡顿。
+  }, [result, liveState?.steps, caseInfo.steps]);
 
   const finalShotNo = useMemo(() => {
     const withShot = steps.filter((s) => s.hasShot);
     return withShot.length ? withShot[withShot.length - 1].no : null;
   }, [steps]);
+
+  // 执行中自动跟随最新步骤(只在有新步骤落定时触发——deps 取稳定的 steps 引用,
+  // 思考流逐 token 推进不会重触发);用户手动点过(followLive=false)则不跟随。
+  useEffect(() => {
+    if (!isRunning || !followLive) return;
+    const live = liveState?.steps;
+    if (live && live.length) {
+      const latest = Math.max(...live.map((s) => s.index));
+      setSel({ kind: "step", no: latest });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRunning, followLive, liveState?.steps]);
+
+  // 新一轮执行开始 → 恢复自动跟随
+  useEffect(() => {
+    if (isRunning) setFollowLive(true);
+  }, [runId, caseInfo.id, isRunning]);
 
   const pill = STATUS_PILL[status] ?? STATUS_PILL.pending;
   const shotUrl = (no: number) =>
@@ -730,7 +757,7 @@ export default function CaseDrawerBody({
         <aside className="w-80 shrink-0 border-r border-gray-200 overflow-auto p-4 space-y-5">
           {/* 用例信息(预置/预期/TestSpec)→ 右栏宽栏展示 */}
           <button
-            onClick={() => setSel({ kind: "info" })}
+            onClick={() => pickSel({ kind: "info" })}
             className={`w-full text-left rounded-lg border p-3 transition-colors ${
               sel.kind === "info"
                 ? "border-brand-300 bg-brand-50/60"
@@ -751,7 +778,7 @@ export default function CaseDrawerBody({
           {/* Test result card(执行中显示转圈占位,参考 TestSprite) */}
           {(result || isRunning) && (
             <button
-              onClick={() => setSel({ kind: "result" })}
+              onClick={() => pickSel({ kind: "result" })}
               className={`w-full text-left rounded-lg border p-3 transition-colors ${
                 sel.kind === "result"
                   ? !result
@@ -798,10 +825,7 @@ export default function CaseDrawerBody({
                 return (
                   <button
                     key={`${s.no}-${s.label}`}
-                    onClick={() => {
-                      setSel({ kind: "step", no: s.no });
-                      setShowPrompt(false); // 切步骤时收起 prompt,避免串味
-                    }}
+                    onClick={() => pickSel({ kind: "step", no: s.no })}
                     className={`w-full text-left rounded-lg border p-2.5 flex items-start gap-2 cursor-pointer transition-colors ${
                       active
                         ? "border-brand-300 bg-brand-50/60"
@@ -852,6 +876,26 @@ export default function CaseDrawerBody({
               <h3 className="text-sm font-medium text-surface-900">
                 {selStep.label}
               </h3>
+              {/* 思考过程:运行中的步骤显示实时流(带光标),已落定步骤显示定格文本(可回溯) */}
+              {(() => {
+                const liveThinking =
+                  selStep.state === "running" ? liveState?.thinkStream : undefined;
+                const thinking = liveThinking ?? selStep.reasoning;
+                if (!thinking) return null;
+                return (
+                  <div>
+                    <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
+                      思考过程
+                    </h4>
+                    <pre className="text-xs bg-gray-50 border border-gray-200 rounded-md p-3 whitespace-pre-wrap break-words max-h-72 overflow-auto leading-relaxed text-gray-700">
+                      {thinking}
+                      {selStep.state === "running" && (
+                        <span className="inline-block w-1.5 h-3.5 bg-blue-500 animate-pulse align-middle ml-0.5" />
+                      )}
+                    </pre>
+                  </div>
+                );
+              })()}
               {runId && selStep.hasShot ? (
                 <div className="max-w-xl">
                   <Shot src={shotUrl(selStep.no)} alt={selStep.label} />
