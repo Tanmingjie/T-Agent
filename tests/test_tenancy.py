@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from input.models import Project, ProjectMember, Suite, User, Version
+from input.models import Project, ProjectMember, Suite, TestCase, User, Version
 from storage.db import Store
 
 
@@ -170,3 +170,47 @@ async def test_migration_backfills_missing_str_column(tmp_path):
     assert len(vocs) == 1
     assert vocs[0].project_id == ""  # 回填为默认空串
     await s.close()
+
+
+# ── 版本克隆(T-P04c)─────────────────────────────────────────
+
+
+async def test_clone_version_suites_copies_suites_and_cases(store):
+    await store.save_project(Project(id="p1", name="x"))
+    await store.save_version(Version(id="v1", project_id="p1", name="1.0"))
+    await store.save_version(Version(id="v2", project_id="p1", name="1.1"))
+    await store.save_suite(
+        Suite(id="s1", name="冒烟", base_url="x", project_id="p1", version_id="v1")
+    )
+    await store.save_case(TestCase(id="c1", name="用例1", suite_id="s1"))
+    await store.save_case(TestCase(id="c2", name="用例2", suite_id="s1"))
+
+    n = await store.clone_version_suites("v1", "v2")
+    assert n == 1
+
+    # 新版本下有一份 Suite(新 id),挂在 v2
+    v2_suites = await store.list_suites(version_id="v2")
+    assert len(v2_suites) == 1
+    new_suite = v2_suites[0]
+    assert new_suite.id != "s1"  # 新 id
+    assert new_suite.name == "冒烟"
+    assert new_suite.project_id == "p1"
+    # 用例随之拷贝(新 id,挂新 Suite)
+    new_cases = await store.list_cases(suite_id=new_suite.id)
+    assert {c.name for c in new_cases} == {"用例1", "用例2"}
+    assert all(c.id not in ("c1", "c2") for c in new_cases)
+    # 原版本不受影响
+    assert len(await store.list_suites(version_id="v1")) == 1
+
+
+async def test_clone_version_rejects_cross_project(store):
+    await store.save_version(Version(id="v1", project_id="p1", name="1.0"))
+    await store.save_version(Version(id="v2", project_id="p2", name="2.0"))
+    with pytest.raises(ValueError):
+        await store.clone_version_suites("v1", "v2")
+
+
+async def test_clone_version_missing_raises(store):
+    await store.save_version(Version(id="v1", project_id="p1", name="1.0"))
+    with pytest.raises(ValueError):
+        await store.clone_version_suites("v1", "nope")

@@ -17,6 +17,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from typing import Type, TypeVar
 
 from sqlalchemy import JSON, Column, event, inspect, text
@@ -462,6 +463,49 @@ class Store:
         async with self._sf() as s:
             rows = (await s.exec(stmt)).all()
             return [Version(**r.model_dump()) for r in rows]
+
+    async def clone_version_suites(self, from_version_id: str, to_version_id: str) -> int:
+        """把 from 版本下的所有 Suite(含用例、执行设置)拷到 to 版本(版本继承,已拍板)。
+
+        显式动作:新版本从上一版本拷一份 Suite 后独立演进。生成新 Suite/用例 id;
+        **不拷执行历史**(run/record 属各版本自有)。两版本须同项目(防跨租户拷贝)。
+        返回拷贝的 Suite 数。
+        """
+        from_v = await self.get_version(from_version_id)
+        to_v = await self.get_version(to_version_id)
+        if from_v is None or to_v is None:
+            raise ValueError("源/目标版本不存在")
+        if from_v.project_id != to_v.project_id:
+            raise ValueError("不能跨项目拷贝版本 Suite")
+
+        suites = await self.list_suites(version_id=from_version_id)
+        count = 0
+        for suite in suites:
+            new_suite_id = uuid.uuid4().hex
+            cases = await self.list_cases(suite_id=suite.id)
+            async with self._sf() as s:
+                suite_data = suite.model_dump()
+                suite_data.update(id=new_suite_id, version_id=to_version_id)
+                s.add(SuiteRow(**suite_data))
+                # 用例随 Suite 拷贝(新 id,挂新 Suite)
+                for tc in cases:
+                    tc_data = tc.model_dump()
+                    tc_data.update(id=uuid.uuid4().hex, suite_id=new_suite_id)
+                    s.add(TestCaseRow(**tc_data))
+                # 执行设置随 Suite 拷贝(并发/权限模式)
+                old_settings = await s.get(SuiteSettingsRow, suite.id)
+                if old_settings is not None:
+                    s.add(
+                        SuiteSettingsRow(
+                            suite_id=new_suite_id,
+                            permission_mode=old_settings.permission_mode,
+                            parallelism=old_settings.parallelism,
+                            updated_at=time.time(),
+                        )
+                    )
+                await s.commit()
+            count += 1
+        return count
 
     # —— User ——
 
