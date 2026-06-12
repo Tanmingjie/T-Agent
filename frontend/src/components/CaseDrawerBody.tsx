@@ -566,7 +566,6 @@ function TimelineView({
   liveState,
   result,
   isRunning,
-  status,
   shotUrl,
   code,
 }: {
@@ -574,7 +573,6 @@ function TimelineView({
   liveState?: CaseRunState;
   result: CaseResult | null;
   isRunning: boolean;
-  status: CaseRunStatus;
   shotUrl: (no: number) => string;
   code: string | null;
 }) {
@@ -605,12 +603,13 @@ function TimelineView({
   // 只展示真实执行步骤(done/running),不展示翻译前的占位步骤(spec)——翻译后步骤会变,
   // 初始不该先摆一份会被替换的「测试步骤」。
   const realSteps = useMemo(() => steps.filter((s) => s.state !== "spec"), [steps]);
-  const runningNo = realSteps.find((s) => s.state === "running")?.no ?? null;
+  const executing = isRunning && phase === "executing";
 
   // 执行中自动滚到底:**仅在新步骤落定时**触发(不随思考流逐 token 触发,否则
   // smooth 滚动风暴会让界面卡顿、点击无响应)。
   useEffect(() => {
-    if (isRunning) bottomRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
+    // 立即滚(非 smooth):smooth 动画在快速连续落步时会排队、加重卡顿
+    if (isRunning) bottomRef.current?.scrollIntoView({ block: "end" });
   }, [realSteps.length, isRunning]);
 
   const incomplete = /执行未完成|停因=max_steps/.test(result?.final_result ?? "");
@@ -622,7 +621,8 @@ function TimelineView({
         <TimelineHeader
           label="翻译用例为执行规格 (TestSpec)"
           done={!!result?.spec || !!liveState?.spec || realSteps.length > 0}
-          active={phase === "spec"}
+          // 开跑时(尚无 phase 事件)翻译就是当前活动阶段;收到 executing 后才算翻译完
+          active={isRunning && (!phase || phase === "spec")}
         />
         {phase === "spec" && liveState?.specStream ? (
           <pre className="ml-6 mt-1 max-h-56 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
@@ -643,10 +643,11 @@ function TimelineView({
         <TimelineHeader
           label="驱动浏览器逐步执行"
           done={!!result}
-          active={isRunning && phase !== "spec"}
+          // 仅在确实进入「执行」阶段才转圈(开跑时 phase 未到 executing,不该先显执行中)
+          active={isRunning && phase === "executing"}
         />
         <ol className="ml-1 mt-2 border-l border-gray-200 space-y-3">
-          {realSteps.length === 0 && (
+          {realSteps.length === 0 && !executing && (
             <li className="ml-5 text-xs text-gray-400">
               {isRunning ? "等待执行…" : "尚无步骤"}
             </li>
@@ -655,16 +656,32 @@ function TimelineView({
             <TimelineStep
               key={`${s.no}-${s.label}`}
               step={s}
-              open={s.no === runningNo || expanded.has(s.no)}
-              // 思考:仅运行中的步传实时流(只有它会逐 token 变),其余用定格 reasoning →
-              // 配合 React.memo,思考流推进时只重渲染当前步,不动其余步(消卡顿关键)。
-              liveThinking={s.no === runningNo ? liveState?.thinkStream : undefined}
+              open={expanded.has(s.no)}
               promptShown={promptOpen.has(s.no)}
               onToggle={toggle}
               onTogglePrompt={togglePrompt}
               shotUrl={shotUrl}
             />
           ))}
+          {/* 进行中:当前正在决策的下一步,逐 token 流式;step_change 落定即并入上方步骤 */}
+          {executing && (
+            <li className="relative ml-5">
+              <span className="absolute -left-[1.42rem] top-1.5">
+                <Loader2 size={14} className="text-blue-600 animate-spin" />
+              </span>
+              <p className="text-[10px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+                思考中
+              </p>
+              {liveState?.thinkStream ? (
+                <pre className="rounded bg-gray-50 border border-gray-200 p-2 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words max-h-56 overflow-auto">
+                  {liveState.thinkStream}
+                  <BlinkCursor />
+                </pre>
+              ) : (
+                <p className="text-xs text-gray-400">决策下一步…</p>
+              )}
+            </li>
+          )}
         </ol>
       </section>
 
@@ -766,12 +783,6 @@ function TimelineView({
         </section>
       )}
 
-      {isRunning && (
-        <p className="text-xs text-gray-400 flex items-center gap-1.5">
-          <Loader2 size={13} className="animate-spin text-blue-600" />
-          {status === "healing" ? "自愈中…" : "执行中…"}
-        </p>
-      )}
       <div ref={bottomRef} />
     </div>
   );
@@ -1076,7 +1087,6 @@ export default function CaseDrawerBody({
               liveState={liveState}
               result={result}
               isRunning={isRunning}
-              status={status}
               shotUrl={shotUrl}
               code={code}
             />

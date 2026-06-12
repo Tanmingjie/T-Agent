@@ -409,9 +409,9 @@ class TestCaseAgent:
 
         async def emit_think_delta(text: str) -> None:
             _think_buf.append(text)
-            # 思考文本较长,合批阈值取大些(~120 字符)→ 降低前端 setState 频率,
-            # 消除流式期间点击切换的卡顿(reasoning 可读性不受影响)。
-            if sum(len(s) for s in _think_buf) >= 120:
+            # 思考文本较长,合批阈值取大些(~250 字符)→ 进一步降低前端 setState / 重渲染
+            # 频率,缓解流式期间点击展开的卡顿(reasoning 可读性不受影响)。
+            if sum(len(s) for s in _think_buf) >= 250:
                 await _flush_think()
 
         async def emit_step(step) -> None:
