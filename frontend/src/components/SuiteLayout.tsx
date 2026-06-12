@@ -4,6 +4,13 @@ import { apiGet } from "../api/client";
 import { ListChecks, History, BarChart3, Settings, ChevronLeft } from "lucide-react";
 import IconRail from "./IconRail";
 import { setVersionId } from "../lib/session";
+import { useSuiteRun } from "../hooks/useSuiteRun";
+
+export type SuiteRun = ReturnType<typeof useSuiteRun>;
+export interface SuiteOutletCtx {
+  suite: SuiteInfo | null;
+  run: SuiteRun;
+}
 
 interface SuiteInfo {
   name: string;
@@ -32,6 +39,13 @@ export default function SuiteLayout() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [suite, setSuite] = useState<SuiteInfo | null>(null);
+  // 执行状态 + SSE 提到布局层:在 用例/执行历史/报告 之间切 tab 时,SuiteLayout 不卸载,
+  // 执行流(EventSource)与实时状态得以保留——返回「用例」仍能看到正在进行的执行过程。
+  const run = useSuiteRun(id);
+
+  // 离开整个测试任务工作区(SuiteLayout 卸载)时才关 SSE;切 tab 不关。
+  // 切换到另一个任务(id 变)也关旧 SSE,避免悬挂。
+  useEffect(() => () => run.stop(), [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!id) return;
@@ -108,7 +122,7 @@ export default function SuiteLayout() {
           </span>
         </div>
         <div className="px-8 py-7">
-          <Outlet context={{ suite }} />
+          <Outlet context={{ suite, run } satisfies SuiteOutletCtx} />
         </div>
       </main>
     </div>

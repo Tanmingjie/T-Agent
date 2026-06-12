@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useParams } from "react-router-dom";
+import { useParams, useOutletContext } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
+import type { SuiteOutletCtx } from "../components/SuiteLayout";
 import {
   Upload,
   Play,
@@ -15,7 +16,7 @@ import {
 import Drawer from "../components/Drawer";
 import CaseDrawerBody from "../components/CaseDrawerBody";
 import PermissionDialog from "../components/PermissionDialog";
-import { useSuiteRun, CaseRunStatus } from "../hooks/useSuiteRun";
+import { CaseRunStatus } from "../hooks/useSuiteRun";
 
 interface PreconditionItem {
   text: string;
@@ -90,7 +91,8 @@ export default function SuiteCasesPage() {
   // 最近一次历史 run 的逐用例裁决(caseId → passed),供未实时执行时回填状态列
   const [pastStatus, setPastStatus] = useState<Record<string, CaseRunStatus>>({});
 
-  const run = useSuiteRun(id);
+  // 执行状态来自布局层(SuiteLayout),切 tab 不丢失;不再由本页持有 SSE。
+  const { run } = useOutletContext<SuiteOutletCtx>();
 
   async function load() {
     setSuite(await apiGet(`/suites/${id}`));
@@ -115,7 +117,7 @@ export default function SuiteCasesPage() {
       })
       .catch(() => setPastStatus({}));
   }, [id, suite?.runs]);
-  useEffect(() => () => run.stop(), []); // cleanup SSE on unmount
+  // SSE 生命周期由 SuiteLayout 持有;本页切换不再 stop(否则切 tab 会断流)。
 
   async function handleUpload(e: React.ChangeEvent<HTMLInputElement>) {
     const file = e.target.files?.[0];
