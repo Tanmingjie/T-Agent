@@ -409,9 +409,10 @@ class TestCaseAgent:
 
         async def emit_think_delta(text: str) -> None:
             _think_buf.append(text)
-            # 思考文本较长,合批阈值取大些(~250 字符)→ 进一步降低前端 setState / 重渲染
-            # 频率,缓解流式期间点击展开的卡顿(reasoning 可读性不受影响)。
-            if sum(len(s) for s in _think_buf) >= 250:
+            # 合批 ~60 字符:前端已用 rAF 把渲染合到每帧≤1 次(与 token 速率解耦),
+            # 故这里取小批量让思考文本**更细粒度、顺滑地**流出(不再为省前端重渲染而攒大块,
+            # 那会让流看起来一跳一跳)。queue 模式下 SSE/run_event 行数略增,可接受。
+            if sum(len(s) for s in _think_buf) >= 60:
                 await _flush_think()
 
         async def emit_step(step) -> None:

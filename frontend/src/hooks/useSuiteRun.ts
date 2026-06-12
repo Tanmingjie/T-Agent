@@ -71,6 +71,24 @@ export function useSuiteRun(suiteId: string | undefined) {
   // 外部 store:流式文本(per-case),与高频重渲染隔离。
   const streamRef = useRef<Record<string, StreamText>>({});
   const streamListeners = useRef<Map<string, Set<() => void>>>(new Map());
+  // rAF 合批通知:store 可能逐 token 高频 push,把「通知订阅者」攒到下一帧一次性发,
+  // 使流式叶子**每帧至多重渲染一次**(≤60fps),与 token 到达频率解耦 → 视觉顺滑、
+  // 不被 token 速率拖卡(snapshot 始终读最新累积文本,跳过中间态)。
+  const pendingNotify = useRef<Set<string>>(new Set());
+  const rafScheduled = useRef(false);
+  const scheduleNotify = useCallback((cid: string) => {
+    pendingNotify.current.add(cid);
+    if (rafScheduled.current) return;
+    rafScheduled.current = true;
+    requestAnimationFrame(() => {
+      rafScheduled.current = false;
+      const ids = pendingNotify.current;
+      pendingNotify.current = new Set();
+      ids.forEach((id) =>
+        streamListeners.current.get(id)?.forEach((l) => l()),
+      );
+    });
+  }, []);
 
   // 供组件订阅(稳定引用)。getStream 返回的对象在两次通知间保持稳定引用。
   const subscribeStream = useCallback(
@@ -130,9 +148,8 @@ export function useSuiteRun(suiteId: string | undefined) {
             ),
           }));
 
-        // 流式文本 store 的就地 mutator(只改 ref + 通知订阅者,不碰 React state)。
-        const notifyStream = (cid: string) =>
-          streamListeners.current.get(cid)?.forEach((l) => l());
+        // 流式文本 store 的就地 mutator(只改 ref + rAF 合批通知订阅者,不碰 React state)。
+        const notifyStream = scheduleNotify;
         const pushStream = (cid: string, key: keyof StreamText, delta: string) => {
           const cur = streamRef.current[cid] ?? EMPTY_STREAM;
           streamRef.current[cid] = { ...cur, [key]: cur[key] + delta };
@@ -271,7 +288,7 @@ export function useSuiteRun(suiteId: string | undefined) {
         setRunning(false);
       }
     },
-    [suiteId, stop],
+    [suiteId, stop, scheduleNotify],
   );
 
   return {
