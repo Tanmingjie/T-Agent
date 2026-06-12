@@ -486,6 +486,27 @@ function useStream(
   return useSyncExternalStore(subscribe, snapshot);
 }
 
+// 流式文本只看尾部:超长(>8000 字)只渲染尾部窗口,界住单帧排版成本为常数——流式期间
+// 用户只关注正在流出的尾巴,完整内容另有结构化展示(spec→用例信息;思考→落定后定格)。
+const STREAM_TAIL = 8000;
+
+// 流式 pre:文本增长时自动滚到底(让用户看到正在流出的尾部,而非固定高度里的顶部旧文),
+// 并对超长流做尾部窗口截断。auto-scroll 的 scrollHeight 读取已被 rAF 合到 ≤60fps。
+function StreamPre({ text, className }: { text: string; className: string }) {
+  const ref = useRef<HTMLPreElement | null>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [text]);
+  const shown = text.length > STREAM_TAIL ? text.slice(-STREAM_TAIL) : text;
+  return (
+    <pre ref={ref} className={className}>
+      {shown}
+      <BlinkCursor />
+    </pre>
+  );
+}
+
 // 翻译阶段流式 spec(叶子,自订阅):active 且有流时显示流式 pre,否则回退提示。
 function SpecStream({
   api,
@@ -501,10 +522,10 @@ function SpecStream({
   const spec = useStream(api, caseId, "spec");
   if (active && spec)
     return (
-      <pre className="ml-6 mt-1 max-h-56 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
-        {spec}
-        <BlinkCursor />
-      </pre>
+      <StreamPre
+        text={spec}
+        className="ml-6 mt-1 max-h-56 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words"
+      />
     );
   return (
     <p className="ml-6 mt-1 text-xs text-gray-400">
@@ -519,10 +540,10 @@ function SpecStream({
 function ThinkStream({ api, caseId }: { api?: StreamApi; caseId: string }) {
   const think = useStream(api, caseId, "think");
   return think ? (
-    <pre className="rounded bg-gray-50 border border-gray-200 p-2 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words max-h-56 overflow-auto">
-      {think}
-      <BlinkCursor />
-    </pre>
+    <StreamPre
+      text={think}
+      className="rounded bg-gray-50 border border-gray-200 p-2 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words max-h-56 overflow-auto"
+    />
   ) : (
     <p className="text-xs text-gray-400">决策下一步…</p>
   );
@@ -621,7 +642,44 @@ const TimelineStep = memo(function TimelineStep({
       )}
     </li>
   );
-});
+},
+areTimelineStepEqual);
+
+// 自定义比较:step_change 时 steps 数组整体重建,每个 DisplayStep 都是**新对象**(默认
+// 身份比较会让所有步骤重渲染)。改按字段浅比 → 只有内容真变的那一步(及新步)重渲染,
+// 其余已落定步原地不动。onToggle/onTogglePrompt/shotUrl 均为稳定引用,逐一比对即可。
+function areTimelineStepEqual(
+  a: {
+    step: DisplayStep;
+    open: boolean;
+    promptShown: boolean;
+    onToggle: (no: number) => void;
+    onTogglePrompt: (no: number) => void;
+    shotUrl: (no: number) => string;
+  },
+  b: typeof a,
+): boolean {
+  if (
+    a.open !== b.open ||
+    a.promptShown !== b.promptShown ||
+    a.onToggle !== b.onToggle ||
+    a.onTogglePrompt !== b.onTogglePrompt ||
+    a.shotUrl !== b.shotUrl
+  )
+    return false;
+  const x = a.step;
+  const y = b.step;
+  return (
+    x.no === y.no &&
+    x.label === y.label &&
+    x.state === y.state &&
+    x.reasoning === y.reasoning &&
+    x.url === y.url &&
+    x.hasShot === y.hasShot &&
+    x.healCount === y.healCount &&
+    x.prompt === y.prompt
+  );
+}
 
 // 过程时间线:把整条用例的执行**全过程**收在一处,执行中流式、执行后回溯。
 // 顺序:翻译规格 → 逐步(思考/工具/自愈/截图)→ 结构化断言 → 最终结果。

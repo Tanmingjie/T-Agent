@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
 import { useSuiteRunCtx } from "../components/SuiteLayout";
@@ -82,6 +82,34 @@ function StatusCell({ status }: { status: CaseRunStatus }) {
   );
 }
 
+// 用例行(memo):执行期 step_change 更新 statuses 会重渲染本页,但 `c`(用例对象)与
+// onSelect 引用稳定、status 是基元 → 仅**状态真变的那一行**重渲染,其余行原地不动。
+const CaseRow = memo(function CaseRow({
+  c,
+  status,
+  onSelect,
+}: {
+  c: Case;
+  status: CaseRunStatus;
+  onSelect: (c: Case) => void;
+}) {
+  return (
+    <tr
+      onClick={() => onSelect(c)}
+      className="border-b border-gray-100 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors"
+    >
+      <td className="px-5 py-3.5">
+        <StatusCell status={status} />
+      </td>
+      <td className="px-5 py-3.5 font-medium text-surface-900">{c.name}</td>
+      <td className="px-5 py-3.5 font-mono text-xs text-gray-500">
+        {caseNo(c.id)}
+      </td>
+      <td className="px-5 py-3.5 text-gray-500">{c.steps.length}</td>
+    </tr>
+  );
+});
+
 export default function SuiteCasesPage() {
   const { id } = useParams<{ id: string }>();
   const [suite, setSuite] = useState<SuiteResp | null>(null);
@@ -150,6 +178,9 @@ export default function SuiteCasesPage() {
     // 本次会话的实时状态优先;否则回退到最近一次历史 run 的裁决
     return run.statuses[caseId]?.status ?? pastStatus[caseId] ?? "pending";
   }
+
+  // 稳定引用,供 memo 化的 CaseRow 比对(否则每次渲染新闭包会让所有行重渲染)。
+  const onSelect = useCallback((c: Case) => setSelected(c), []);
 
   // 进度统计
   const tracked = Object.values(run.statuses);
@@ -314,22 +345,12 @@ export default function SuiteCasesPage() {
               </tr>
             )}
             {filtered.map((c) => (
-              <tr
+              <CaseRow
                 key={c.id}
-                onClick={() => setSelected(c)}
-                className="border-b border-gray-100 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors"
-              >
-                <td className="px-5 py-3.5">
-                  <StatusCell status={statusOf(c.id)} />
-                </td>
-                <td className="px-5 py-3.5 font-medium text-surface-900">
-                  {c.name}
-                </td>
-                <td className="px-5 py-3.5 font-mono text-xs text-gray-500">
-                  {caseNo(c.id)}
-                </td>
-                <td className="px-5 py-3.5 text-gray-500">{c.steps.length}</td>
-              </tr>
+                c={c}
+                status={statusOf(c.id)}
+                onSelect={onSelect}
+              />
             ))}
           </tbody>
         </table>
