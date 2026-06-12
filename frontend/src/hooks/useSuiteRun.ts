@@ -30,9 +30,16 @@ export interface CaseRunState {
   steps: StepStatus[];
   phases: PhaseStatus[]; // 生命周期阶段流(翻译/执行/断言/代码),最后一个为当前进行中
   spec?: unknown; // 翻译阶段完成后实时推送的 TestSpec(执行中也能看执行规格)
-  specStream?: string; // 翻译阶段逐 token 流式增量(执行中实时显示,spec_ready 后被结构化 spec 取代)
-  thinkStream?: string; // 执行期当前步「思考过程」逐 token 增量(step_change 落定即清,显示下一步思考)
 }
+
+// 流式文本(spec 翻译增量 / 当前步思考增量):**高频**逐 token 更新。**不进 `statuses`
+// React state**——否则每个 delta 都会重渲染整个 SuiteCasesPage(用例表 + 抽屉)造成卡顿。
+// 改放外部 store,只有订阅的流式叶子节点(useSyncExternalStore)随之重渲染。
+export interface StreamText {
+  spec: string;
+  think: string;
+}
+const EMPTY_STREAM: StreamText = { spec: "", think: "" };
 
 export interface PermReq {
   event_id: string;
@@ -60,6 +67,28 @@ export function useSuiteRun(suiteId: string | undefined) {
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
   const esRef = useRef<EventSource | null>(null);
+
+  // 外部 store:流式文本(per-case),与高频重渲染隔离。
+  const streamRef = useRef<Record<string, StreamText>>({});
+  const streamListeners = useRef<Map<string, Set<() => void>>>(new Map());
+
+  // 供组件订阅(稳定引用)。getStream 返回的对象在两次通知间保持稳定引用。
+  const subscribeStream = useCallback(
+    (cid: string, cb: () => void) => {
+      let set = streamListeners.current.get(cid);
+      if (!set) {
+        set = new Set();
+        streamListeners.current.set(cid, set);
+      }
+      set.add(cb);
+      return () => set!.delete(cb);
+    },
+    [],
+  );
+  const getStream = useCallback(
+    (cid: string): StreamText => streamRef.current[cid] ?? EMPTY_STREAM,
+    [],
+  );
 
   const stop = useCallback(() => {
     esRef.current?.close();
@@ -101,35 +130,45 @@ export function useSuiteRun(suiteId: string | undefined) {
             ),
           }));
 
+        // 流式文本 store 的就地 mutator(只改 ref + 通知订阅者,不碰 React state)。
+        const notifyStream = (cid: string) =>
+          streamListeners.current.get(cid)?.forEach((l) => l());
+        const pushStream = (cid: string, key: keyof StreamText, delta: string) => {
+          const cur = streamRef.current[cid] ?? EMPTY_STREAM;
+          streamRef.current[cid] = { ...cur, [key]: cur[key] + delta };
+          notifyStream(cid);
+        };
+        const resetStream = (cid: string, key?: keyof StreamText) => {
+          const cur = streamRef.current[cid] ?? EMPTY_STREAM;
+          streamRef.current[cid] = key
+            ? { ...cur, [key]: "" }
+            : { ...EMPTY_STREAM };
+          notifyStream(cid);
+        };
+
         es.addEventListener("case_start", (e) => {
           const d = safeParse((e as MessageEvent).data);
           if (!d) return;
+          resetStream(d.case_id as string); // 清流式文本(外部 store)
           upd(d.case_id as string, (c) => ({
             ...c,
             status: "running",
             steps: [],
             phases: [],
-            specStream: "",
-            thinkStream: "",
           }));
         });
 
+        // 高频 delta → 只进外部 store + 通知订阅者,不触发 setStatuses(消整页重渲染)
         es.addEventListener("spec_delta", (e) => {
           const d = safeParse((e as MessageEvent).data);
           if (!d) return;
-          upd(d.case_id as string, (c) => ({
-            ...c,
-            specStream: (c.specStream ?? "") + ((d.delta as string) ?? ""),
-          }));
+          pushStream(d.case_id as string, "spec", (d.delta as string) ?? "");
         });
 
         es.addEventListener("think_delta", (e) => {
           const d = safeParse((e as MessageEvent).data);
           if (!d) return;
-          upd(d.case_id as string, (c) => ({
-            ...c,
-            thinkStream: (c.thinkStream ?? "") + ((d.delta as string) ?? ""),
-          }));
+          pushStream(d.case_id as string, "think", (d.delta as string) ?? "");
         });
 
         es.addEventListener("phase", (e) => {
@@ -153,12 +192,14 @@ export function useSuiteRun(suiteId: string | undefined) {
         es.addEventListener("step_change", (e) => {
           const d = safeParse((e as MessageEvent).data);
           if (!d) return;
-          upd(d.case_id as string, (c) => {
+          const cid = d.case_id as string;
+          // 本步落定 → 把累积的思考流**定格**到该步(retain,可回看),再清空给下一步
+          const accumThink = (streamRef.current[cid] ?? EMPTY_STREAM).think;
+          resetStream(cid, "think");
+          upd(cid, (c) => {
             const existing = c.steps.find((s) => s.index === d.step_index);
             return {
               ...c,
-              // 本步落定 → 把累积的思考流**定格**到该步(retain,可回看),再清空给下一步
-              thinkStream: "",
               steps: [
                 ...c.steps.filter((s) => s.index !== d.step_index),
                 {
@@ -167,9 +208,9 @@ export function useSuiteRun(suiteId: string | undefined) {
                   description: d.description as string,
                   screenshot: (d.screenshot as string | null) ?? null,
                   prompt: (d.prompt as string | null) ?? null,
-                  // 本步思考:优先后端权威 reasoning,缺则用本次累积的 thinkStream 兜底
+                  // 本步思考:优先后端权威 reasoning,缺则用本次累积的思考流兜底
                   reasoning:
-                    (d.reasoning as string) || c.thinkStream || existing?.reasoning || "",
+                    (d.reasoning as string) || accumThink || existing?.reasoning || "",
                   toolResult: (d.tool_result as string) ?? undefined,
                   url: (d.url as string) ?? undefined,
                   healCount: (d.heal_count as number) ?? 0,
@@ -243,6 +284,8 @@ export function useSuiteRun(suiteId: string | undefined) {
     runId,
     start,
     stop,
+    subscribeStream,
+    getStream,
     clearPermission: () => setPermission(null),
   };
 }

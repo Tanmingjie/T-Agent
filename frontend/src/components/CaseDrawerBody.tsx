@@ -5,6 +5,7 @@ import {
   useMemo,
   useRef,
   useState,
+  useSyncExternalStore,
   type ReactNode,
 } from "react";
 import { apiGet, apiPut } from "../api/client";
@@ -462,12 +463,76 @@ function CodeBlock({ code }: { code: string }) {
   );
 }
 
-// 单个时间线步骤(React.memo:仅当自身 props 变化才重渲染——故思考流逐 token 推进时
-// 只有「当前运行步」(liveThinking 在变)重渲染,其余已落定步原地不动 → 消卡顿)。
+// 流式文本订阅:从外部 store(useSuiteRun)按 caseId+key 订阅单条流式文本。**只有该叶子
+// 节点**随 token 重渲染,不带动 TimelineView/抽屉/整页 → 根治流式期间的整页卡顿。
+type StreamApi = {
+  subscribeStream: (caseId: string, cb: () => void) => () => void;
+  getStream: (caseId: string) => { spec: string; think: string };
+};
+
+function useStream(
+  api: StreamApi | undefined,
+  caseId: string,
+  key: "spec" | "think",
+): string {
+  const subscribe = useCallback(
+    (cb: () => void) => (api ? api.subscribeStream(caseId, cb) : () => {}),
+    [api, caseId],
+  );
+  const snapshot = useCallback(
+    () => (api ? api.getStream(caseId)[key] : ""),
+    [api, caseId, key],
+  );
+  return useSyncExternalStore(subscribe, snapshot);
+}
+
+// 翻译阶段流式 spec(叶子,自订阅):active 且有流时显示流式 pre,否则回退提示。
+function SpecStream({
+  api,
+  caseId,
+  active,
+  hasSpec,
+}: {
+  api?: StreamApi;
+  caseId: string;
+  active: boolean;
+  hasSpec: boolean;
+}) {
+  const spec = useStream(api, caseId, "spec");
+  if (active && spec)
+    return (
+      <pre className="ml-6 mt-1 max-h-56 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
+        {spec}
+        <BlinkCursor />
+      </pre>
+    );
+  return (
+    <p className="ml-6 mt-1 text-xs text-gray-400">
+      {hasSpec
+        ? "已生成执行规格（详见左侧「用例信息」）。"
+        : "等待翻译…"}
+    </p>
+  );
+}
+
+// 执行期「思考中」当前步流式(叶子,自订阅)。
+function ThinkStream({ api, caseId }: { api?: StreamApi; caseId: string }) {
+  const think = useStream(api, caseId, "think");
+  return think ? (
+    <pre className="rounded bg-gray-50 border border-gray-200 p-2 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words max-h-56 overflow-auto">
+      {think}
+      <BlinkCursor />
+    </pre>
+  ) : (
+    <p className="text-xs text-gray-400">决策下一步…</p>
+  );
+}
+
+// 单个时间线步骤(React.memo:仅当自身 props 变化才重渲染)。已落定步显示其定格 reasoning;
+// 实时思考流由独立的「思考中」叶子节点(ThinkStream)承载,不进此处 → 步骤行不随 token 重渲染。
 const TimelineStep = memo(function TimelineStep({
   step,
   open,
-  liveThinking,
   promptShown,
   onToggle,
   onTogglePrompt,
@@ -475,14 +540,13 @@ const TimelineStep = memo(function TimelineStep({
 }: {
   step: DisplayStep;
   open: boolean;
-  liveThinking?: string;
   promptShown: boolean;
   onToggle: (no: number) => void;
   onTogglePrompt: (no: number) => void;
   shotUrl: (no: number) => string;
 }) {
   const running = step.state === "running";
-  const thinking = running ? liveThinking : step.reasoning;
+  const thinking = step.reasoning;
   return (
     <li className="relative ml-5">
       <span className="absolute -left-[1.42rem] top-1.5">
@@ -568,6 +632,8 @@ function TimelineView({
   isRunning,
   shotUrl,
   code,
+  streamApi,
+  caseId,
 }: {
   steps: DisplayStep[];
   liveState?: CaseRunState;
@@ -575,6 +641,8 @@ function TimelineView({
   isRunning: boolean;
   shotUrl: (no: number) => string;
   code: string | null;
+  streamApi?: StreamApi;
+  caseId: string;
 }) {
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [promptOpen, setPromptOpen] = useState<Set<number>>(new Set());
@@ -624,18 +692,12 @@ function TimelineView({
           // 开跑时(尚无 phase 事件)翻译就是当前活动阶段;收到 executing 后才算翻译完
           active={isRunning && (!phase || phase === "spec")}
         />
-        {phase === "spec" && liveState?.specStream ? (
-          <pre className="ml-6 mt-1 max-h-56 overflow-auto rounded-md bg-gray-50 border border-gray-200 p-3 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words">
-            {liveState.specStream}
-            <BlinkCursor />
-          </pre>
-        ) : (
-          <p className="ml-6 mt-1 text-xs text-gray-400">
-            {result?.spec || liveState?.spec
-              ? "已生成执行规格（详见左侧「用例信息」）。"
-              : "等待翻译…"}
-          </p>
-        )}
+        <SpecStream
+          api={streamApi}
+          caseId={caseId}
+          active={isRunning && phase === "spec"}
+          hasSpec={!!result?.spec || !!liveState?.spec}
+        />
       </section>
 
       {/* ── 2. 执行过程(逐步) ── */}
@@ -663,7 +725,8 @@ function TimelineView({
               shotUrl={shotUrl}
             />
           ))}
-          {/* 进行中:当前正在决策的下一步,逐 token 流式;step_change 落定即并入上方步骤 */}
+          {/* 进行中:当前正在决策的下一步,逐 token 流式(独立订阅,不重渲染上方步骤);
+              step_change 落定即并入上方步骤 */}
           {executing && (
             <li className="relative ml-5">
               <span className="absolute -left-[1.42rem] top-1.5">
@@ -672,14 +735,7 @@ function TimelineView({
               <p className="text-[10px] font-medium uppercase tracking-wider text-gray-400 mb-1">
                 思考中
               </p>
-              {liveState?.thinkStream ? (
-                <pre className="rounded bg-gray-50 border border-gray-200 p-2 text-xs leading-relaxed text-gray-700 whitespace-pre-wrap break-words max-h-56 overflow-auto">
-                  {liveState.thinkStream}
-                  <BlinkCursor />
-                </pre>
-              ) : (
-                <p className="text-xs text-gray-400">决策下一步…</p>
-              )}
+              <ThinkStream api={streamApi} caseId={caseId} />
             </li>
           )}
         </ol>
@@ -844,6 +900,8 @@ export default function CaseDrawerBody({
   liveState,
   onRun,
   runDisabled,
+  subscribeStream,
+  getStream,
 }: {
   suiteId: string;
   runId: string | null;
@@ -852,7 +910,17 @@ export default function CaseDrawerBody({
   liveState?: CaseRunState;
   onRun?: (caseId: string) => void;
   runDisabled?: boolean;
+  subscribeStream?: StreamApi["subscribeStream"];
+  getStream?: StreamApi["getStream"];
 }) {
+  // 流式订阅 api(稳定引用):仅当 hook 暴露的订阅函数变化才重建。
+  const streamApi = useMemo<StreamApi | undefined>(
+    () =>
+      subscribeStream && getStream
+        ? { subscribeStream, getStream }
+        : undefined,
+    [subscribeStream, getStream],
+  );
   const [result, setResult] = useState<CaseResult | null>(null);
   const [code, setCode] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
@@ -1089,6 +1157,8 @@ export default function CaseDrawerBody({
               isRunning={isRunning}
               shotUrl={shotUrl}
               code={code}
+              streamApi={streamApi}
+              caseId={caseInfo.id}
             />
           )}
         </section>

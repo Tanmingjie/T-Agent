@@ -352,6 +352,8 @@ export default function SuiteCasesPage() {
             liveState={selRun}
             onRun={runOne}
             runDisabled={run.running}
+            subscribeStream={run.subscribeStream}
+            getStream={run.getStream}
           />
         )}
       </Drawer>
