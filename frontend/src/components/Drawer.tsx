@@ -33,9 +33,9 @@ export default function Drawer({
           open ? "opacity-100" : "opacity-0 pointer-events-none"
         }`}
       />
-      {/* Panel */}
+      {/* Panel — transform-gpu + will-change 让滑入只合成缓存图层、不每帧重绘整面内容(消滑入卡顿) */}
       <aside
-        className={`fixed top-0 right-0 h-screen w-full ${width} bg-white border-l border-gray-200 shadow-xl z-50 flex flex-col transition-transform duration-200 ${
+        className={`fixed top-0 right-0 h-screen w-full ${width} bg-white border-l border-gray-200 shadow-xl z-50 flex flex-col transform-gpu will-change-transform transition-transform duration-200 ${
           open ? "translate-x-0" : "translate-x-full"
         }`}
       >

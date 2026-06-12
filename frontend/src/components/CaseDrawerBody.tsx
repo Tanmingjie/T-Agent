@@ -923,7 +923,6 @@ export default function CaseDrawerBody({
   );
   const [result, setResult] = useState<CaseResult | null>(null);
   const [code, setCode] = useState<string | null>(null);
-  const [loading, setLoading] = useState(false);
   const [sel, setSel] = useState<Selection>({ kind: "info" });
 
   const isRunning = status === "running" || status === "healing";
@@ -937,7 +936,6 @@ export default function CaseDrawerBody({
       reqRef.current?.abort(); // 取消上一次未完成的结果/代码请求
       const ac = new AbortController();
       reqRef.current = ac;
-      setLoading(true);
       Promise.all([
         apiGet<CaseResult>(
           `/suites/${suiteId}/runs/${runId}/cases/${caseInfo.id}/result`,
@@ -955,9 +953,6 @@ export default function CaseDrawerBody({
             if (autoSelect) setSel({ kind: "result" }); // 已执行完成,默认定位测试结果
           }
           if (c) setCode(Object.values(c.files).join("\n\n") || null);
-        })
-        .finally(() => {
-          if (!ac.signal.aborted) setLoading(false);
         });
     },
     [suiteId, runId, caseInfo.id],
@@ -1138,10 +1133,10 @@ export default function CaseDrawerBody({
         </aside>
 
         {/* ── Right pane ── */}
+        {/* 不再用 loading 全屏遮罩:InfoView 由 caseInfo 同步可得,结果到达再切到时间线,
+            避免抽屉滑入(200ms)期间「InfoView→加载中→时间线」的多次整面切换造成卡顿。 */}
         <section className="flex-1 overflow-auto bg-canvas">
-          {loading ? (
-            <div className="p-6 text-sm text-gray-400">加载中…</div>
-          ) : sel.kind === "info" ? (
+          {sel.kind === "info" ? (
             // 执行中结果未落库,用实时推送的 spec_ready 作回退,翻译后即可看执行规格
             <InfoView
               suiteId={suiteId}
