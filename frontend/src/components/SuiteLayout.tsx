@@ -1,4 +1,10 @@
-import { useEffect, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useState,
+  type ReactNode,
+} from "react";
 import { NavLink, Outlet, useParams, useNavigate, Link } from "react-router-dom";
 import { apiGet } from "../api/client";
 import { ListChecks, History, BarChart3, Settings, ChevronLeft } from "lucide-react";
@@ -7,9 +13,30 @@ import { setVersionId } from "../lib/session";
 import { useSuiteRun } from "../hooks/useSuiteRun";
 
 export type SuiteRun = ReturnType<typeof useSuiteRun>;
-export interface SuiteOutletCtx {
-  suite: SuiteInfo | null;
-  run: SuiteRun;
+
+// 执行状态(含高频 statuses + SSE)放在**只包住 Outlet** 的 RunProvider 里,经 context 下发。
+// 关键:RunProvider 的 children(<Outlet/>)由 SuiteLayout 创建,而 SuiteLayout **不持有** run
+// → step_change 高频更新只重渲染 RunProvider 自身;children 引用不变,React 跳过整棵 Outlet
+// 子树,**仅 useContext 的消费者(读 statuses 的用例页)重渲染**。侧栏/面包屑彻底不参与。
+const RunCtx = createContext<SuiteRun | null>(null);
+
+export function useSuiteRunCtx(): SuiteRun {
+  const r = useContext(RunCtx);
+  if (!r) throw new Error("useSuiteRunCtx 必须在 SuiteLayout(RunProvider)内使用");
+  return r;
+}
+
+function RunProvider({
+  suiteId,
+  children,
+}: {
+  suiteId?: string;
+  children: ReactNode;
+}) {
+  const run = useSuiteRun(suiteId);
+  // 离开任务工作区 / 切换任务(suiteId 变)时关 SSE;切 tab(children 变、suiteId 不变)不关。
+  useEffect(() => () => run.stop(), [suiteId]); // eslint-disable-line react-hooks/exhaustive-deps
+  return <RunCtx.Provider value={run}>{children}</RunCtx.Provider>;
 }
 
 interface SuiteInfo {
@@ -39,13 +66,6 @@ export default function SuiteLayout() {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
   const [suite, setSuite] = useState<SuiteInfo | null>(null);
-  // 执行状态 + SSE 提到布局层:在 用例/执行历史/报告 之间切 tab 时,SuiteLayout 不卸载,
-  // 执行流(EventSource)与实时状态得以保留——返回「用例」仍能看到正在进行的执行过程。
-  const run = useSuiteRun(id);
-
-  // 离开整个测试任务工作区(SuiteLayout 卸载)时才关 SSE;切 tab 不关。
-  // 切换到另一个任务(id 变)也关旧 SSE,避免悬挂。
-  useEffect(() => () => run.stop(), [id]); // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     if (!id) return;
@@ -122,7 +142,9 @@ export default function SuiteLayout() {
           </span>
         </div>
         <div className="px-8 py-7">
-          <Outlet context={{ suite, run } satisfies SuiteOutletCtx} />
+          <RunProvider suiteId={id}>
+            <Outlet context={{ suite }} />
+          </RunProvider>
         </div>
       </main>
     </div>

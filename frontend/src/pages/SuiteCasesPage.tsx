@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
-import { useParams, useOutletContext } from "react-router-dom";
+import { useParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
-import type { SuiteOutletCtx } from "../components/SuiteLayout";
+import { useSuiteRunCtx } from "../components/SuiteLayout";
 import {
   Upload,
   Play,
@@ -91,8 +91,9 @@ export default function SuiteCasesPage() {
   // 最近一次历史 run 的逐用例裁决(caseId → passed),供未实时执行时回填状态列
   const [pastStatus, setPastStatus] = useState<Record<string, CaseRunStatus>>({});
 
-  // 执行状态来自布局层(SuiteLayout),切 tab 不丢失;不再由本页持有 SSE。
-  const { run } = useOutletContext<SuiteOutletCtx>();
+  // 执行状态来自布局层的 RunProvider(切 tab 不丢失;高频更新只重渲染本页消费者,
+  // 不带动侧栏/面包屑)。不再由本页持有 SSE。
+  const run = useSuiteRunCtx();
 
   async function load() {
     setSuite(await apiGet(`/suites/${id}`));
