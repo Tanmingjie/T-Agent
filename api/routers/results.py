@@ -44,6 +44,7 @@ async def get_run_overview(suite_id: str, run_id: str, repo=Depends(get_repo)):
                 "verdict": "PASS" if r.passed else "FAIL",
                 "steps_count": len(r.steps),
                 "token_usage": r.token_usage,
+                "metrics": r.metrics,  # 分阶段成本/质量指标(#6),run 级一览/可聚合
             }
             for r in records
         ],

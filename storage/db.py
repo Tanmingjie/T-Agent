@@ -120,6 +120,7 @@ class ExecutionRecordRow(SQLModel, table=True):
     generated_code: str = ""
     token_usage: int = 0
     heal_count: int = 0
+    metrics: dict = Field(default_factory=dict, sa_column=Column(JSON))  # 分阶段成本/质量指标(#6)
     start_time: float = 0.0
     end_time: float | None = None
     external_id: str | None = None
@@ -359,15 +360,26 @@ class Store:
                 sync_conn.execute(
                     text(f'ALTER TABLE "{table.name}" ADD COLUMN "{col.name}" {coltype}')
                 )
-                # ALTER ADD COLUMN 把已有行的新列置 NULL;JSON 列(列表/字典)读回时会让
-                # 领域模型(期望 list/dict)校验失败 → 回填空 JSON '[]',与新建行默认一致。
+                # ALTER ADD COLUMN 把已有行的新列置 NULL。**仅非空集合列**(模型带
+                # default_factory,如 steps=list / metrics=dict / vocabulary=dict)回填空 JSON,
+                # 否则领域模型(期望 list/dict)校验失败;**按 factory 返回类型选 '{}' 或 '[]'**
+                # (dict 列回填 '[]' 读回是 list 会触发 pydantic 序列化警告)。可空 JSON 列
+                # (如 spec: dict|None,default=None)**保持 NULL**——回填 '{}'/'[]' 反而会让
+                # `X | None` 模型拿空集合去建对象而校验失败。
                 if isinstance(col.type, JSON):
-                    sync_conn.execute(
-                        text(
-                            f'UPDATE "{table.name}" SET "{col.name}" = \'[]\' '
-                            f'WHERE "{col.name}" IS NULL'
+                    field = cls.model_fields.get(col.name) if cls else None
+                    factory = getattr(field, "default_factory", None)
+                    if factory is not None:
+                        try:
+                            empty = "[]" if isinstance(factory(), list) else "{}"
+                        except Exception:  # noqa: BLE001 — 取默认失败按 dict 兜底
+                            empty = "{}"
+                        sync_conn.execute(
+                            text(
+                                f'UPDATE "{table.name}" SET "{col.name}" = \'{empty}\' '
+                                f'WHERE "{col.name}" IS NULL'
+                            )
                         )
-                    )
                 else:
                     # 非可选字符串列(如 project_id/version_id,模型 ``str = ""``)旧行 NULL 会让
                     # 领域模型(期望 str)校验失败 → 按模型默认值回填。可选列(``str|None=None``)

@@ -134,6 +134,55 @@ def _already_covered(existing_entry, cand: dict) -> bool:
     return bool(name) and name == (cand.get("name") or "").strip()
 
 
+def _build_metrics(
+    *,
+    phase_tokens: dict,
+    total_tokens: int,
+    result,
+    max_steps: int,
+    done_steps: int,
+    total_steps: int,
+    execution_complete: bool,
+    a_results: list,
+) -> dict:
+    """汇总分阶段成本/质量指标(#6),供运营观测。结构稳定,字段可增不减。
+
+    - tokens:各阶段 token 成本(自愈落入 executing、llm_judge 落入 asserting)+ 总计。
+    - execution:ReAct 健康度——停因 / 轮数 / 哑火续推次数 / 完整性闸门(是否全步 DONE)。
+    - healing:操作侧(工具报错重定位)与断言侧(目标重定位复验)自愈分路计数。
+    - assertions:裁决分布 + ``ai_judged``(llm_judge 兜底占比 = false-green 风险面)。
+    """
+    action_heals = sum(len(s.heal_attempts) for s in result.action_steps)
+    assertion_heals = sum(1 for r in a_results if getattr(r, "healed", False))
+    a_pass = sum(1 for r in a_results if r.status == AssertionStatus.PASS)
+    a_fail = sum(1 for r in a_results if r.status == AssertionStatus.FAIL)
+    a_skip = sum(1 for r in a_results if r.status == AssertionStatus.SKIPPED)
+    a_ai = sum(1 for r in a_results if getattr(r, "ai_judged", False))
+    tokens = {k: int(v) for k, v in phase_tokens.items()}
+    tokens["total"] = int(total_tokens)
+    return {
+        "tokens": tokens,
+        "execution": {
+            "stop_reason": result.stop_reason.value,
+            "iterations": result.iterations,
+            "max_steps": max_steps,
+            "idle_nudges": getattr(result, "idle_nudges", 0),
+            "complete": bool(execution_complete),
+            "done_steps": done_steps,
+            "total_steps": total_steps,
+            "action_steps": len(result.action_steps),
+        },
+        "healing": {"action": action_heals, "assertion": assertion_heals},
+        "assertions": {
+            "pass": a_pass,
+            "fail": a_fail,
+            "skipped": a_skip,
+            "ai_judged": a_ai,
+            "total": len(a_results),
+        },
+    }
+
+
 # 预置条件「状态声明」关键词 → Hook 名 的默认映射(用户可在构造时覆盖)。
 # 命中即把该状态声明标为对应 Hook 负责(如「已登录」→ LoginHook,由 before_case 保证)。
 DEFAULT_HOOK_MAP = {
@@ -385,6 +434,18 @@ class TestCaseAgent:
         ctx = ctx or ExecutionContext(case=case)
         recorder = Recorder(case.id, suite_id=case.suite_id, run_id=run_id)
 
+        # 分阶段 token 计量(#6):LLM 封装累计 total_usage,在阶段边界快照取差值,
+        # 把 token 成本归到「翻译/执行/断言/codegen/扫描」各阶段(自愈/llm_judge 自然
+        # 落入其所在阶段)。每用例一个独立 LLM client,故差值即本用例本阶段消耗。
+        phase_tokens: dict[str, int] = {}
+        _tok_mark = self._token_usage()
+
+        def _mark_phase(name: str) -> None:
+            nonlocal _tok_mark
+            cur = self._token_usage()
+            phase_tokens[name] = phase_tokens.get(name, 0) + max(0, cur - _tok_mark)
+            _tok_mark = cur
+
         # 实时进度回调(SSE):阶段 + 逐步,执行期即时推送,而非整条用例跑完才补发
         cb = step_callback or self.step_callback
 
@@ -495,6 +556,7 @@ class TestCaseAgent:
             # 词汇表增强(规格 §5.2):用页面真实文案改写模糊业务词("提交"→"保存并提交")。
             # 仅当本次自动生成 spec 时增强;调用方显式传入(如 CLI 审查后)的 spec 不动。
             spec = await self._enhance_spec_with_vocab(spec, case)
+        _mark_phase("spec")
 
         # 预置条件分类结果入 ctx:state_hook 要求的 Hook 名供 before_case 侧参考(P2)。
         if self._last_precondition_items:
@@ -624,6 +686,7 @@ class TestCaseAgent:
         )
         await emit_phase("executing", "驱动浏览器逐步执行")
         result = await loop.run()
+        _mark_phase("executing")
         recorder.extend_steps(result.action_steps)
         recorder.set_token_usage(self._token_usage())
         recorder.set_stop_reason(f"{result.stop_reason.value}/iter={result.iterations}")
@@ -638,6 +701,7 @@ class TestCaseAgent:
         )
         # 聚合用例级 + 步骤级 expect 断言,避免 LLM 把断言放在 step.expect 时被漏验
         a_results = await engine.verify_all(collect_assertions(spec))
+        _mark_phase("asserting")
         recorder.set_case_assertions([r.to_dict() for r in a_results])
         recorder.record.heal_count += sum(1 for r in a_results if r.healed)
         assert_passed = AssertionEngine.verdict(a_results)
@@ -729,9 +793,31 @@ class TestCaseAgent:
                 gen.write(_GENERATED_ROOT)  # storage/generated/(供下载)
             except Exception as e:  # noqa: BLE001 — 代码生成失败不影响用例结果
                 logger.warning("用例 %s 代码生成失败:%s", case.id, e)
+            _mark_phase("codegen")
 
         # —— 词汇表增量扫描(策略C):执行结束后复用已见快照提炼业务词→元素映射并库 ——
         await self._incremental_scan(result, emit_phase)
+        _mark_phase("scanning")
+
+        # —— 分阶段成本/质量指标(#6):随 record 落库 + 透出前端 ——
+        # 可观测埋点,best-effort:任何异常都不得影响用例结果(与 codegen/scan 同口径)。
+        try:
+            # headline token 刷成最终累计值(原在 executing 后定格,漏断言阶段 llm_judge token)
+            recorder.set_token_usage(self._token_usage())
+            recorder.set_metrics(
+                _build_metrics(
+                    phase_tokens=phase_tokens,
+                    total_tokens=recorder.record.token_usage,
+                    result=result,
+                    max_steps=self.max_steps,
+                    done_steps=done_steps,
+                    total_steps=total_steps,
+                    execution_complete=execution_complete,
+                    a_results=a_results,
+                )
+            )
+        except Exception as e:  # noqa: BLE001 — 指标埋点失败不影响用例结果
+            logger.warning("用例 %s 指标汇总失败:%s", case.id, e)
 
         logger.info(
             "用例 %s 执行完毕:%s(LLM 自报=%s,停因=%s)",

@@ -95,6 +95,22 @@ interface TestSpec {
   assertions?: SpecAssertion[];
 }
 
+interface CaseMetrics {
+  tokens?: Record<string, number>;
+  execution?: {
+    stop_reason?: string;
+    iterations?: number;
+    max_steps?: number;
+    idle_nudges?: number;
+    complete?: boolean;
+    done_steps?: number;
+    total_steps?: number;
+    action_steps?: number;
+  };
+  healing?: { action?: number; assertion?: number };
+  assertions?: { pass?: number; fail?: number; skipped?: number; ai_judged?: number; total?: number };
+}
+
 interface CaseResult {
   passed: boolean;
   final_result: string;
@@ -103,6 +119,7 @@ interface CaseResult {
   case_assertions: AssertionResult[];
   history: StepDetail[];
   spec?: TestSpec | null;
+  metrics?: CaseMetrics | null;
 }
 
 interface CodeResp {
@@ -878,6 +895,7 @@ function TimelineView({
                 return m ? ` · 停因 ${m[1]}` : "";
               })()}
             </p>
+            {result.metrics && <MetricsPanel m={result.metrics} />}
             {code && (
               <div>
                 <button
@@ -899,6 +917,72 @@ function TimelineView({
 
       <div ref={bottomRef} />
     </div>
+  );
+}
+
+// 分阶段成本/质量指标(#6):token 分阶段、执行健康度、断言裁决分布(含 AI 兜底占比)。
+const PHASE_LABEL: Record<string, string> = {
+  spec: "翻译",
+  executing: "执行",
+  asserting: "断言",
+  codegen: "代码",
+  scanning: "扫描",
+};
+
+function MetricsPanel({ m }: { m: CaseMetrics }) {
+  const tokens = m.tokens ?? {};
+  const ex = m.execution ?? {};
+  const a = m.assertions ?? {};
+  const heal = m.healing ?? {};
+  const phaseTokens = Object.entries(tokens).filter(([k, v]) => k !== "total" && v > 0);
+  return (
+    <details className="text-xs text-gray-500">
+      <summary className="cursor-pointer select-none text-brand-700 hover:text-brand-800">
+        执行指标
+      </summary>
+      <div className="mt-1.5 space-y-1.5 rounded border border-gray-100 bg-gray-50 p-2">
+        {phaseTokens.length > 0 && (
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+            <span className="text-gray-400">Token:</span>
+            {phaseTokens.map(([k, v]) => (
+              <span key={k}>
+                {PHASE_LABEL[k] ?? k} <b className="text-gray-700">{v}</b>
+              </span>
+            ))}
+          </div>
+        )}
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+          <span className="text-gray-400">执行:</span>
+          <span>
+            轮数 <b className="text-gray-700">{ex.iterations ?? "-"}</b>/{ex.max_steps ?? "-"}
+          </span>
+          <span>
+            步骤 <b className="text-gray-700">{ex.done_steps ?? "-"}</b>/{ex.total_steps ?? "-"}
+          </span>
+          {(ex.idle_nudges ?? 0) > 0 && (
+            <span className="text-amber-600">哑火续推 {ex.idle_nudges}</span>
+          )}
+          {ex.complete === false && <span className="text-red-600">执行未完成</span>}
+          {ex.stop_reason && <span>停因 {ex.stop_reason}</span>}
+        </div>
+        <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+          <span className="text-gray-400">断言:</span>
+          <span className="text-brand-700">通过 {a.pass ?? 0}</span>
+          {(a.fail ?? 0) > 0 && <span className="text-red-600">失败 {a.fail}</span>}
+          {(a.skipped ?? 0) > 0 && <span>跳过 {a.skipped}</span>}
+          {(a.ai_judged ?? 0) > 0 && (
+            <span className="text-amber-600" title="由 llm_judge 兜底判定(低置信,false-green 风险面)">
+              AI 兜底 {a.ai_judged}
+            </span>
+          )}
+          {((heal.action ?? 0) > 0 || (heal.assertion ?? 0) > 0) && (
+            <span className="text-gray-400">
+              自愈 操作 {heal.action ?? 0}/断言 {heal.assertion ?? 0}
+            </span>
+          )}
+        </div>
+      </div>
+    </details>
   );
 }
 

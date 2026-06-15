@@ -161,6 +161,58 @@ async def test_run_passes_when_assertions_pass():
     assert "import" in record.generated_code
 
 
+async def test_metrics_populated_on_pass():
+    """#6:执行后 record.metrics 带分阶段成本/质量结构,完整性闸门与断言分布正确。"""
+    llm = _ScriptedLLM(
+        [
+            _resp(content="点提交", calls=[("browser_click", {"ref": "e3"})]),
+            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(content="结束 TEST_RESULT: PASS"),
+        ]
+    )
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=_spec())
+    m = record.metrics
+    assert set(m) == {"tokens", "execution", "healing", "assertions"}
+    # 完整性闸门:全步 DONE
+    assert m["execution"]["complete"] is True
+    assert m["execution"]["done_steps"] == m["execution"]["total_steps"] == 1
+    assert m["execution"]["stop_reason"]  # 非空停因
+    # 断言分布:_spec() 两条结构化断言均 pass,无 AI 兜底
+    assert m["assertions"]["total"] == 2
+    assert m["assertions"]["pass"] == 2
+    assert m["assertions"]["ai_judged"] == 0
+    # token 结构存在(fake LLM 无 usage → 全 0,但键齐全)
+    assert "total" in m["tokens"]
+
+
+async def test_metrics_marks_incomplete_execution():
+    """#6:早停留 pending 步 → metrics.execution.complete=False 且 done<total。"""
+    spec = TestSpec(
+        case_id="TC001",
+        name="两步",
+        base_url="https://intranet",
+        steps=[
+            SpecStep(action="click", target="提交按钮"),
+            SpecStep(action="click", target="确认按钮"),
+        ],
+        assertions=[Assertion(type="url_contains", target="URL", expected="/order/list")],
+    )
+    llm = _ScriptedLLM(
+        [
+            _resp(content="点提交", calls=[("browser_click", {"ref": "e3"})]),
+            _resp(content="完成第一步", calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(content="我觉得做完了 TEST_RESULT: PASS"),  # 第二步从不执行 → 哑火终止
+        ]
+    )
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=spec)
+    assert record.metrics["execution"]["complete"] is False
+    assert record.metrics["execution"]["done_steps"] == 1
+    assert record.metrics["execution"]["total_steps"] == 2
+    assert record.metrics["execution"]["idle_nudges"] >= 1  # 哑火续推被计量
+
+
 async def test_verdict_is_assertion_driven_not_llm():
     # LLM 自报 PASS,但页面缺少"待审批" → 断言 FAIL → 最终 FAIL
     llm = _ScriptedLLM(

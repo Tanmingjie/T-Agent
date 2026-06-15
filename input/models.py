@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import time
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ── 输入层 ──────────────────────────────────────────────────────────
 
@@ -135,6 +135,10 @@ class ExecutionRecord(BaseModel):
     generated_code: str = ""  # 断言通过后生成的 pytest-bdd 代码(随 run 持久化)
     token_usage: int = 0
     heal_count: int = 0
+    # 分阶段成本与质量指标(可观测/可运营,#6):per-phase token、执行健康度(停因/哑火/
+    # 完整性闸门)、自愈分路计数、断言裁决分布(含 llm_judge 兜底占比 = false-green 风险面)。
+    # 结构见 harness/agent.py::_build_metrics;空 dict 兼容旧记录(无此字段)。
+    metrics: dict = {}
     start_time: float = Field(default_factory=time.time)
     end_time: float | None = None
 
@@ -142,6 +146,13 @@ class ExecutionRecord(BaseModel):
     external_id: str | None = None
     owner: str | None = None
     updated_at: float = Field(default_factory=time.time)
+
+    @field_validator("metrics", mode="before")
+    @classmethod
+    def _coerce_metrics(cls, v):
+        # 轻量迁移给旧行的 JSON 列回填 '[]'(db.py),读回会是 list → 容错成空 dict,
+        # 避免旧 ExecutionRecord 因 metrics=[] 校验失败导致结果接口 500。
+        return v if isinstance(v, dict) else {}
 
 
 # ── 会话 / 套件 / 词汇表 / 工具 ────────────────────────────────────

@@ -95,6 +95,7 @@ class ReActResult:
     llm_result: str | None = None  # 模型自报的 PASS/FAIL(仅参考)
     stop_reason: StopReason = StopReason.LLM_FINISHED
     iterations: int = 0
+    idle_nudges: int = 0  # 模型"哑火"(只回文字不调工具)被续推的累计次数(健康度指标)
 
 
 def _signature(tool_calls: list[ToolCall]) -> str:
@@ -449,6 +450,7 @@ class ReActLoop:
         else:
             result.stop_reason = StopReason.MAX_STEPS
 
+        result.idle_nudges = idle_nudges
         return result
 
     @staticmethod
