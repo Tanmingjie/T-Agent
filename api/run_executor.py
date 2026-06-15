@@ -104,7 +104,9 @@ async def execute_run(
                     suite.session_profile,
                 )
 
-        # 项目级 Skill(M2):标准 Skill 渐进披露接入(preload=False,LLM 调 load_skill 展开)。
+        # 项目级 Skill(M2):**暂用默认加载**(preload=True,正文常驻 prompt)。
+        # 渐进披露(preload=False + LLM 调 load_skill 展开)链路已实现,但弱模型常不主动
+        # load → skill 形同虚设;先默认加载保证生效,渐进式加载的调试列 TODO 后续打磨。
         extra_skills = []
         if suite.project_id:
             from harness.skills import Skill
@@ -116,6 +118,7 @@ async def execute_run(
                             name=sk.name,
                             content=sk.content.strip(),
                             description=(sk.description or "").strip(),
+                            preload=True,
                         )
                     )
 
