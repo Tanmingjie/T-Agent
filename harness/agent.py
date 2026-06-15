@@ -114,6 +114,10 @@ _INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "0") != "0"
 # 快速判 STEP_FAILED 终止(疑似点错前序元素致后续找不到目标)。env STEP_FAIL_BUDGET 可调。
 _STEP_FAIL_BUDGET = int(os.getenv("STEP_FAIL_BUDGET", "3"))
 
+# 单步完成判据未达成预算(门控重试):某业务步 mark_step_done 后 LLM 看快照判「未达成」
+# 累计达此数 → 判该步未完成(EXPECT_UNMET)。默认 2(给两次重做机会);env EXPECT_RETRY_BUDGET 可调。
+_EXPECT_RETRY_BUDGET = int(os.getenv("EXPECT_RETRY_BUDGET", "2"))
+
 # 生成代码落盘目录:从 ArtifactStore 抽象取(T-P10),与 results 路由读取端单一真相
 _GENERATED_ROOT = str(get_artifact_store().generated_dir())
 
@@ -674,25 +678,52 @@ class TestCaseAgent:
             Path(path).write_bytes(img)
             return f"step_{step_no:03d}.png"
 
-        # —— 步骤级即时验证(#2):某业务步 mark_step_done 落定后,在【当前子页面】验该步
-        # expect 断言。用例预期是「按步写」的——必须在它所属页面验,不能攒到终态页(否则
-        # 跨子页元素在终态找不到 → 假阴性)。结果计入最终裁决;用与终态同款 AssertionEngine
-        # (含自愈),失败先自愈(软,符合铁律2(a)),救不回才算该步断言 FAIL。
+        # —— 步骤级完成门控 + 即时验证:某业务步 mark_step_done 落定后,在【当前子页面】判
+        # 该步是否真达成完成判据。两层:
+        #   (1) expect_text(自然语言完成判据)→ **LLM 看快照判达成 PASS/FAIL**(驱动层,不依赖
+        #       定位器对齐;经 llm_judge 通道,结果标 ai_judged 低置信可见、计入裁决)。FAIL →
+        #       返回原因,react_loop 退回该步重做 + 计预算(铁律2(a):软、可恢复)。
+        #   (2) expect(可选结构化断言)→ 门控通过后再确定性验一次,作**高置信**裁决证据(B1)。
+        # 用例预期按步写——必须在所属子页面验,不能攒到终态(跨子页元素在终态已不在 → 假阴性)。
+        # 重做时同一步会被重复验:**按 step_no 去重(后验覆盖前验)**,只让最后一次证据计入裁决,
+        # 避免中途未达成的 FAIL 残留把已重做达成的步拖成失败。返回非空原因串 = 未达成(门控拦)。
         step_assert_pairs: list = []  # [(step_no, AssertionResult)]
 
-        async def verify_step(step_no: int) -> None:
+        async def verify_step(step_no: int) -> str | None:
             if not (1 <= step_no <= len(spec.steps)):
-                return
-            expect = spec.steps[step_no - 1].expect
-            if not expect:
-                return  # 该步无预期 → 不验(多数步只操作不校验)
-            sp_probe = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
-            await sp_probe.refresh()  # 抓【当前子页面】快照(刚做完这一步)
-            sp_engine = AssertionEngine(
-                sp_probe, healer=healer, tool_registry=self.tools_registry, llm=self.llm
-            )
-            for r in await sp_engine.verify_all(expect):
-                step_assert_pairs.append((step_no, r))
+                return None
+            step = spec.steps[step_no - 1]
+            # 重做覆盖:清掉本步上一轮的证据,只保留这次(最后一次)的
+            step_assert_pairs[:] = [(sn, r) for sn, r in step_assert_pairs if sn != step_no]
+            gate_reason: str | None = None
+            # (1) 完成判据:LLM 看快照判达成(经 llm_judge,偏向 FAIL、标 ai_judged)
+            if step.expect_text:
+                probe_g = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
+                await probe_g.refresh()
+                engine_g = AssertionEngine(
+                    probe_g, healer=healer, tool_registry=self.tools_registry, llm=self.llm
+                )
+                gate = Assertion(
+                    type="llm_judge",
+                    target=step.expect_text,
+                    expected=step.expect_text,
+                    confidence="low",
+                )
+                res = await engine_g.verify(gate)
+                step_assert_pairs.append((step_no, res))
+                if res.status == AssertionStatus.FAIL:
+                    gate_reason = res.reason or "当前页面未达成该步完成判据"
+                # SKIPPED(未接 LLM 等)→ 不拦,放行(软,铁律2(a))
+            # (2) 结构化 expect(可选,高置信证据);仅门控通过后验
+            if gate_reason is None and step.expect:
+                probe_s = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
+                await probe_s.refresh()
+                engine_s = AssertionEngine(
+                    probe_s, healer=healer, tool_registry=self.tools_registry, llm=self.llm
+                )
+                for r in await engine_s.verify_all(step.expect):
+                    step_assert_pairs.append((step_no, r))
+            return gate_reason
 
         loop = ReActLoop(
             self.llm,
@@ -709,8 +740,9 @@ class TestCaseAgent:
             on_step=emit_step,  # 每步落定即时推送(实时进度)
             on_llm_delta=emit_think_delta,  # 思考过程流式 + ReAct 期网关保活
             vocab_resolver=self.vocab_resolver,  # 操作侧自愈词汇表优先
-            on_step_done=verify_step,  # #2 步骤级即时验证(在当前子页面验该步预期)
+            on_step_done=verify_step,  # 步骤级完成门控(LLM 判达成→放行 / 未达成→退回重做)
             step_fail_budget=_STEP_FAIL_BUDGET,  # #1 单步定位失败预算 → 快速失败
+            expect_retry_budget=_EXPECT_RETRY_BUDGET,  # 完成判据未达成预算 → EXPECT_UNMET
         )
         await emit_phase("executing", "驱动浏览器逐步执行")
         result = await loop.run()
@@ -763,6 +795,13 @@ class TestCaseAgent:
                     f"[FAIL] 执行未完成:第 {result.failed_step_no} 步"
                     f"「{result.failed_step_target}」反复定位失败(快速失败),"
                     f"疑似前序步骤点错元素致此步找不到目标;仅完成 {done_steps}/{total_steps} 步。"
+                )
+            elif result.stop_reason == ReActStopReason.EXPECT_UNMET and result.failed_step_no:
+                incomplete_reason = (
+                    f"[FAIL] 执行未完成:第 {result.failed_step_no} 步"
+                    f"「{result.failed_step_target}」的完成判据反复未达成(重试 "
+                    f"{_EXPECT_RETRY_BUDGET} 次仍不满足),判定该步未真正完成;"
+                    f"仅完成 {done_steps}/{total_steps} 步。"
                 )
             else:
                 incomplete_reason = (

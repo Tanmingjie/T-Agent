@@ -85,6 +85,7 @@ interface SpecStep {
   action: string;
   target: string;
   data?: string | null;
+  expect_text?: string;
   expect?: SpecAssertion[];
 }
 
@@ -230,7 +231,8 @@ const ACTION_LABEL: Record<string, string> = {
 function specLine(s: SpecStep): string {
   const verb = ACTION_LABEL[s.action] ?? s.action;
   const data = s.data ? ` “${s.data}”` : "";
-  return `${verb} ${s.target}${data}`.trim();
+  const expect = s.expect_text ? ` → 预期:${s.expect_text}` : "";
+  return `${verb} ${s.target}${data}${expect}`.trim();
 }
 
 /** 列表区块:标题 + 条目,空则不渲染。供右栏「用例信息」用。 */

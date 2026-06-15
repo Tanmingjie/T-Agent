@@ -125,6 +125,21 @@ class StepPlan:
         self._activate_next()
         return st
 
+    def reactivate(self, step_no: int) -> PlanStep:
+        """把一个已 DONE 的步骤退回 ACTIVE(完成门控未达成,需重做)。
+
+        撤销 ``mark_done`` 时 ``_activate_next`` 误激活的后继步(置回 PENDING),避免出现
+        两个 active(``current`` 取首个 active,正好回到本步)。供步骤级完成门控未通过时
+        退回该步让 ReAct 重做。
+        """
+        st = self._require(step_no)
+        st.status = StepStatus.ACTIVE
+        st.note = ""
+        for nxt in self.steps:
+            if nxt.step_no > step_no and nxt.status == StepStatus.ACTIVE:
+                nxt.status = StepStatus.PENDING
+        return st
+
     def mark_failed(self, step_no: int, reason: str = "") -> PlanStep:
         st = self._require(step_no)
         st.status = StepStatus.FAILED

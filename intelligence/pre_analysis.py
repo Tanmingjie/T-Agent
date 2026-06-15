@@ -59,28 +59,35 @@ _SYSTEM_PROMPT = """\
 
 【动作 action 取值】navigate | fill | click | select | hover | wait | press | check | upload | scroll | execute
 
-【断言翻译规则(关键)】把「预期结果」翻译成结构化断言,执行时由规则引擎确定性验证,绝不靠肉眼判断。
-按可靠性优先选择,能用前面的就不用后面的:
+【每步完成判据 expect_text(关键)】**每一个步骤都要给一条 expect_text**:用一句自然语言
+说清「这一步做完后,页面上应当出现/变成什么」,作为判断这步是否真的完成的依据(执行时由
+系统看页面快照判达没达成,没达成就退回重做)。要可观察、具体到当前这一步所在的页面,例如:
+- 点击登录 → "登录成功,页面跳转到商品列表页"
+- 加入购物车 → "购物车角标显示 1,该商品按钮变为 Remove"
+- 点击 Finish 完成下单 → "进入下单完成页,显示订单成功提示 Thank you for your order!"
+若用例没有明写某步的预期,就**根据该步动作推断一个合理的完成判据**。不要把多步的预期混在一条里。
+
+【结构化断言(可选,高置信)】在 expect_text 之外,若该步的预期**能被确定性验证**,再补一条
+或多条结构化断言放进该步 "expect" 数组(执行时规则引擎确定性比较,比 LLM 判更可信)。
+按可靠性优先,能用前面的就不用后面的:
 1. element_visible / element_count —— DOM 元素存在/数量(最可靠)
 2. text_equals / text_contains —— 在【某个具体元素内】匹配文本,target 必须指明是哪个元素(不要全页搜)
 3. url_contains / url_equals —— URL/导航断言
 4. custom_tool —— 数据断言(查库/调接口),target 写要调用的数据校验意图
-5. llm_judge —— 语义兜底,confidence 必须为 "low"
-一个预期可拆成多个断言(如「提交成功并跳转列表页」→ url_contains("/list") + element_visible("成功提示"))。
+能结构化就不要只靠 expect_text;不能结构化的步,只给 expect_text 即可(不要硬凑 llm_judge)。
 
 【预置条件】预置条件中属于「操作步骤」的(如「设置环境变量」「新建一条订单」)放进 given;
 属于「状态声明」的(如「已登录」)阶段一忽略(后续由 Hook 处理)。
 
-【断言归属(关键)】预期结果通常是【按步骤】写的(第 N 条预期对应第 N 步)。把每条预期
-翻译成**它所属那一步**的即时断言,放进该步的 "expect" 数组——因为它要在执行到那一步、
-页面停在该子页面时验证。**不要**把属于中间步骤的预期攒到最后统一验:子页面的元素到了终态
-页面可能已经不在,会被误判为失败。只有描述【整体/最终状态】、不专属某一具体步骤的预期,
-才放进用例级 "assertions"。每条预期只写一次,不要既放 expect 又放 assertions。
+【用例级 assertions】只放描述【整体/最终状态】、不专属某一具体步骤的预期(如整个流程跑完后
+的最终页面/最终数据)。专属某一步的预期一律放进该步的 expect_text/expect,不要攒到这里——
+子页面的元素到了终态页面可能已不在,会被误判失败。每条预期只写一次,不要既放 expect 又放 assertions。
 
 【输出格式】只输出一个 JSON 对象,不要任何解释文字,结构如下:
 {
   "given":  [{"action": "...", "target": "...", "data": null}],
   "steps":  [{"action": "...", "target": "...", "data": "写死的数据或null",
+              "expect_text": "这一步做完后页面应出现/变成什么(自然语言,必填)",
               "expect": [{"type": "...", "target": "...", "expected": "...", "confidence": "high"}]}],
   "assertions": [{"type": "...", "target": "...", "expected": "...", "confidence": "high"}]
 }
@@ -231,10 +238,12 @@ def _coerce_step(raw: dict) -> SpecStep | None:
     data = raw.get("data")
     expect_raw = raw.get("expect") or []
     expect = [a for a in (_coerce_assertion(e) for e in expect_raw) if a is not None]
+    expect_text = str(raw.get("expect_text") or "").strip()
     return SpecStep(
         action=action,
         target=target,
         data=None if data is None else str(data),
+        expect_text=expect_text,
         expect=expect,
     )
 

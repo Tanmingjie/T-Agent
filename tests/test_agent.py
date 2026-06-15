@@ -6,6 +6,8 @@
 
 from __future__ import annotations
 
+import json
+
 from harness.agent import (
     TestCaseAgent,
     collect_assertions,
@@ -189,6 +191,80 @@ async def test_step_level_expect_verified_on_current_page():
     step_a = [a for a in record.case_assertions if a.get("phase") == "step"]
     assert step_a and step_a[0]["step_no"] == 1
     assert step_a[0]["status"] == "pass"
+
+
+class _GatingLLM(LLMClient):
+    """区分 ReAct 调用(按脚本序列)与 llm_judge 完成门控调用(按 verdict 队列)。
+
+    门控调用经 ``AssertionEngine._check_llm_judge``,其 system prompt 含「测试断言裁判」。
+    """
+
+    def __init__(self, react_responses, gate_verdicts):
+        self._r = react_responses
+        self._i = 0
+        self._verdicts = list(gate_verdicts)
+
+    async def chat(self, messages, tools=None, **kwargs) -> LLMResponse:
+        sys = messages[0]["content"] if messages else ""
+        if "测试断言裁判" in sys:  # 完成门控(llm_judge)
+            v = self._verdicts.pop(0) if self._verdicts else "PASS"
+            return LLMResponse(content=json.dumps({"verdict": v, "reason": "门控测试"}))
+        idx = min(self._i, len(self._r) - 1)
+        self._i += 1
+        return self._r[idx]
+
+
+async def test_step_gate_llm_unmet_reverts_then_passes():
+    """完成门控(LLM 判 expect_text):首次判未达成 → 退回该步重做;重做后判达成 → 用例 PASS。
+
+    并验「重做覆盖」:同一步只保留最后一次门控证据(ai_judged PASS),中途 FAIL 不残留拖垮裁决。
+    """
+    spec = TestSpec(
+        case_id="TC001",
+        name="一步带完成判据",
+        base_url="https://intranet",
+        steps=[SpecStep(action="click", target="提交按钮", expect_text="页面跳转到订单列表")],
+        assertions=[],  # 仅靠步骤级门控(LLM 判)裁决
+    )
+    react = [
+        _resp(content="点提交", calls=[("browser_click", {"ref": "e3"})]),
+        _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),  # 门控判 FAIL → 退回
+        _resp(content="再点", calls=[("browser_click", {"ref": "e3"})]),  # 重做
+        _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),  # 门控判 PASS
+        _resp(content="结束 TEST_RESULT: PASS"),
+    ]
+    agent = TestCaseAgent(_GatingLLM(react, ["FAIL", "PASS"]), _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=spec)
+    assert record.passed is True
+    step_a = [a for a in record.case_assertions if a.get("phase") == "step"]
+    # 重做覆盖:第 1 步只剩最后一次门控证据(PASS),无残留 FAIL
+    assert len(step_a) == 1
+    assert step_a[0]["step_no"] == 1
+    assert step_a[0]["status"] == "pass"
+    assert step_a[0]["ai_judged"] is True  # 门控判定标低置信可见
+
+
+async def test_step_gate_llm_unmet_exhausts_budget_fails():
+    """完成门控反复判未达成超预算 → EXPECT_UNMET,执行未完成 FAIL,标明卡死步。"""
+    spec = TestSpec(
+        case_id="TC001",
+        name="判据始终不达成",
+        base_url="https://intranet",
+        steps=[SpecStep(action="click", target="提交按钮", expect_text="跳转到不存在的页")],
+        assertions=[],
+    )
+    react = [
+        _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
+        _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),  # FAIL 1
+        _resp(content="再点", calls=[("browser_click", {"ref": "e3"})]),
+        _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),  # FAIL 2 → 预算耗尽
+        _resp(content="不该到这"),
+    ]
+    agent = TestCaseAgent(_GatingLLM(react, ["FAIL", "FAIL"]), _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=spec)
+    assert record.passed is False
+    assert "执行未完成" in record.final_result
+    assert "完成判据反复未达成" in record.final_result
 
 
 async def test_metrics_populated_on_pass():

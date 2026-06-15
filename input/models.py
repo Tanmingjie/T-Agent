@@ -57,12 +57,16 @@ class Assertion(BaseModel):
 
 
 class SpecStep(BaseModel):
-    """软计划的一步:动作 + 目标语义 + 数据 + 即时断言,不锁 selector。"""
+    """软计划的一步:动作 + 目标语义 + 数据 + 完成判据 + 即时断言,不锁 selector。"""
 
     action: str  # navigate | fill | click | select | hover | wait | ...
     target: str  # 目标语义描述,不锁 selector
     data: str | None = None  # 步骤里写死的数据
-    expect: list[Assertion] = []  # 该步骤的即时断言(可选)
+    # 该步【完成判据】(自然语言):这一步做完后页面应出现/变为什么。执行时由 LLM 看当前
+    # 子页面快照判「达没达成」→ 达成才放行、否则退回重做(门控重试,驱动层 role a,不依赖
+    # 定位器对齐;裁决侧把该 LLM 判定记为 ai_judged 低置信可见证据)。每步尽量都有。
+    expect_text: str = ""
+    expect: list[Assertion] = []  # 该步骤的即时结构化断言(可选,高置信裁决证据)
 
 
 class TestSpec(BaseModel):

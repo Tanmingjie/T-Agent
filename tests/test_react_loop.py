@@ -156,6 +156,69 @@ async def test_on_step_done_fires_when_step_resolved():
     assert fired == [1, 2]  # 两步各落定时各触发一次,按序
 
 
+async def test_gate_unmet_reverts_and_retries_then_completes():
+    """完成门控:首次 mark_done 判未达成 → 退回该步重做;重做后达成 → 用例正常完成。"""
+    plan = _plan(1)
+    verdicts = iter([False, True])  # 第一次门控未达成,第二次达成
+
+    async def gate(step_no: int) -> str | None:
+        return None if next(verdicts) else "页面未达成预期"
+
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e1"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # 被门控打回
+            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e2"})]),  # 重做
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # 这次达成
+            _resp(content="TEST_RESULT: PASS"),
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+        on_step_done=gate,
+        expect_retry_budget=2,
+    )
+    result = await loop.run()
+    assert result.stop_reason == StopReason.COMPLETED
+    assert plan.all_done()
+
+
+async def test_gate_unmet_exhausts_budget_expect_unmet():
+    """完成门控:反复未达成达预算 → EXPECT_UNMET,标明卡死步,不判该步完成。"""
+    plan = _plan(2)
+
+    async def gate(step_no: int) -> str | None:
+        return "始终不达成"  # 第 1 步永远判未达成
+
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e1"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # 未达成 1
+            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e2"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # 未达成 2 → 预算耗尽
+            _resp(content="不该到这"),
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+        on_step_done=gate,
+        expect_retry_budget=2,
+    )
+    result = await loop.run()
+    assert result.stop_reason == StopReason.EXPECT_UNMET
+    assert result.failed_step_no == 1
+    assert "按钮1" in result.failed_step_target
+    assert not plan.all_done()
+
+
 def test_parse_test_result_variants():
     assert parse_test_result("结论 TEST_RESULT: PASS") == "PASS"
     assert parse_test_result("TEST_RESULT：fail") == "FAIL"  # 全角冒号 + 小写

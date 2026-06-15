@@ -33,7 +33,7 @@ def _case() -> TestCase:
 def test_build_messages_includes_case_content():
     msgs = build_spec_messages(_case())
     assert msgs[0]["role"] == "system"
-    assert "断言翻译规则" in msgs[0]["content"]
+    assert "expect_text" in msgs[0]["content"]
     user = msgs[1]["content"]
     assert "登录并提交订单" in user
     assert "1. 打开订单列表" in user
@@ -53,6 +53,7 @@ def _good_json() -> str:
                     "action": "click",
                     "target": "提交按钮",
                     "data": None,
+                    "expect_text": "弹出确认弹窗",
                     "expect": [
                         {"type": "element_visible", "target": "确认弹窗", "confidence": "high"}
                     ],
@@ -83,6 +84,7 @@ def test_parse_good_response():
     assert spec.base_url == "http://intranet.example"
     assert [s.action for s in spec.steps] == ["navigate", "click"]
     assert spec.steps[1].expect[0].type == "element_visible"
+    assert spec.steps[1].expect_text == "弹出确认弹窗"  # 完成判据解析
     assert len(spec.assertions) == 2
     assert spec.given[0].target == "新建草稿订单"
 
