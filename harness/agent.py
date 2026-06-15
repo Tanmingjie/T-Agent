@@ -20,7 +20,7 @@ from pathlib import Path
 
 from codegen.bdd import BDDGenerator
 from codegen.locators import locators_from_steps, resolve_locators
-from harness.assertion import AssertionEngine, AssertionStatus
+from harness.assertion import AssertionEngine, AssertionResult, AssertionStatus
 from harness.context import ContextCompactor
 from harness.healing import HealingSubagent
 from harness.hooks import (
@@ -31,7 +31,7 @@ from harness.hooks import (
     ExecutionContext,
     HookManager,
 )
-from harness.llm import LLMClient
+from harness.llm import LLMClient, loads_lenient
 from harness.page_probe import MCPPageProbe, parse_snapshot
 from harness.permission import PermissionChecker
 from harness.precondition import (
@@ -124,6 +124,50 @@ _LOOP_WINDOW = int(os.getenv("LOOP_WINDOW", "4"))
 
 # 生成代码落盘目录:从 ArtifactStore 抽象取(T-P10),与 results 路由读取端单一真相
 _GENERATED_ROOT = str(get_artifact_store().generated_dir())
+
+
+# 步骤完成门控判定 prompt。**偏向放行**(与最终裁判 _JUDGE_SYSTEM 的偏 FAIL 相反):这是
+# 执行【驱动】判断(铁律2(a)),要健壮——只在【明显】没做到时才退回重做,拿不准就放行
+# (后面还有最终结构化断言把关)。偏 FAIL 会把做完了但"拿不准"的步反复退回 → 循环 mark →
+# EXPECT_UNMET 误失败(实测根因)。
+_GATE_SYSTEM = """你在判断测试的某个步骤【是否可以继续往下走】。这是执行过程中的驱动判断,\
+不是最终裁决——要宽松、利于推进。看当前页面无障碍(A11y)快照,判断这一步的预期是否【大体达成】:
+- 只要页面大体符合预期、没有明显矛盾,就回 PASS 让流程继续;
+- 只有当页面【明显】还停在上一步、明显报错、或明显没有发生预期的变化时,才回 FAIL;
+- 拿不准 / 信息不足时一律回 PASS(继续走,后面还有最终断言把关)。
+只输出 JSON:{"verdict":"PASS"|"FAIL","reason":"简述依据"}"""
+
+
+async def _gate_step_done(llm, probe, expect_text: str) -> tuple[bool, str]:
+    """步骤完成门控:LLM 看当前快照判这一步是否【大体达成】。偏向放行(拿不准→PASS)。
+
+    返回 ``(met, reason)``。判定调用/解析失败 → 放行(``True``),不因偶发 LLM 噪声阻断执行。
+    """
+    snapshot = ""
+    raw = getattr(probe, "raw_snapshot", None)
+    if callable(raw):
+        snapshot = raw() or ""
+    messages = [
+        {"role": "system", "content": _GATE_SYSTEM},
+        {
+            "role": "user",
+            "content": (
+                f"这一步的预期:{expect_text}\n\n"
+                f"当前页面无障碍快照:\n{snapshot[:6000] or '(无快照)'}"
+            ),
+        },
+    ]
+    try:
+        resp = await llm.chat(messages)
+        data = loads_lenient(resp.content)
+    except Exception as e:  # noqa: BLE001 — 判定失败放行,不阻断执行(宽松)
+        logger.warning("步骤完成门控判定失败,放行:%s", e)
+        return True, "门控判定失败,放行"
+    verdict = str(data.get("verdict") or "").strip().upper()
+    reason = str(data.get("reason") or "").strip()
+    if verdict == "FAIL":
+        return False, reason or "当前页面明显未达成该步预期"
+    return True, reason  # PASS 或未知 → 放行(宽松)
 
 
 def _evidence_rank(cand: dict) -> int:
@@ -700,33 +744,53 @@ class TestCaseAgent:
             # 重做覆盖:清掉本步上一轮的证据,只保留这次(最后一次)的
             step_assert_pairs[:] = [(sn, r) for sn, r in step_assert_pairs if sn != step_no]
             gate_reason: str | None = None
-            # (1) 完成判据:LLM 看快照判达成(经 llm_judge,偏向 FAIL、标 ai_judged)
+            # (1) 完成判据:LLM 看快照判达成。**用偏向放行的门控判定**(_gate_step_done,
+            # 驱动层 role a:拿不准→PASS),不复用偏 FAIL 的最终裁判——后者会把做完了但
+            # 拿不准的步反复退回 → 循环 mark_step_done → EXPECT_UNMET 误失败(实测根因)。
             if step.expect_text:
                 probe_g = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
                 await probe_g.refresh()
-                engine_g = AssertionEngine(
-                    probe_g, healer=healer, tool_registry=self.tools_registry, llm=self.llm
-                )
-                gate = Assertion(
+                met, reason = await _gate_step_done(self.llm, probe_g, step.expect_text)
+                # 门控判定记为 ai_judged 证据(低置信,计入裁决;前端不再逐条标记,占比在指标里)
+                gate_a = Assertion(
                     type="llm_judge",
                     target=step.expect_text,
                     expected=step.expect_text,
                     confidence="low",
                 )
-                res = await engine_g.verify(gate)
-                step_assert_pairs.append((step_no, res))
-                if res.status == AssertionStatus.FAIL:
-                    gate_reason = res.reason or "当前页面未达成该步完成判据"
-                # SKIPPED(未接 LLM 等)→ 不拦,放行(软,铁律2(a))
-            # (2) 结构化 expect(可选,高置信证据);仅门控通过后验
-            if gate_reason is None and step.expect:
-                probe_s = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
-                await probe_s.refresh()
-                engine_s = AssertionEngine(
-                    probe_s, healer=healer, tool_registry=self.tools_registry, llm=self.llm
+                step_assert_pairs.append(
+                    (
+                        step_no,
+                        AssertionResult(
+                            assertion=gate_a,
+                            status=AssertionStatus.PASS if met else AssertionStatus.FAIL,
+                            actual=("门控:达成" if met else "门控:未达成"),
+                            reason=reason,
+                            ai_judged=True,
+                        ),
+                    )
                 )
-                for r in await engine_s.verify_all(step.expect):
-                    step_assert_pairs.append((step_no, r))
+                if not met:
+                    gate_reason = reason or "当前页面明显未达成该步完成判据"
+            # (2) 结构化 expect(可选,高置信证据);仅门控通过后验。**防御性过滤**:步骤级
+            # 只验【不依赖元素定位】的可靠类型(url_* / custom_tool);text/element 类依赖按
+            # 业务词名定位,中间页多个相似元素时极易误判失败(实测:6 个 Add to cart 按钮 →
+            # "按钮变 Remove" 匹配到别的按钮 false-fail)。这类检查交给 expect_text 的 LLM 门控
+            # 看整页判定,步骤级不做(即便翻译漂移产出了也跳过)。终态用例级断言不受此限。
+            if gate_reason is None and step.expect:
+                reliable = [
+                    a
+                    for a in step.expect
+                    if a.type in ("url_contains", "url_equals", "custom_tool")
+                ]
+                if reliable:
+                    probe_s = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
+                    await probe_s.refresh()
+                    engine_s = AssertionEngine(
+                        probe_s, healer=healer, tool_registry=self.tools_registry, llm=self.llm
+                    )
+                    for r in await engine_s.verify_all(reliable):
+                        step_assert_pairs.append((step_no, r))
             return gate_reason
 
         loop = ReActLoop(

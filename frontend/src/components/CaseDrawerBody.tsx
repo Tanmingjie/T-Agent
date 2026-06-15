@@ -275,19 +275,36 @@ function AssertionVerdict({ assertions }: { assertions: AssertionResult[] }) {
 
 /** 截图,加载失败时回退占位。 */
 function Shot({ src, alt }: { src: string; alt: string }) {
-  const [err, setErr] = useState(false);
-  if (err)
+  // 执行中点开某步时,截图文件可能刚写盘、请求时还差一瞬 → 直接缓存 404 会永久显示「无截图」
+  // (执行完重载 history 才好)。改为**有限次重试 + 缓存破坏**:404 后隔 1.2s 带新 query 重取,
+  // 几次都失败再判无图。src 变化(切步/重载)时重置。
+  const MAX_RETRY = 4;
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setAttempt(0);
+    setFailed(false);
+  }, [src]);
+  if (failed)
     return (
       <div className="flex flex-col items-center justify-center py-16 text-gray-300">
         <ImageOff size={32} className="mb-2" />
         <span className="text-sm">无截图</span>
       </div>
     );
+  const url = attempt > 0 ? `${src}${src.includes("?") ? "&" : "?"}r=${attempt}` : src;
   return (
     <img
-      src={src}
+      key={url}
+      src={url}
       alt={alt}
-      onError={() => setErr(true)}
+      onError={() => {
+        if (attempt >= MAX_RETRY) {
+          setFailed(true);
+          return;
+        }
+        window.setTimeout(() => setAttempt((a) => a + 1), 1200);
+      }}
       className="w-full rounded-lg border border-gray-200"
     />
   );

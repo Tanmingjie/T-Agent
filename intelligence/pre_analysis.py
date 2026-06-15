@@ -67,14 +67,14 @@ _SYSTEM_PROMPT = """\
 - 点击 Finish 完成下单 → "进入下单完成页,显示订单成功提示 Thank you for your order!"
 若用例没有明写某步的预期,就**根据该步动作推断一个合理的完成判据**。不要把多步的预期混在一条里。
 
-【结构化断言(可选,高置信)】在 expect_text 之外,若该步的预期**能被确定性验证**,再补一条
-或多条结构化断言放进该步 "expect" 数组(执行时规则引擎确定性比较,比 LLM 判更可信)。
-按可靠性优先,能用前面的就不用后面的:
-1. element_visible / element_count —— DOM 元素存在/数量(最可靠)
-2. text_equals / text_contains —— 在【某个具体元素内】匹配文本,target 必须指明是哪个元素(不要全页搜)
-3. url_contains / url_equals —— URL/导航断言
-4. custom_tool —— 数据断言(查库/调接口),target 写要调用的数据校验意图
-能结构化就不要只靠 expect_text;不能结构化的步,只给 expect_text 即可(不要硬凑 llm_judge)。
+【步骤的可选结构化断言 step.expect(谨慎!)】每步主要靠 expect_text(由 LLM 看整页判定)。
+**只有**当该步预期能用【URL】或【数据查询】确定性验证时,才补结构化断言放进该步 "expect":
+- url_contains / url_equals —— URL/导航(不依赖元素定位,可靠,鼓励);
+- custom_tool —— 数据断言(查库/调接口,不碰页面元素)。
+⚠️**不要**在步骤里放 text_equals / text_contains / element_visible / element_count 这类
+**依赖具体元素定位**的断言:中间页常有多个相似元素(如 6 个"Add to cart"按钮),按业务词名
+定位极易匹配错、误判失败。这类"页面上某元素/某文本是否出现"的检查,**一律交给 expect_text**
+由 LLM 看整页判定,不要放进 step.expect。
 
 【预置条件】预置条件中属于「操作步骤」的(如「设置环境变量」「新建一条订单」)放进 given;
 属于「状态声明」的(如「已登录」)阶段一忽略(后续由 Hook 处理)。
@@ -210,13 +210,22 @@ def _coerce_assertion(raw: dict) -> Assertion | None:
     if a_type not in _VALID_ASSERTION_TYPES:
         logger.warning("丢弃非法断言(类型不支持):%r", raw)
         return None
+    expected = raw.get("expected")
     # URL 类断言不依赖元素 target,缺省填 "URL";其余类型 target 必填
     if a_type in ("url_contains", "url_equals"):
-        target = target or "URL"
+        # 容错:弱模型常把 URL 子串写进 target、把 expected 写成 "true"/布尔占位(实测 DeepSeek:
+        # {"url_contains","target":"checkout-complete","expected":"true"} → 校验 "true" in url 永假)。
+        # 纠正:expected 为空/布尔占位且 target 是有意义子串时,用 target 作期望子串。
+        _bool_ish = {"", "true", "false", "yes", "no", "成立", "不成立", "是", "否", "url"}
+        _exp = ("" if expected is None else str(expected)).strip()
+        if _exp.lower() in _bool_ish and target and target.upper() != "URL":
+            expected = target
+            target = "URL"
+        else:
+            target = target or "URL"
     elif not target:
         logger.warning("丢弃非法断言(缺 target):%r", raw)
         return None
-    expected = raw.get("expected")
     confidence = str(raw.get("confidence") or "high").strip()
     if a_type == "llm_judge":
         confidence = "low"  # llm_judge 强制 low(§5.3)

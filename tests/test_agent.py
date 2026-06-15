@@ -206,7 +206,7 @@ class _GatingLLM(LLMClient):
 
     async def chat(self, messages, tools=None, **kwargs) -> LLMResponse:
         sys = messages[0]["content"] if messages else ""
-        if "测试断言裁判" in sys:  # 完成门控(llm_judge)
+        if "是否可以继续往下走" in sys:  # 完成门控(_GATE_SYSTEM,偏向放行)
             v = self._verdicts.pop(0) if self._verdicts else "PASS"
             return LLMResponse(content=json.dumps({"verdict": v, "reason": "门控测试"}))
         idx = min(self._i, len(self._r) - 1)

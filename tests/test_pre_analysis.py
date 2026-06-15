@@ -78,6 +78,25 @@ def _good_json() -> str:
     )
 
 
+def test_url_assertion_malformed_expected_coerced():
+    """弱模型把 URL 子串写进 target、expected 写成 'true' → 纠正:用 target 作期望子串。"""
+    spec = parse_spec_response(
+        json.dumps(
+            {
+                "steps": [{"action": "click", "target": "Finish", "expect_text": "完成"}],
+                "assertions": [
+                    {"type": "url_contains", "target": "checkout-complete", "expected": "true"}
+                ],
+            }
+        ),
+        _case(),
+    )
+    a = spec.assertions[0]
+    assert a.type == "url_contains"
+    assert a.expected == "checkout-complete"  # 子串纠正到 expected
+    assert a.target == "URL"
+
+
 def test_parse_good_response():
     spec = parse_spec_response(_good_json(), _case())
     assert spec.case_id == "TC001"
