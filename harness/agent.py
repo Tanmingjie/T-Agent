@@ -118,6 +118,10 @@ _STEP_FAIL_BUDGET = int(os.getenv("STEP_FAIL_BUDGET", "3"))
 # 累计达此数 → 判该步未完成(EXPECT_UNMET)。默认 2(给两次重做机会);env EXPECT_RETRY_BUDGET 可调。
 _EXPECT_RETRY_BUDGET = int(os.getenv("EXPECT_RETRY_BUDGET", "2"))
 
+# 循环检测窗口:连续 N 轮**完全相同**的 tool_call 才判卡死终止(LOOP_DETECTED)。默认 4
+# (放宽,长流程如下单结算偶发重复一两次快照/点击属正常,3 太敏感会误杀);env LOOP_WINDOW 可调。
+_LOOP_WINDOW = int(os.getenv("LOOP_WINDOW", "4"))
+
 # 生成代码落盘目录:从 ArtifactStore 抽象取(T-P10),与 results 路由读取端单一真相
 _GENERATED_ROOT = str(get_artifact_store().generated_dir())
 
@@ -732,6 +736,7 @@ class TestCaseAgent:
             step_plan=plan,
             build_system=build_system,
             max_steps=self.max_steps,
+            loop_window=_LOOP_WINDOW,
             healer=healer,
             get_snapshot=get_snapshot,
             get_screenshot=get_screenshot,

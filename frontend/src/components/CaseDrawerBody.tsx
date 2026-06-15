@@ -198,6 +198,81 @@ function AssertIcon({ status }: { status: string }) {
   return <MinusCircle size={15} className="text-gray-300" />;
 }
 
+/** 单条断言行(不显示 ai_judged 标记:每步完成判据本就走 LLM 门控,标了等于满屏噪声;
+ *  其低置信占比仍在「执行指标」面板统计,保留可审计)。 */
+function AssertionRow({ a }: { a: AssertionResult }) {
+  return (
+    <li className="flex items-start gap-2 text-sm">
+      <span className="mt-0.5 shrink-0">
+        <AssertIcon status={a.status} />
+      </span>
+      <span className="text-gray-700">
+        <span className="text-gray-400">[{a.type}]</span> {a.target}
+        {a.expected != null && a.expected !== "" && (
+          <span className="text-gray-400"> == {a.expected}</span>
+        )}
+        {a.healed && (
+          <span
+            className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200 align-middle"
+            title={a.heal_note ? `经自愈重定位后通过:${a.heal_note}` : "经自愈重定位后通过"}
+          >
+            已自愈
+          </span>
+        )}
+        {a.status === "fail" && (a.actual || a.reason) && (
+          <span className="block text-xs text-red-600 mt-0.5">
+            实际: {a.actual ?? "—"}
+            {a.reason ? ` · ${a.reason}` : ""}
+          </span>
+        )}
+      </span>
+    </li>
+  );
+}
+
+/** 断言裁决视图:步骤级裁决按所属步骤分组(各步一块),用例级/终态裁决单列一块。
+ *  把分散在大列表里的「步骤N」断言归到各自步骤,阅读时一眼看清每步验了什么。 */
+function AssertionVerdict({ assertions }: { assertions: AssertionResult[] }) {
+  if (assertions.length === 0) {
+    return <p className="ml-6 mt-1 text-sm text-gray-400">无断言记录</p>;
+  }
+  const stepAsserts = assertions.filter((a) => a.phase === "step" && a.step_no != null);
+  const finalAsserts = assertions.filter((a) => !(a.phase === "step" && a.step_no != null));
+  // 按 step_no 升序分组
+  const byStep = new Map<number, AssertionResult[]>();
+  for (const a of stepAsserts) {
+    const k = a.step_no as number;
+    (byStep.get(k) ?? byStep.set(k, []).get(k)!).push(a);
+  }
+  const stepNos = [...byStep.keys()].sort((x, y) => x - y);
+  return (
+    <div className="ml-6 mt-1 space-y-3">
+      {stepNos.map((no) => (
+        <div key={no}>
+          <p className="text-[11px] font-medium text-surface-500 mb-1">步骤 {no}</p>
+          <ul className="space-y-1.5 pl-2 border-l-2 border-surface-100">
+            {byStep.get(no)!.map((a, i) => (
+              <AssertionRow key={i} a={a} />
+            ))}
+          </ul>
+        </div>
+      ))}
+      {finalAsserts.length > 0 && (
+        <div>
+          {stepNos.length > 0 && (
+            <p className="text-[11px] font-medium text-surface-500 mb-1">最终(用例级)</p>
+          )}
+          <ul className="space-y-1.5">
+            {finalAsserts.map((a, i) => (
+              <AssertionRow key={i} a={a} />
+            ))}
+          </ul>
+        </div>
+      )}
+    </div>
+  );
+}
+
 /** 截图,加载失败时回退占位。 */
 function Shot({ src, alt }: { src: string; alt: string }) {
   const [err, setErr] = useState(false);
@@ -833,51 +908,7 @@ function TimelineView({
               </span>
             </div>
           )}
-          <ul className="ml-6 mt-1 space-y-1.5">
-            {result.case_assertions.length === 0 && (
-              <li className="text-sm text-gray-400">无断言记录</li>
-            )}
-            {result.case_assertions.map((a, i) => (
-              <li key={i} className="flex items-start gap-2 text-sm">
-                <span className="mt-0.5 shrink-0">
-                  <AssertIcon status={a.status} />
-                </span>
-                <span className="text-gray-700">
-                  {a.phase === "step" && a.step_no != null && (
-                    <span
-                      className="mr-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-surface-100 text-surface-600 border border-surface-200 align-middle"
-                      title="步骤级断言:在该步所处子页面即时验证"
-                    >
-                      步骤{a.step_no}
-                    </span>
-                  )}
-                  <span className="text-gray-400">[{a.type}]</span> {a.target}
-                  {a.expected != null && a.expected !== "" && (
-                    <span className="text-gray-400"> == {a.expected}</span>
-                  )}
-                  {a.ai_judged && (
-                    <span className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200 align-middle">
-                      AI判定·低置信
-                    </span>
-                  )}
-                  {a.healed && (
-                    <span
-                      className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200 align-middle"
-                      title={a.heal_note ? `经自愈重定位后通过:${a.heal_note}` : "经自愈重定位后通过"}
-                    >
-                      已自愈
-                    </span>
-                  )}
-                  {a.status === "fail" && (a.actual || a.reason) && (
-                    <span className="block text-xs text-red-600 mt-0.5">
-                      实际: {a.actual ?? "—"}
-                      {a.reason ? ` · ${a.reason}` : ""}
-                    </span>
-                  )}
-                </span>
-              </li>
-            ))}
-          </ul>
+          <AssertionVerdict assertions={result.case_assertions} />
         </section>
       )}
 
