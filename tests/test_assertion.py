@@ -145,6 +145,42 @@ async def test_text_on_missing_element_healable():
     assert r.healable
 
 
+class SnapshotProbe(DictProbe):
+    """带 raw_snapshot 的内存探针:模拟整页快照文本(供全页文本兜底测试)。"""
+
+    def __init__(self, url: str = "", elements: dict | None = None, snapshot: str = ""):
+        super().__init__(url=url, elements=elements)
+        self._snapshot = snapshot
+
+    def raw_snapshot(self) -> str:
+        return self._snapshot
+
+
+async def test_text_page_fallback_hits_when_element_unlocated():
+    # 元素名「成功提示区域」与英文页面文案对不上 → 元素级找不到,但 expected 明确在页面里
+    probe = SnapshotProbe(
+        elements={},
+        snapshot='- heading "Thank you for your order!" [level=2] [ref=e9]',
+    )
+    eng = AssertionEngine(probe)
+    r = await eng.verify(
+        Assertion(type="text_contains", target="成功提示区域", expected="Thank you for your order!")
+    )
+    assert r.passed
+    assert "全页文本兜底" in r.reason  # 标注可审计,区分于元素级绿
+
+
+async def test_text_page_fallback_miss_stays_healable_fail():
+    # expected 不在整页文本里 → 不兜底,维持 _not_found(healable, FAIL)
+    probe = SnapshotProbe(elements={}, snapshot='- heading "Checkout" [ref=e1]')
+    eng = AssertionEngine(probe)
+    r = await eng.verify(
+        Assertion(type="text_contains", target="成功提示区域", expected="Thank you for your order!")
+    )
+    assert r.status == AssertionStatus.FAIL
+    assert r.healable
+
+
 # ── 不支持类型 ────────────────────────────────────────────────
 
 

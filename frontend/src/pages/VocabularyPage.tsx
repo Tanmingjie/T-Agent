@@ -30,14 +30,18 @@ const EMPTY_PAGE: Vocab = {
 interface ScanForm {
   base_url: string;
   entry_paths: string; // 每行一个路径
-  session_profile: string;
+  username: string;
+  password: string;
+  login_url: string;
   shallow_crawl: boolean;
 }
 
 const EMPTY_SCAN: ScanForm = {
   base_url: "",
   entry_paths: "",
-  session_profile: "",
+  username: "",
+  password: "",
+  login_url: "",
   shallow_crawl: false,
 };
 
@@ -76,7 +80,9 @@ export default function VocabularyPage() {
           .split("\n")
           .map((s) => s.trim())
           .filter(Boolean),
-        session_profile: form.session_profile || null,
+        username: form.username,
+        password: form.password,
+        login_url: form.login_url,
         shallow_crawl: form.shallow_crawl,
       });
       // 轮询状态
@@ -291,8 +297,7 @@ function ScanFormPanel({
     <div className="bg-white border rounded p-4 mb-4">
       <h3 className="font-semibold mb-1">主动扫描</h3>
       <p className="text-xs text-gray-500 mb-3">
-        起浏览器逐页提炼业务词→元素映射。需登录的页面请先在测试任务设置里配好 Session
-        并跑一次以落盘 Cookie,再在此填其名称。
+        起浏览器逐页提炼业务词→元素映射。需登录的页面填下方账号 + 密码即可自动登录;公开页面留空。
       </p>
       <div className="grid grid-cols-2 gap-3">
         <label className="text-xs text-gray-600">
@@ -305,12 +310,33 @@ function ScanFormPanel({
           />
         </label>
         <label className="text-xs text-gray-600">
-          Session Profile(可选,用其 Cookie 登录)
+          登录页地址(可选,留空=用 base_url)
+          <input
+            className="border px-2 py-1 rounded w-full mt-1 text-sm font-mono"
+            value={form.login_url}
+            onChange={(e) => onChange({ ...form, login_url: e.target.value })}
+            placeholder="留空=用 base_url"
+          />
+        </label>
+        <label className="text-xs text-gray-600">
+          账号(可选,需登录才填)
           <input
             className="border px-2 py-1 rounded w-full mt-1 text-sm"
-            value={form.session_profile}
-            onChange={(e) => onChange({ ...form, session_profile: e.target.value })}
+            value={form.username}
+            onChange={(e) => onChange({ ...form, username: e.target.value })}
             placeholder="留空=扫公开页"
+            autoComplete="off"
+          />
+        </label>
+        <label className="text-xs text-gray-600">
+          密码(可选,需登录才填)
+          <input
+            type="password"
+            className="border px-2 py-1 rounded w-full mt-1 text-sm"
+            value={form.password}
+            onChange={(e) => onChange({ ...form, password: e.target.value })}
+            placeholder="留空=扫公开页"
+            autoComplete="off"
           />
         </label>
       </div>

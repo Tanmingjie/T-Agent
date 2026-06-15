@@ -122,7 +122,11 @@ async def delete_vocabulary(
 class ScanRequest(BaseModel):
     base_url: str  # 被测系统根地址(作用域键)
     entry_paths: list[str] = []  # 入口页面/路径清单(空=只扫 "/")
-    session_profile: str | None = None  # 可选:用其落盘 Cookie 登录后再扫(内网需登录的页)
+    # 最简登录方式(2026-06-15):账号 + 密码直接表单登录(无需预配 Session Profile)。
+    # 两者都填才登录;留空=扫公开页。login_url 留空时默认用 base_url 作登录页。
+    username: str = ""
+    password: str = ""
+    login_url: str = ""
     login_role: str = ""  # 词条归属角色(可空)
     shallow_crawl: bool = False  # 可选浅爬:点击导航类元素进入点击触发的内页(只读护栏)
 
@@ -140,8 +144,8 @@ def _mcp_args() -> list[str]:
 async def trigger_scan(body: ScanRequest):
     """启动一次主动扫描(会导航的只读探索式扫描)。后台线程跑,返回 scan_id 供轮询。
 
-    覆盖 base_url 主页 + 入口清单 + (可选)点击触发的内页。需登录的页面给 ``session_profile``
-    (用其落盘 Cookie 注入);公开页面留空即可。
+    覆盖 base_url 主页 + 入口清单 + (可选)点击触发的内页。需登录的页面填 ``username`` +
+    ``password``(最简表单登录,无需预配 Session Profile);公开页面留空即可。
     """
     scan_id = uuid.uuid4().hex[:12]
     _scan_status[scan_id] = {"status": "running", "report": None, "error": None}
@@ -150,7 +154,7 @@ async def trigger_scan(body: ScanRequest):
     async def _worker() -> None:
         from harness.agent import settle_page
         from harness.llm import LiteLLMClient
-        from harness.session import SessionManager, make_mcp_cookie_injector
+        from harness.session import make_mcp_credential_login
         from intelligence.active_scan import ActiveScanner
         from intelligence.scanner import Scanner
         from intelligence.vocabulary import VocabularyManager
@@ -164,20 +168,19 @@ async def trigger_scan(body: ScanRequest):
                 manager = VocabularyManager(store)
                 scanner = Scanner(LiteLLMClient())
 
-                # 登录回调:有 session_profile 且其 Cookie 有效则注入(否则扫公开页)
-                login = None
-                if body.session_profile:
-                    profile = await store.get_session_profile(body.session_profile)
-                    if profile is not None:
-                        cookies = SessionManager().load_cookies(profile)
-                        if cookies:
-                            injector = make_mcp_cookie_injector(mcp, body.base_url)
-
-                            async def login():  # noqa: E306
-                                await injector(None, cookies)
-
                 async def _settle(_mcp):
                     await settle_page(_mcp)
+
+                # 登录回调:填了账号+密码则做最简表单登录(否则扫公开页)
+                login = None
+                if body.username and body.password:
+                    login = make_mcp_credential_login(
+                        mcp,
+                        body.login_url or body.base_url,
+                        body.username,
+                        body.password,
+                        settle=_settle,
+                    )
 
                 active = ActiveScanner(
                     mcp,

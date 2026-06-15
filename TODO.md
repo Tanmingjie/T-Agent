@@ -57,6 +57,7 @@
 - [ ] **Session 过期自动重登**(§7.1):`valid_until` 有效期检查已做;自动重登需接真实 `login_aw`(未接时 optional 放行让 Agent 自登)。
 - [ ] **prompt 优化 C/D**:每步约 3 次 LLM 往返(snapshot→action→mark_done)、system 每轮重列全部工具,可省 token;有正确性风险,待 live A/B。
 - [ ] **真实内网用例 live 验证**(主线,环境阻塞):saucedemo 全链路已 live 绿(基础/结算/会话复用/custom_tool/codegen 回放),真实内网业务系统待跑。
+- [ ] **执行后增量补充的逐步 url 归属精度**(2026-06-15,重写策略C 时 live 发现):`_incremental_scan` 按步 `s.url` 分组,部分步(如 `browser_type`)`outcome.url` 为空靠「继承最近非空 url」兜底——偶尔把跨页元素(如 inventory 页的「加入购物车」)归到前一页 url 组(saucedemo TC101 实证:Add to cart 落到登录页 `/` 组)。**不影响 selector 正确性**(词条仍带真实 `[data-test=...]`),但页面归属不精确会影响按 url 解析命中。根因在 `react_loop` 逐步 url 捕获精度(click 后 `outcome.url` 不总回填新页 url)。修法候选:react_loop 每步落定后补一次 url 探查,或 `_incremental_scan` 用步后快照 url 校正。
 
 ## 建议优先级
 

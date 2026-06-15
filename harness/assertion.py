@@ -129,6 +129,13 @@ class AssertionEngine:
             healed = await self._try_heal(a, res)
             if healed is not None:
                 return healed
+            res.healed = False  # 自愈未救回,res 仍是 _not_found 失败,下面试全页兜底
+        # 文本断言:元素未定位、自愈也没救回 → **全页文本兜底**(确定性,带护栏)。
+        # 放在自愈**之后**:优先元素级/自愈的精确绿,兜底只在它们都失败时托底。
+        if not res.passed and res.healable and a.type in ("text_equals", "text_contains"):
+            fb = self._text_page_fallback(a)
+            if fb is not None:
+                return fb
         return res
 
     async def _verify_once(self, a: Assertion) -> AssertionResult:
@@ -391,6 +398,38 @@ class AssertionEngine:
             actual=actual,
             reason="" if ok else f"元素内文本不含 {expected!r}",
         )
+
+    def _text_page_fallback(self, a: Assertion) -> AssertionResult | None:
+        """文本断言元素未定位时的**全页文本兜底**(确定性,带护栏)。命中返回 PASS,否则 None。
+
+        断言 ``target`` 常是模糊区域名(如「成功提示区域」),与真实元素的可及名对不上
+        (尤其跨语言:中文业务词 vs 英文页面文案)→ 元素级匹配 false-fail;而 ``expected``
+        (成功提示原文)往往明确出现在页面上。于是在整页快照文本里**确定性**搜 ``expected``
+        子串,命中即判 PASS,reason 标注「全页文本兜底」使其与元素级绿可区分、可审计。
+
+        **护栏**(贴合铁律「宁可误报失败不可误报通过」,防短串误绿):
+        - 显式 ``selector`` 的断言**不兜底**——selector 失败是真信号(如空购物车 ``.badge``
+          求值不到),不能因页面别处恰有该串就刷绿;
+        - ``expected`` 必须**够独特**(含空白的短语,或长度 ≥ 5):排除 "1"/"2"/状态短词
+          这类在整页文本里随处可见的弱串;
+        - 探针无 ``raw_snapshot`` 或页面文本不含 expected → 返回 None(维持原 _not_found 失败)。
+        """
+        if a.selector:  # 显式 selector 失败是真信号,不做全页兜底
+            return None
+        expected = (a.expected or "").strip()
+        distinctive = len(expected) >= 5 or (" " in expected and len(expected) >= 3)
+        if not expected or not distinctive:
+            return None
+        raw_fn = getattr(self.probe, "raw_snapshot", None)
+        page_text = raw_fn() if callable(raw_fn) else ""
+        if page_text and expected in page_text:
+            return AssertionResult(
+                assertion=a,
+                status=AssertionStatus.PASS,
+                actual=expected,
+                reason=f"元素「{a.target}」未定位,全页文本兜底命中 {expected!r}",
+            )
+        return None
 
 
 def _st(ok: bool) -> AssertionStatus:

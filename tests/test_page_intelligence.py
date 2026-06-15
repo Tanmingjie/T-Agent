@@ -258,6 +258,35 @@ async def test_scanner_bad_json_empty_vocab():
     assert vocab.vocabulary == {}
 
 
+async def test_summarize_supplements_empty_candidates_no_llm():
+    """无候选 → 直接返回 {},不调 LLM(增量补充的 0 成本早退)。"""
+
+    class _BoomLLM(LLMClient):
+        async def chat(self, messages, tools=None, **kwargs):
+            raise AssertionError("无候选不应调 LLM")
+
+    assert await Scanner(_BoomLLM()).summarize_supplements([]) == {}
+
+
+async def test_summarize_supplements_keeps_only_grounded_entries():
+    """LLM 返回的条目须带 name/selector(有元素证据)才入 delta,并标 source=ai。"""
+    llm = _FakeLLM(
+        json.dumps(
+            {
+                "提交": {"role": "button", "name": "保存并提交"},
+                "噪声": {"role": "button"},  # 无 name/selector → 丢弃
+            },
+            ensure_ascii=False,
+        )
+    )
+    delta = await Scanner(llm).summarize_supplements(
+        [{"term": "提交按钮", "role": "button", "name": "保存并提交", "selector": ""}],
+        existing_terms=["取消"],
+    )
+    assert "提交" in delta and delta["提交"]["source"] == "ai"
+    assert "噪声" not in delta
+
+
 # ── 策略C:执行期增量扫描接入 agent(默认关,需开 VOCAB_SCAN)──────
 
 
@@ -270,27 +299,35 @@ def _enable_incremental_scan(monkeypatch):
 
 
 async def test_agent_incremental_scan_persists_from_run(store):
-    """agent._incremental_scan 复用执行期快照(action_steps.tool_result)增量并库。"""
+    """agent._incremental_scan 用执行轨迹的真实元素(element_name/selector)总结补充并库。"""
     from harness.agent import TestCaseAgent
     from harness.react_loop import ReActResult
     from input.models import ActionStep
     from intelligence.vocabulary import VocabularyManager, VocabularyResolver
 
+    # summarize_supplements 的 LLM:把候选总结成 delta(键=规范化业务词)
     llm = _FakeLLM(
-        json.dumps({"提交": {"role": "button", "name": "保存并提交"}}, ensure_ascii=False)
+        json.dumps(
+            {"提交": {"role": "button", "name": "保存并提交", "selector": '[data-test="submit"]'}},
+            ensure_ascii=False,
+        )
     )
     resolver = VocabularyResolver(VocabularyManager(store), login_role="admin")
     agent = TestCaseAgent(llm=llm, mcp=None, vocab_resolver=resolver)
 
     result = ReActResult(
         action_steps=[
-            # 非快照步(无 ref)→ 忽略
+            # 无元素证据的步(纯 mark_done)→ 忽略
             ActionStep(step_no=1, tool_name="mark_step_done", tool_result="已完成第 1 步"),
-            # 快照步(含 ref)→ 提炼并库
+            # 真正操作过、带 ground-truth 元素的步 → 进候选
             ActionStep(
                 step_no=2,
-                tool_name="browser_snapshot",
-                tool_result=SNAPSHOT,
+                tool_name="browser_click",
+                tool_input={"element": "提交按钮"},
+                step_target="提交",
+                element_role="button",
+                element_name="保存并提交",
+                element_selector='[data-test="submit"]',
                 url="https://intranet/order/9",
             ),
         ]
@@ -308,8 +345,8 @@ async def test_agent_incremental_scan_persists_from_run(store):
     assert got.get("source") == "ai"
 
 
-async def test_agent_incremental_scan_dedups_fresh_page(store):
-    """同页面已有非 stale 词汇表 → 第二次扫描跳过(不再调 LLM 提炼)。"""
+async def test_agent_incremental_scan_skips_covered_term(store):
+    """业务词已被词汇表覆盖且一致 → 第二次不再叫 LLM 总结(增量补充,无新词 0 调用)。"""
     from harness.agent import TestCaseAgent
     from harness.react_loop import ReActResult
     from input.models import ActionStep
@@ -334,8 +371,10 @@ async def test_agent_incremental_scan_dedups_fresh_page(store):
         action_steps=[
             ActionStep(
                 step_no=1,
-                tool_name="browser_snapshot",
-                tool_result=SNAPSHOT,
+                tool_name="browser_click",
+                step_target="提交",
+                element_role="button",
+                element_name="保存并提交",
                 url="https://intranet/order/9",
             )
         ]
@@ -344,9 +383,9 @@ async def test_agent_incremental_scan_dedups_fresh_page(store):
     async def _noop_phase(phase, label):
         pass
 
-    await agent._incremental_scan(result, _noop_phase)  # 首次:扫
-    await agent._incremental_scan(result, _noop_phase)  # 二次:已存非 stale → 跳过
-    assert llm.calls == 1  # 只提炼了一次
+    await agent._incremental_scan(result, _noop_phase)  # 首次:有新词 → 总结并库
+    await agent._incremental_scan(result, _noop_phase)  # 二次:该词已覆盖且一致 → 跳过
+    assert llm.calls == 1  # 只总结了一次
 
 
 async def test_agent_enhance_spec_with_vocab_rewrites_target(store):
@@ -378,8 +417,8 @@ async def test_agent_enhance_spec_with_vocab_rewrites_target(store):
     assert out.steps[1].target == "取消"  # 未命中保持
 
 
-async def test_agent_incremental_scan_skips_without_snapshots(store):
-    """无任何带 ref 的快照时,不调用 LLM、不写库(best-effort 早退)。"""
+async def test_agent_incremental_scan_skips_without_element_evidence(store):
+    """无任何带真实元素证据(element_name/selector)的步时,不调 LLM、不写库(best-effort 早退)。"""
     from harness.agent import TestCaseAgent
     from harness.react_loop import ReActResult
     from input.models import ActionStep
@@ -387,7 +426,7 @@ async def test_agent_incremental_scan_skips_without_snapshots(store):
 
     class _BoomLLM(LLMClient):
         async def chat(self, messages, tools=None, **kwargs):
-            raise AssertionError("无快照不应触发 LLM 提炼")
+            raise AssertionError("无元素证据不应触发 LLM 总结")
 
     resolver = VocabularyResolver(VocabularyManager(store))
     agent = TestCaseAgent(llm=_BoomLLM(), mcp=None, vocab_resolver=resolver)
