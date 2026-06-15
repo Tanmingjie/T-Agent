@@ -100,6 +100,62 @@ async def test_capture_screenshot_attached_to_step():
     assert "browser_click" in [t for _, t in shots]
 
 
+async def test_step_fail_budget_fast_fails():
+    """#1:同一业务步累计定位失败达预算 → STEP_FAILED 快速失败,标明卡死步(不磨到 max_steps)。"""
+    plan = _plan(2)
+    # 不同 ref 的失败 click(签名不同 → 不触发循环检测;考验单步失败预算)
+    llm = _ScriptedLLM(
+        [
+            _resp(content="点", calls=[("browser_click", {"element": "按钮1", "ref": "e1"})]),
+            _resp(content="再点", calls=[("browser_click", {"element": "按钮1", "ref": "e2"})]),
+            _resp(content="还点", calls=[("browser_click", {"element": "按钮1", "ref": "e3"})]),
+            _resp(content="TEST_RESULT: PASS"),  # 不应到达
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan, fail_tools={"browser_click"}),
+        step_plan=plan,
+        build_system=_build_system,
+        step_fail_budget=3,
+    )
+    result = await loop.run()
+    assert result.stop_reason == StopReason.STEP_FAILED
+    assert result.failed_step_no == 1
+    assert "按钮1" in result.failed_step_target
+    assert not plan.all_done()
+
+
+async def test_on_step_done_fires_when_step_resolved():
+    """#2:mark_step_done 让某业务步落定 DONE → on_step_done(step_no) 触发(供步骤级验证)。"""
+    plan = _plan(2)
+    fired: list[int] = []
+
+    async def on_done(step_no: int) -> None:
+        fired.append(step_no)
+
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e1"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(calls=[("browser_click", {"element": "按钮2", "ref": "e2"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 2})]),
+            _resp(content="完成 TEST_RESULT: PASS"),
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+        on_step_done=on_done,
+    )
+    await loop.run()
+    assert fired == [1, 2]  # 两步各落定时各触发一次,按序
+
+
 def test_parse_test_result_variants():
     assert parse_test_result("结论 TEST_RESULT: PASS") == "PASS"
     assert parse_test_result("TEST_RESULT：fail") == "FAIL"  # 全角冒号 + 小写

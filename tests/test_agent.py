@@ -161,6 +161,36 @@ async def test_run_passes_when_assertions_pass():
     assert "import" in record.generated_code
 
 
+async def test_step_level_expect_verified_on_current_page():
+    """#2:步骤级 expect 在该步落定时于【当前子页面】验证,计入裁决并带 step_no/phase 标注。"""
+    spec = TestSpec(
+        case_id="TC001",
+        name="x",
+        base_url="https://intranet",
+        steps=[
+            SpecStep(
+                action="click",
+                target="提交按钮",
+                expect=[Assertion(type="url_contains", target="URL", expected="/order/list")],
+            )
+        ],
+        assertions=[],  # 无用例级断言,只有步骤级
+    )
+    llm = _ScriptedLLM(
+        [
+            _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
+            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(content="结束 TEST_RESULT: PASS"),
+        ]
+    )
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=spec)
+    assert record.passed is True
+    step_a = [a for a in record.case_assertions if a.get("phase") == "step"]
+    assert step_a and step_a[0]["step_no"] == 1
+    assert step_a[0]["status"] == "pass"
+
+
 async def test_metrics_populated_on_pass():
     """#6:执行后 record.metrics 带分阶段成本/质量结构,完整性闸门与断言分布正确。"""
     llm = _ScriptedLLM(

@@ -32,11 +32,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `intelligence/pre_analysis.py` — TestCase → **TestSpec**(纯 LLM 翻译,阶段一无词汇表)。坏输出降级为朴素映射。
 - `harness/step_plan.py` — TestSpec.steps → **StepPlan** 状态机(pending/active/done/...),暴露 `mark_step_done` 工具给 LLM。
 - `harness/prompt.py` — System Prompt **分层**(Base+Context+Task+Tools),`PromptBuilder.build(step_plan)` 每轮重算反映进度。
-- `harness/react_loop.py` — **ReAct 主循环**。Reason→Act→Observe;护栏:循环检测(连续 3 次同调用)、max_steps、哑火续推(`max_idle_nudges`)、tool_call 容错终止。**观察以 user 消息文本回灌**(不依赖 tool_call_id 配对,本地模型更稳)。
+- `harness/react_loop.py` — **ReAct 主循环**。Reason→Act→Observe;护栏:循环检测(连续 3 次同调用)、max_steps、哑火续推(`max_idle_nudges`)、tool_call 容错终止、**单步定位失败预算**(同一业务步累计定位失败达 `step_fail_budget`/env `STEP_FAIL_BUDGET` 默认 3 → `STEP_FAILED` 快速失败,标明卡死步,治"点错前序元素致后续找不到目标却磨到 max_steps")。**观察以 user 消息文本回灌**(不依赖 tool_call_id 配对,本地模型更稳)。`on_step_done(step_no)` 回调在某业务步 mark_step_done 落定时触发(供步骤级即时验证)。
 - `harness/llm.py` — LiteLLM 封装 + tool_call 容错 + token 统计。配置走 env(`LLM_MODEL`/`LLM_API_BASE`/`LLM_API_KEY`)。
 - `mcp_client/client.py` — MCP 官方 SDK(stdio)连 playwright-mcp;工具格式 MCP↔LiteLLM 转换。
 - `harness/page_probe.py` — 解析 playwright-mcp 的 `browser_snapshot`(YAML A11y 树)为节点,按语义 target 双向包含匹配(`MCPPageProbe` 实现断言引擎的 `PageProbe` 协议)。
-- `harness/assertion.py` ★ — **断言规则引擎**。阶段一支持 DOM/文本/URL;元素找不到标 `healable`;接 healer 做目标重定位复验;`verdict()` 裁决(任一 FAIL 即不通过,全 skipped 不算可信通过)。
+- `harness/assertion.py` ★ — **断言规则引擎**。阶段一支持 DOM/文本/URL;元素找不到标 `healable`;接 healer 做目标重定位复验;`verdict()` 裁决(任一 FAIL 即不通过,全 skipped 不算可信通过)。**断言验证分两处(2026-06-15,治内网"按步预期"用例)**:**步骤级 `step.expect`** 在该步 mark_step_done 落定时于**当前子页面**即时验证(`agent.run` 的 `verify_step` 回调,经 `on_step_done` 接进 ReAct);**用例级 `assertions`** 在**终态**验证;两者合并裁决(`step_assert_pairs` + `terminal_results`)。根治"中间子页面的预期被攒到终态页验 → 元素已不在 → 假阴性"。结果按 `phase=step/final` + `step_no` 标注落库,前端断言列标「步骤N」。
 - `harness/healing.py` — **Healing Subagent**(独立 context)。断言侧:重定位断言目标;操作侧:工具报错时重定位并把建议回灌 ReAct。P1 角色→P5 视觉,防臆造(候选必须落在快照里)。
 - `harness/context.py` — **Context Compact**。发 LLM 前压缩:旧观察折叠成一行(L1)、近期快照按关键词相关度截断(L2),治 token 膨胀。
 - `harness/recorder.py` — 汇总 `ExecutionRecord`;`to_history()` 把 model_output / action_result 分离序列化。
@@ -84,7 +84,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - 本地包名 **`mcp_client`** 而非 `mcp`,避让官方 `mcp` SDK 顶层包名冲突。
 - ReAct 用**文本式观察回灌**,不依赖严格 tool_call_id 配对(本地 Qwen 支持不稳)。
 - `ExecutionRecord.case_assertions` / `spec` 是**有意新增**字段(规格模型没列):前者承载可信 PASS/FAIL 依据,后者存档 LLM 翻译产物供前端可视化 + 发现翻译偏差。
-- 断言**统一产在用例级 `assertions`**(翻译 prompt 只索取一处,执行后对终态确定性验证)。`SpecStep.expect` 字段**保留**(数据模型不删,给未来「步骤级软校验/B-软」留门),`agent.collect_assertions` 仍聚合 `assertions`+各步 `expect` 并**按语义键去重**作防御网(模型偶尔仍塞 expect 也不重复计入)。〔2026-06-10:从「两处都要、事后去重」改为「只要一处、去重兜底」,消冗余输出 + 拆「瞬态 expect 被拍到终态验」的 false-fail 雷。〕
+- 断言归属**按页面/时机分两处(2026-06-15 改,治内网"按步预期"用例)**:**步骤级预期 → `SpecStep.expect`**(翻译 prompt 引导按步分发,预期 N ↔ 步 N),执行到该步时在**当前子页面**即时验证;**整体/最终预期 → 用例级 `assertions`**,**终态**验证;合并裁决。`agent.collect_assertions` 仍聚合两者(供 codegen 的 Then 段)。〔**推翻 2026-06-10 的「统一产在用例级、终态一次验」**:那是为消冗余 + 避"瞬态 expect 拍到终态"的 false-fail,但内网真实用例的预期本就是**按步写**的(每步一个预期,常指向不同子页面),攒到终态验 → 跨子页元素已不在 → 假阴性。改为「按步在所属页验」从根上解决,B-软的「在所属页面软验 + 失败先自愈」一并落地。〕
 - **定位三层**:`Locator` 模型(框架无关)/ 解析层(语义 target→Locator,放 generator 外)/ 渲染层(各 CodeGenerator 自实现);稳健度 `ROLE>TEST_ID>LABEL>PLACEHOLDER>TEXT>CSS`。BDD 只是渲染实现之一。
 - 截图/代码生成在 `agent.run` 内**端到端接通**:浏览器动作后落 `step_NNN.png`(真实 run_id 目录),断言通过后生成 BDD 代码写 `record.generated_code`+落盘。
 

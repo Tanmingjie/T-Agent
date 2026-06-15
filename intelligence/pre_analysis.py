@@ -71,14 +71,19 @@ _SYSTEM_PROMPT = """\
 【预置条件】预置条件中属于「操作步骤」的(如「设置环境变量」「新建一条订单」)放进 given;
 属于「状态声明」的(如「已登录」)阶段一忽略(后续由 Hook 处理)。
 
+【断言归属(关键)】预期结果通常是【按步骤】写的(第 N 条预期对应第 N 步)。把每条预期
+翻译成**它所属那一步**的即时断言,放进该步的 "expect" 数组——因为它要在执行到那一步、
+页面停在该子页面时验证。**不要**把属于中间步骤的预期攒到最后统一验:子页面的元素到了终态
+页面可能已经不在,会被误判为失败。只有描述【整体/最终状态】、不专属某一具体步骤的预期,
+才放进用例级 "assertions"。每条预期只写一次,不要既放 expect 又放 assertions。
+
 【输出格式】只输出一个 JSON 对象,不要任何解释文字,结构如下:
 {
   "given":  [{"action": "...", "target": "...", "data": null}],
-  "steps":  [{"action": "...", "target": "...", "data": "写死的数据或null"}],
+  "steps":  [{"action": "...", "target": "...", "data": "写死的数据或null",
+              "expect": [{"type": "...", "target": "...", "expected": "...", "confidence": "high"}]}],
   "assertions": [{"type": "...", "target": "...", "expected": "...", "confidence": "high"}]
 }
-断言**统一**放进用例级 assertions(执行结束后对终态确定性验证),**不要**把断言分散到
-各步骤里、也不要重复放置——每条预期只写一次。
 """
 
 
@@ -144,7 +149,12 @@ def build_spec_messages(
     引导归 action_step(测试内执行)/ ambiguous,避免「分类成 Hook 却没人执行」的静默漏洞。
     """
     pre_lines = _precondition_lines(case, None if request_classification else precondition_items)
-    exp_lines = [f"  - {e}" for e in case.expected] or ["  (无)"]
+    # 预期结果按步对齐呈现(第 N 条预期 ↔ 第 N 步),引导 LLM 把断言归到所属步骤的 expect。
+    # 仅当条数与步骤数一致才标注步号;否则平铺(交给 LLM 自行判断归属)。
+    if case.expected and len(case.expected) == len(case.steps):
+        exp_lines = [f"  (对应步骤 {i}){e}" for i, e in enumerate(case.expected, 1)]
+    else:
+        exp_lines = [f"  - {e}" for e in case.expected] or ["  (无)"]
     user = [
         f"用例名称:{case.name}",
         "",

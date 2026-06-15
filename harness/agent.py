@@ -43,7 +43,9 @@ from harness.precondition import (
     to_given_steps,
 )
 from harness.prompt import PromptBuilder
-from harness.react_loop import ReActLoop, ToolExecutor, ToolOutcome
+from harness.react_loop import ReActLoop
+from harness.react_loop import StopReason as ReActStopReason
+from harness.react_loop import ToolExecutor, ToolOutcome
 from harness.recorder import Recorder
 from harness.skills import LOAD_SKILL_TOOL, SkillManager
 from harness.step_plan import StepPlan, StepStatus
@@ -107,6 +109,10 @@ _SETTLE_INTERVAL = float(os.getenv("MCP_SETTLE_INTERVAL_MS", "400")) / 1000.0
 # 主动扫描(/vocabulary/scan,会导航的探索式扫描)是词汇表主入口;执行期增量扫描降级为
 # 可选补充——避免它延后用例收尾(交互执行末尾多一次 LLM 往返)、避免与主动扫描两写入源。
 _INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "0") != "0"
+
+# 单步定位失败预算(#1 快速失败):同一业务步累计定位失败(自愈也没救回)达此数 →
+# 快速判 STEP_FAILED 终止(疑似点错前序元素致后续找不到目标)。env STEP_FAIL_BUDGET 可调。
+_STEP_FAIL_BUDGET = int(os.getenv("STEP_FAIL_BUDGET", "3"))
 
 # 生成代码落盘目录:从 ArtifactStore 抽象取(T-P10),与 results 路由读取端单一真相
 _GENERATED_ROOT = str(get_artifact_store().generated_dir())
@@ -668,6 +674,26 @@ class TestCaseAgent:
             Path(path).write_bytes(img)
             return f"step_{step_no:03d}.png"
 
+        # —— 步骤级即时验证(#2):某业务步 mark_step_done 落定后,在【当前子页面】验该步
+        # expect 断言。用例预期是「按步写」的——必须在它所属页面验,不能攒到终态页(否则
+        # 跨子页元素在终态找不到 → 假阴性)。结果计入最终裁决;用与终态同款 AssertionEngine
+        # (含自愈),失败先自愈(软,符合铁律2(a)),救不回才算该步断言 FAIL。
+        step_assert_pairs: list = []  # [(step_no, AssertionResult)]
+
+        async def verify_step(step_no: int) -> None:
+            if not (1 <= step_no <= len(spec.steps)):
+                return
+            expect = spec.steps[step_no - 1].expect
+            if not expect:
+                return  # 该步无预期 → 不验(多数步只操作不校验)
+            sp_probe = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
+            await sp_probe.refresh()  # 抓【当前子页面】快照(刚做完这一步)
+            sp_engine = AssertionEngine(
+                sp_probe, healer=healer, tool_registry=self.tools_registry, llm=self.llm
+            )
+            for r in await sp_engine.verify_all(expect):
+                step_assert_pairs.append((step_no, r))
+
         loop = ReActLoop(
             self.llm,
             tools=tools,
@@ -683,6 +709,8 @@ class TestCaseAgent:
             on_step=emit_step,  # 每步落定即时推送(实时进度)
             on_llm_delta=emit_think_delta,  # 思考过程流式 + ReAct 期网关保活
             vocab_resolver=self.vocab_resolver,  # 操作侧自愈词汇表优先
+            on_step_done=verify_step,  # #2 步骤级即时验证(在当前子页面验该步预期)
+            step_fail_budget=_STEP_FAIL_BUDGET,  # #1 单步定位失败预算 → 快速失败
         )
         await emit_phase("executing", "驱动浏览器逐步执行")
         result = await loop.run()
@@ -699,12 +727,25 @@ class TestCaseAgent:
         engine = AssertionEngine(
             probe, healer=healer, tool_registry=self.tools_registry, llm=self.llm
         )
-        # 聚合用例级 + 步骤级 expect 断言,避免 LLM 把断言放在 step.expect 时被漏验
-        a_results = await engine.verify_all(collect_assertions(spec))
+        # 终态只验【用例级 assertions】(整体/最终预期);各步 expect 已在 verify_step 于
+        # 其所属子页面即时验过(步骤级)。两者合并裁决——避免把步骤级预期拍到终态页验(假阴性)。
+        terminal_results = await engine.verify_all(spec.assertions)
         _mark_phase("asserting")
-        recorder.set_case_assertions([r.to_dict() for r in a_results])
-        recorder.record.heal_count += sum(1 for r in a_results if r.healed)
-        assert_passed = AssertionEngine.verdict(a_results)
+        all_results = [r for _, r in step_assert_pairs] + terminal_results
+        # 记录:步骤级带 step_no/phase 标注,终态标 final;供前端区分「第几步的预期」。
+        a_dicts: list[dict] = []
+        for sn, r in step_assert_pairs:
+            d = r.to_dict()
+            d["step_no"], d["phase"] = sn, "step"
+            a_dicts.append(d)
+        for r in terminal_results:
+            d = r.to_dict()
+            d["phase"] = "final"
+            a_dicts.append(d)
+        recorder.set_case_assertions(a_dicts)
+        recorder.record.heal_count += sum(1 for r in all_results if r.healed)
+        # 裁决合并步骤级 + 终态(任一 FAIL 即不通过;全 skipped 不算可信通过)
+        assert_passed = AssertionEngine.verdict(all_results)
 
         # —— 执行完整性闸门(原则:步骤未全部完成 → 用例直接 FAIL)——
         # 任一步骤非 DONE(pending 未执行 / failed / skipped)即视为执行未完成:此时
@@ -716,15 +757,23 @@ class TestCaseAgent:
         execution_complete = plan.all_done()
         incomplete_reason = ""
         if not execution_complete:
-            incomplete_reason = (
-                f"[FAIL] 执行未完成:仅完成 {done_steps}/{total_steps} 步"
-                f"(停因={result.stop_reason.value}),后续步骤未执行;不以半路断言裁决。"
-            )
+            # #1 快速失败:单步定位失败超预算 → 标明卡死步 + 目标(疑似点错前序元素)
+            if result.stop_reason == ReActStopReason.STEP_FAILED and result.failed_step_no:
+                incomplete_reason = (
+                    f"[FAIL] 执行未完成:第 {result.failed_step_no} 步"
+                    f"「{result.failed_step_target}」反复定位失败(快速失败),"
+                    f"疑似前序步骤点错元素致此步找不到目标;仅完成 {done_steps}/{total_steps} 步。"
+                )
+            else:
+                incomplete_reason = (
+                    f"[FAIL] 执行未完成:仅完成 {done_steps}/{total_steps} 步"
+                    f"(停因={result.stop_reason.value}),后续步骤未执行;不以半路断言裁决。"
+                )
             logger.warning("用例 %s %s", case.id, incomplete_reason)
         passed = assert_passed and execution_complete
 
         # 断言逐条记账(便于失败定位):全部走 DEBUG,失败/跳过额外 WARNING 抬到默认可见。
-        for r in a_results:
+        for r in all_results:
             logger.debug(
                 "断言 [%s] %s target=%r expected=%r actual=%r %s",
                 r.status.value.upper(),
@@ -750,7 +799,7 @@ class TestCaseAgent:
             ctx.set("passed", passed)
             # 自愈可观测(规格 §7.7):聚合断言侧(重定位后复验通过)+ 操作侧(工具报错
             # 后重定位重试)两路自愈;任一发生即触发 on_heal,详情入 ctx 供 hook 消费。
-            healed_assertions = [r for r in a_results if r.healed]
+            healed_assertions = [r for r in all_results if r.healed]
             action_heals = [h for s in result.action_steps for h in s.heal_attempts]
             if healed_assertions or action_heals:
                 ctx.set("heal_count", len(healed_assertions) + len(action_heals))
@@ -813,7 +862,7 @@ class TestCaseAgent:
                     done_steps=done_steps,
                     total_steps=total_steps,
                     execution_complete=execution_complete,
-                    a_results=a_results,
+                    a_results=all_results,
                 )
             )
         except Exception as e:  # noqa: BLE001 — 指标埋点失败不影响用例结果

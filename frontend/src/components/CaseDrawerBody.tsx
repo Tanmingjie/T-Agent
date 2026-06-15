@@ -53,6 +53,8 @@ interface AssertionResult {
   ai_judged?: boolean; // 由 llm_judge 兜底判定(低置信)→ 与结构化绿区分,使 false green 可见
   healed?: boolean; // 经自愈重定位后才通过 → 与结构化绿区分(自愈绿)
   heal_note?: string | null; // 自愈摘要(重定位到哪个 target / 策略)
+  step_no?: number; // 步骤级断言:属于第几步(在该步子页面即时验证)
+  phase?: string; // step=步骤级即时验证 / final=终态用例级
 }
 
 interface StepDetail {
@@ -839,6 +841,14 @@ function TimelineView({
                   <AssertIcon status={a.status} />
                 </span>
                 <span className="text-gray-700">
+                  {a.phase === "step" && a.step_no != null && (
+                    <span
+                      className="mr-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-surface-100 text-surface-600 border border-surface-200 align-middle"
+                      title="步骤级断言:在该步所处子页面即时验证"
+                    >
+                      步骤{a.step_no}
+                    </span>
+                  )}
                   <span className="text-gray-400">[{a.type}]</span> {a.target}
                   {a.expected != null && a.expected !== "" && (
                     <span className="text-gray-400"> == {a.expected}</span>

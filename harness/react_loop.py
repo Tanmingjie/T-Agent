@@ -29,7 +29,7 @@ from typing import Awaitable, Callable
 
 from harness.llm import LLMClient, LLMToolCallError, ToolCall
 from harness.page_probe import build_ref_index, parse_snapshot
-from harness.step_plan import MARK_STEP_DONE_TOOL, StepPlan
+from harness.step_plan import MARK_STEP_DONE_TOOL, StepPlan, StepStatus
 from input.models import ActionStep
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,14 @@ def _ref_alias(arguments: dict) -> str | None:
         if v and _REF_RE.match(str(v).strip()):
             return str(v).strip()
     return None
+
+
+def _safe_int(v) -> int:
+    """宽松取整(mark_step_done 的 step_no 可能是 str/float),失败返回 0。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
 
 
 def extract_executed_locator(text: str) -> str:
@@ -87,6 +95,7 @@ class StopReason(str, Enum):
     MAX_STEPS = "max_steps"  # 触达步数上限
     LOOP_DETECTED = "loop_detected"  # 连续重复同一调用
     TOOL_CALL_ERROR = "tool_call_error"  # tool_call 容错+重试仍失败
+    STEP_FAILED = "step_failed"  # 单步连续定位失败超预算(快速失败,疑似点错前序元素)
 
 
 @dataclass
@@ -96,6 +105,8 @@ class ReActResult:
     stop_reason: StopReason = StopReason.LLM_FINISHED
     iterations: int = 0
     idle_nudges: int = 0  # 模型"哑火"(只回文字不调工具)被续推的累计次数(健康度指标)
+    failed_step_no: int = 0  # STEP_FAILED 时:卡死的业务步编号(0=无)
+    failed_step_target: str = ""  # STEP_FAILED 时:该步的目标语义(诊断"点错哪个")
 
 
 def _signature(tool_calls: list[ToolCall]) -> str:
@@ -180,6 +191,8 @@ class ReActLoop:
         on_step=None,
         on_llm_delta=None,
         vocab_resolver=None,
+        on_step_done=None,
+        step_fail_budget: int = 3,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -199,6 +212,12 @@ class ReActLoop:
         # 词汇表解析器(可选):操作侧自愈时按业务词查真实页面名,作为 P1 候选(规格 §5.4
         # "词汇表第一优先查询")。无则自愈退回纯快照启发式。
         self.vocab_resolver = vocab_resolver
+        # 步骤完成回调(可选):async (step_no) -> None。某业务步 mark_step_done 落定后触发,
+        # 供外层在【当前子页面】即时验证该步预期(步骤级断言,治"跨子页断言被拍到终态验")。
+        self.on_step_done = on_step_done
+        # 单步定位失败预算(#1 快速失败):同一业务步**累计**定位失败(自愈也没救回)达此数 →
+        # 快速判 STEP_FAILED 终止(疑似点错前序元素致后续找不到目标),不再磨到 max_steps。
+        self.step_fail_budget = step_fail_budget
         self.execute = execute
         self.step_plan = step_plan
         self.build_system = build_system
@@ -222,6 +241,7 @@ class ReActLoop:
         # 以及已对哪些步骤软提示过(每步至多拦一次,避免误判空转)。
         acted_steps: set[int] = set()  # 该 step_no 下执行过「操作类」工具(非 snapshot/非 mark)
         nudged_mark: set[int] = set()  # 已就「过早 mark_done」提示过的 step_no
+        step_fail_count: dict[int, int] = {}  # 业务步 → 累计定位失败次数(#1 单步失败预算)
 
         for iteration in range(1, self.max_steps + 1):
             result.iterations = iteration
@@ -357,6 +377,7 @@ class ReActLoop:
             ref_index = build_ref_index(last_snapshot_text)
             cur_step = self.step_plan.current
             cur_target = cur_step.target if cur_step is not None else ""
+            step_failed_stop = False  # 本轮内是否触发单步失败预算(快速失败)
             for tc in resp.tool_calls:
                 step_no += 1
                 started = time.monotonic()
@@ -426,14 +447,16 @@ class ReActLoop:
                     except Exception as e:  # noqa: BLE001 — 推送失败不影响执行
                         logger.warning("on_step 回调失败:%s", e)
 
-                # B-软护栏记账:本步执行了「操作类」工具(非 snapshot/非 mark)且未报错 →
-                # 记下当前 StepPlan 步骤「已实操」,据此识别「没操作就 mark_done」的过早标记。
-                if (
-                    cur_step is not None
-                    and tc.name not in (MARK_STEP_DONE_TOOL, "browser_snapshot")
-                    and not _is_tool_failure(outcome.text)
-                ):
+                # 「操作类」工具(非 snapshot/非 mark)记账:成功 → 标记该步已实操(过早 mark
+                # 护栏据此);失败 → 累计该步定位失败次数(#1 单步失败预算据此)。
+                is_op_tool = cur_step is not None and tc.name not in (
+                    MARK_STEP_DONE_TOOL,
+                    "browser_snapshot",
+                )
+                if is_op_tool and not failed:
                     acted_steps.add(cur_step.step_no)
+                elif is_op_tool and failed:
+                    step_fail_count[cur_step.step_no] = step_fail_count.get(cur_step.step_no, 0) + 1
 
                 # 观察回灌(含自愈建议)
                 messages.append({"role": "user", "content": f"[观察] {outcome.text}{obs_suffix}"})
@@ -443,6 +466,35 @@ class ReActLoop:
                 if outcome.text and "[ref=" in outcome.text:
                     last_snapshot_text = outcome.text
 
+                # #1 快速失败:同一业务步累计定位失败达预算(自愈也没救回)→ 终止,
+                # 标明卡死步(疑似点错前序元素致后续找不到目标)。不再磨到 max_steps。
+                if is_op_tool and step_fail_count.get(cur_step.step_no, 0) >= self.step_fail_budget:
+                    logger.warning(
+                        "第 %d 步「%s」累计定位失败 %d 次(预算 %d),快速失败终止",
+                        cur_step.step_no,
+                        cur_step.target,
+                        step_fail_count[cur_step.step_no],
+                        self.step_fail_budget,
+                    )
+                    result.stop_reason = StopReason.STEP_FAILED
+                    result.failed_step_no = cur_step.step_no
+                    result.failed_step_target = cur_step.target
+                    step_failed_stop = True
+                    break
+
+                # #2 步骤级即时验证:mark_step_done 让某业务步落定 DONE → 在【当前子页面】
+                # 即时验该步预期(治"跨子页断言被攒到终态页验"的假阴性)。回调由外层提供。
+                if tc.name == MARK_STEP_DONE_TOOL and self.on_step_done is not None:
+                    done_no = _safe_int(tc.arguments.get("step_no"))
+                    ps = self.step_plan.get(done_no) if done_no else None
+                    if ps is not None and ps.status == StepStatus.DONE:
+                        try:
+                            await self.on_step_done(done_no)
+                        except Exception as e:  # noqa: BLE001 — 步骤级验证失败不炸循环
+                            logger.warning("步骤级验证回调失败(step %s):%s", done_no, e)
+
+            if step_failed_stop:
+                break
             # 所有步骤已落定 → 完成(交由外层跑断言裁决)
             if self.step_plan.all_resolved():
                 result.stop_reason = StopReason.COMPLETED
