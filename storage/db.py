@@ -101,6 +101,7 @@ class ProjectSkillRow(SQLModel, table=True):
     __tablename__ = "project_skill"
     project_id: str = Field(primary_key=True)
     name: str = Field(primary_key=True)
+    description: str = ""  # 简述:常驻 prompt 清单,供 LLM 判断是否 load_skill 展开
     content: str = ""
     updated_at: float = 0.0
 

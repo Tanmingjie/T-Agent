@@ -1,123 +1,123 @@
-"""Skill 体系(规格 §5.4 Skill 体系,T-16)。
+"""Skill 体系(对齐 Anthropic/Claude Code 标准 Skill,2026-06-15 重构)。
 
-三类 Skill,组装进 System Prompt:
+每条 Skill = ``name`` + ``description`` + ``content``(正文)。**渐进披露**:
+System Prompt 常驻一份便宜的「可按需加载技能」清单(``name — description``);LLM 判断
+与当前任务相关时,**主动调用 ``load_skill(name)`` 工具**把正文拉进上下文(之后轮次保留)。
+未加载的 skill 正文**永不进 prompt**,省 context——加载与否完全由 **LLM 决策**。
 
-- **DomainSkill**:Suite 级业务术语/知识,执行前**始终注入**。
-- **PageSkill**:按当前 URL **动态加载/卸载**(URL 命中才注入;离开页面即卸载,配合
-  Context Compact 的 L3)。url_pattern 支持 ``/order/{id}`` 路由占位与普通子串。
-- **ToolSkill**:按当前步骤关键词**相关度过滤**注入(触发词命中才注入)。
+内置基线常识(``DEFAULT_SKILLS``)标 ``preload=True``:正文始终在场(短、通用,不值得
+让模型为它多花一次工具调用)。用户/项目 skill 默认 ``preload=False``,走渐进加载。
 
-``SkillManager.select(url, keywords)`` 返回当前生效的 Skill(顺序 Domain→Page→Tool),
-并跟踪 PageSkill 的加载/卸载;``render(...)`` 输出可拼接进 Prompt 的文本片段。
+〔此前按 Domain/Page/Tool 三类、用 URL/关键词做平台侧匹配注入;2026-06-15 改为标准 Skill
+渐进披露后**不再区分类型**,删 PageSkill/ToolSkill 的 url_pattern/triggers 匹配逻辑。〕
 """
 
 from __future__ import annotations
 
 import logging
-import re
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
-
-@dataclass
-class DomainSkill:
-    name: str
-    content: str
-    kind: str = "domain"
+# load_skill 控制工具名(LLM 渐进加载入口;执行器据此路由,permission/截图据此跳过)
+LOAD_SKILL_TOOL = "load_skill"
 
 
 @dataclass
-class PageSkill:
+class Skill:
+    """标准 Skill:name + description(常驻清单) + content(按需展开的正文)。"""
+
     name: str
-    content: str
-    url_pattern: str
-    kind: str = "page"
-
-    def matches(self, url: str) -> bool:
-        if not url:
-            return False
-        # 路由占位 {x} → [^/]+,其余部分按字面转义;作为子串在 url 中搜索
-        parts = re.split(r"\{[^}]+\}", self.url_pattern)
-        regex = "[^/]+".join(re.escape(p) for p in parts)
-        try:
-            return re.search(regex, url) is not None
-        except re.error:
-            return self.url_pattern in url
-
-
-@dataclass
-class ToolSkill:
-    name: str
-    content: str
-    triggers: list[str]
-    kind: str = "tool"
-
-    def relevant(self, keywords: list[str]) -> bool:
-        if not keywords:
-            return False
-        hay = " ".join(keywords)
-        return any(t and t in hay for t in self.triggers)
-
-
-Skill = "DomainSkill | PageSkill | ToolSkill"
+    content: str  # 正文:加载后注入 prompt 的完整业务知识
+    description: str = ""  # 简述:常驻「可按需加载」清单,供 LLM 判断是否加载
+    preload: bool = False  # True=正文始终在场(内置基线);False=按需 load_skill 展开
 
 
 class SkillManager:
-    """注册并按 URL/关键词动态选择 Skill。"""
+    """注册 Skill + 渐进披露:常驻 name/description 清单,LLM 调 ``load_skill`` 展开正文。"""
 
     def __init__(self) -> None:
-        self._domain: list[DomainSkill] = []
-        self._page: list[PageSkill] = []
-        self._tool: list[ToolSkill] = []
-        self.loaded_pages: set[str] = set()
+        self._skills: list[Skill] = []
+        self.loaded: set[str] = set()  # 本次执行已展开的 skill 名(正文进 prompt)
 
-    def register(self, skill) -> None:
-        if isinstance(skill, DomainSkill):
-            self._domain.append(skill)
-        elif isinstance(skill, PageSkill):
-            self._page.append(skill)
-        elif isinstance(skill, ToolSkill):
-            self._tool.append(skill)
-        else:
-            raise TypeError(f"未知 Skill 类型:{type(skill).__name__}")
+    def register(self, skill: Skill) -> None:
+        self._skills.append(skill)
 
-    def select(self, *, url: str = "", keywords: list[str] | None = None) -> list:
-        """返回当前生效的 Skill(Domain→Page→Tool),并更新 PageSkill 加载状态。"""
-        keywords = keywords or []
-        active_pages = [s for s in self._page if s.matches(url)]
-        self._update_loaded(active_pages)
-        active_tools = [s for s in self._tool if s.relevant(keywords)]
-        return [*self._domain, *active_pages, *active_tools]
+    def names(self) -> list[str]:
+        return [s.name for s in self._skills]
 
-    def _update_loaded(self, active_pages: list[PageSkill]) -> None:
-        new_loaded = {s.name for s in active_pages}
-        for name in self.loaded_pages - new_loaded:
-            logger.info("卸载 PageSkill:%s", name)
-        for name in new_loaded - self.loaded_pages:
-            logger.info("加载 PageSkill:%s", name)
-        self.loaded_pages = new_loaded
+    def load(self, name: str) -> str | None:
+        """LLM 调 ``load_skill`` 时展开某 skill 正文。命中返回正文并标记已加载;否则 None。"""
+        key = (name or "").strip()
+        for s in self._skills:
+            if s.name == key:
+                if s.name not in self.loaded:
+                    logger.info("加载 Skill:%s", s.name)
+                self.loaded.add(s.name)
+                return s.content
+        return None
 
-    def render(self, *, url: str = "", keywords: list[str] | None = None) -> str:
-        """把生效 Skill 拼成 Prompt 片段;无生效则返回空串。"""
-        skills = self.select(url=url, keywords=keywords)
-        if not skills:
+    def render(self) -> str:
+        """拼成 Prompt 片段:已展开(preload / 已 load)技能正文 + 可按需加载清单。
+
+        每轮由 ``build_system`` 重算并放进 System Prompt——已加载正文常驻于此(不走观察、
+        不被 Context Compact 折叠),清单则始终便宜地列出未加载技能供 LLM 选择展开。
+        """
+        if not self._skills:
             return ""
-        lines = ["## 技能(业务/页面/工具)"]
-        for s in skills:
-            lines.append(f"- [{s.name}] {s.content}")
+        shown = [s for s in self._skills if s.preload or s.name in self.loaded]
+        pending = [s for s in self._skills if not s.preload and s.name not in self.loaded]
+        lines: list[str] = []
+        if shown:
+            lines.append("## 已加载技能(业务知识)")
+            for s in shown:
+                lines.append(f"- [{s.name}] {s.content}")
+        if pending:
+            lines.append("## 可按需加载的技能")
+            lines.append(
+                "下列技能只给出简述。判断与当前步骤相关时,调用 "
+                'load_skill(name="技能名") 展开其完整内容,再据此操作:'
+            )
+            for s in pending:
+                lines.append(f"- {s.name}:{s.description or '(无简述)'}")
         return "\n".join(lines)
 
+    @staticmethod
+    def tool_schema() -> dict:
+        """``load_skill`` 的 LiteLLM tool 定义(渐进加载入口)。"""
+        return {
+            "type": "function",
+            "function": {
+                "name": LOAD_SKILL_TOOL,
+                "description": (
+                    "展开一条「可按需加载的技能」的完整内容并据此操作。"
+                    "当某技能简述与当前步骤相关、需要其业务知识时调用;参数 name 取自清单。"
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "name": {
+                            "type": "string",
+                            "description": "要加载的技能名(取自「可按需加载的技能」清单)",
+                        }
+                    },
+                    "required": ["name"],
+                },
+            },
+        }
 
-# 内置基础 DomainSkill(始终注入):通用业务测试常识,精炼克制不喧宾夺主。
+
+# 内置基线常识(始终展开):通用业务测试常识,精炼克制不喧宾夺主。
 # 工具机制类提示见 agent.PLAYWRIGHT_MCP_HINT,这里只放「业务语义/判定」层面的常识。
-DEFAULT_DOMAIN_SKILLS: list[DomainSkill] = [
-    DomainSkill(
+DEFAULT_SKILLS: list[Skill] = [
+    Skill(
         name="表单操作",
+        preload=True,
         content="填写表单先把所有必填项填完再提交;提交后留意页面是否出现校验错误提示,有则说明未真正提交成功。",
     ),
-    DomainSkill(
+    Skill(
         name="结果定位",
+        preload=True,
         content="业务操作的结果通常体现为:状态文字变化、列表新增一行、或出现成功/失败提示(toast/alert);"
         "优先依据这些确定性信号判断,而非仅凭页面跳转。",
     ),
@@ -130,19 +130,18 @@ def build_skill_manager(
     include_defaults: bool = True,
     extra: "list | None" = None,
 ) -> SkillManager:
-    """组装一个 SkillManager(把基础 DomainSkill 与 Suite 自定义提示词接进执行链)。
+    """组装 SkillManager(基础常识 + Suite 提示词 + 项目 Skill 接进执行链)。
 
-    - ``custom_prompt``:Suite 维护的业务提示词(此前是孤儿字段,从不被使用)→ 作为
-      始终注入的 DomainSkill 接通。
-    - ``include_defaults``:是否注入内置基础 DomainSkill(``DEFAULT_DOMAIN_SKILLS``)。
-    - ``extra``:额外 Skill(DomainSkill/PageSkill/ToolSkill)列表。
+    - ``custom_prompt``:Suite 维护的业务提示词 → 作为始终展开的 Skill(``preload=True``)。
+    - ``include_defaults``:是否注入内置基线常识(``DEFAULT_SKILLS``)。
+    - ``extra``:额外 ``Skill`` 列表(项目级 Skill;默认 ``preload=False`` 走渐进加载)。
     """
     mgr = SkillManager()
     if include_defaults:
-        for s in DEFAULT_DOMAIN_SKILLS:
+        for s in DEFAULT_SKILLS:
             mgr.register(s)
     if custom_prompt and custom_prompt.strip():
-        mgr.register(DomainSkill(name="套件提示", content=custom_prompt.strip()))
+        mgr.register(Skill(name="套件提示", content=custom_prompt.strip(), preload=True))
     for s in extra or []:
         mgr.register(s)
     return mgr

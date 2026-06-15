@@ -45,7 +45,7 @@ from harness.precondition import (
 from harness.prompt import PromptBuilder
 from harness.react_loop import ReActLoop, ToolExecutor, ToolOutcome
 from harness.recorder import Recorder
-from harness.skills import SkillManager
+from harness.skills import LOAD_SKILL_TOOL, SkillManager
 from harness.step_plan import StepPlan, StepStatus
 from harness.tools import ToolRegistry
 from input.models import (
@@ -64,7 +64,7 @@ from storage.artifacts import get_artifact_store
 
 logger = logging.getLogger(__name__)
 
-# playwright-mcp 工具使用提示(阶段一以 Context 形式注入;阶段二归入 ToolSkill)
+# playwright-mcp 工具使用提示(以 Context 形式注入 System Prompt)
 PLAYWRIGHT_MCP_HINT = """\
 浏览器操作通过 playwright-mcp 工具完成,关键用法:
 - 先用 `browser_navigate` 打开目标页面;之后用 `browser_snapshot` 获取 A11y 快照,快照里每个可操作元素都带一个 ref(形如 e11)。
@@ -79,8 +79,8 @@ PLAYWRIGHT_MCP_HINT = """\
 【务必完成所有步骤】执行计划里的每一步都要真正做完并各自调用 mark_step_done,
 **不要在中途停止**;只有当所有步骤都完成后,才输出最终的 TEST_RESULT。"""
 
-# StepPlan 控制工具的名字(执行器据此路由)
-_CONTROL_TOOLS = {"mark_step_done"}
+# 控制工具的名字(执行器据此路由,permission/截图据此跳过):StepPlan 推进 + Skill 渐进加载
+_CONTROL_TOOLS = {"mark_step_done", LOAD_SKILL_TOOL}
 
 # 不该被截图的浏览器工具(快照/截图自身)
 _NO_SHOT_TOOLS = {"browser_snapshot", "browser_take_screenshot"}
@@ -165,18 +165,6 @@ async def settle_page(mcp, *, timeout: float, interval: float) -> int:
             return n  # 连续两次节点数一致且非空 → 稳定
         prev = n
     return prev if prev > 0 else 0
-
-
-def _step_keywords(step_plan: StepPlan) -> list[str]:
-    """当前步骤的关键词,供 ToolSkill 相关度过滤。"""
-    cur = step_plan.current
-    if cur is None:
-        return []
-    kws = [cur.target, cur.action]
-    if cur.data:
-        kws.append(cur.data)
-    kws += [w for w in cur.target.replace("(", " ").replace(")", " ").split() if w]
-    return [k for k in kws if k]
 
 
 def ensure_navigation_step(spec: TestSpec) -> TestSpec:
@@ -529,6 +517,8 @@ class TestCaseAgent:
 
         # 工具集 = MCP 工具 + mark_step_done 控制工具 + 自定义工具(LLM 按需调用)
         tools = list(self.mcp.to_litellm_tools()) + [StepPlan.tool_schema()]
+        if self.skills is not None:
+            tools.append(SkillManager.tool_schema())  # load_skill:LLM 渐进加载技能正文
         if self.tools_registry is not None:
             tools += self.tools_registry.to_litellm_tools()
 
@@ -536,7 +526,7 @@ class TestCaseAgent:
         builder = PromptBuilder(spec, tools, context=prompt_ctx)
         healer = HealingSubagent(self.llm)
 
-        # 当前 URL 状态(供 PageSkill 动态加载):初始为 base_url,执行器随观察更新
+        # 当前 URL 状态(供 Permission 按环境/URL 判定):初始为 base_url,执行器随观察更新
         state = {"url": case.base_url or spec.base_url}
         base_executor = make_executor(plan, self.mcp)
 
@@ -548,6 +538,19 @@ class TestCaseAgent:
                     return ToolOutcome(
                         text=f"[权限被拒] 工具 {name} 命中安全策略,未执行。如确需执行请人工确认。"
                     )
+            # load_skill(LLM 渐进加载技能正文)→ 标记已加载,正文由 build_system 注入系统提示
+            if name == LOAD_SKILL_TOOL:
+                if self.skills is None:
+                    return ToolOutcome(text="当前没有可加载的技能。")
+                wanted = (arguments or {}).get("name", "")
+                content = self.skills.load(wanted)
+                if content is None:
+                    return ToolOutcome(
+                        text=f"未找到技能「{wanted}」,请从「可按需加载的技能」清单里选准确的技能名。"
+                    )
+                return ToolOutcome(
+                    text=f"已加载技能「{wanted}」,其完整内容已在系统提示的「已加载技能」区,请据此继续。"
+                )
             # 自定义工具(LLM 按需调用)→ 注册表;不走 MCP
             if self.tools_registry is not None and self.tools_registry.has(name):
                 text = await self.tools_registry.call(name, arguments)
@@ -563,9 +566,7 @@ class TestCaseAgent:
         def build_system(step_plan: StepPlan) -> str:
             text = builder.build(step_plan)
             if self.skills is not None:
-                skill_text = self.skills.render(
-                    url=state["url"], keywords=_step_keywords(step_plan)
-                )
+                skill_text = self.skills.render()  # 已加载正文 + 可按需加载清单(LLM 自行展开)
                 if skill_text:
                     text = f"{text}\n\n{skill_text}"
             return text

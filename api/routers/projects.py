@@ -391,6 +391,7 @@ async def delete_http_tool(
 
 class SkillIn(BaseModel):
     name: str
+    description: str = ""  # 简述:常驻 prompt 清单,供 LLM 判断是否 load_skill 展开
     content: str = ""
 
 
@@ -409,7 +410,14 @@ async def put_skill(
     _: Principal = Depends(require_project_admin),
     store=Depends(get_store),
 ):
-    await store.save_skill(ProjectSkill(project_id=project_id, name=name, content=body.content))
+    await store.save_skill(
+        ProjectSkill(
+            project_id=project_id,
+            name=name,
+            description=body.description,
+            content=body.content,
+        )
+    )
     return {"ok": True, "name": name}
 
 

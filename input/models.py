@@ -164,13 +164,15 @@ class SessionProfile(BaseModel):
 
 
 class ProjectSkill(BaseModel):
-    """项目级 Skill(平台化 M2:项目业务常识,作为常注入 DomainSkill 接入执行链)。
+    """项目级 Skill(平台化 M2:项目业务常识,标准 Skill 渐进披露接入执行链)。
 
-    主键 (project_id, name)。content 是注入 System Prompt 的业务提示文本。
+    主键 (project_id, name)。``description`` 常驻 prompt 清单供 LLM 判断是否加载;
+    ``content`` 是 LLM 调 ``load_skill`` 后展开进 System Prompt 的完整业务知识。
     """
 
     project_id: str
     name: str
+    description: str = ""
     content: str = ""
     updated_at: float = Field(default_factory=time.time)
 

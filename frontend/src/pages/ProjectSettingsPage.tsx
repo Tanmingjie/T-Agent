@@ -223,12 +223,14 @@ function HttpToolsSection({ pid }: { pid: string }) {
 
 interface Skill {
   name: string;
+  description: string;
   content: string;
 }
 
 function SkillsSection({ pid }: { pid: string }) {
   const [skills, setSkills] = useState<Skill[]>([]);
   const [name, setName] = useState("");
+  const [description, setDescription] = useState("");
   const [content, setContent] = useState("");
 
   async function load() {
@@ -240,8 +242,13 @@ function SkillsSection({ pid }: { pid: string }) {
 
   async function add() {
     if (!name) return;
-    await apiPut(`/projects/${pid}/skills/${encodeURIComponent(name)}`, { name, content });
+    await apiPut(`/projects/${pid}/skills/${encodeURIComponent(name)}`, {
+      name,
+      description,
+      content,
+    });
     setName("");
+    setDescription("");
     setContent("");
     load();
   }
@@ -252,12 +259,26 @@ function SkillsSection({ pid }: { pid: string }) {
 
   return (
     <Card>
-      <p className="text-xs text-gray-500">项目业务常识,作为提示注入每次执行。</p>
-      <ToolList items={skills.map((s) => ({ key: s.name, label: `${s.name}: ${s.content.slice(0, 50)}` }))} onDelete={del} />
+      <p className="text-xs text-gray-500">
+        项目业务知识(标准 Skill 渐进加载)。<b>简述</b>常驻提示供 AI 判断是否相关;相关时 AI
+        自动加载<b>正文</b>。简述写「这条知识讲什么、何时用」,正文写完整业务规则。
+      </p>
+      <ToolList
+        items={skills.map((s) => ({
+          key: s.name,
+          label: `${s.name}: ${s.description || s.content.slice(0, 50)}`,
+        }))}
+        onDelete={del}
+      />
       <div className="space-y-2 pt-2">
         <Input placeholder="名称" value={name} onChange={(e) => setName(e.target.value)} />
+        <Input
+          placeholder="简述(常驻提示,供 AI 判断何时加载,如「订单状态流转规则」)"
+          value={description}
+          onChange={(e) => setDescription(e.target.value)}
+        />
         <textarea
-          placeholder="业务提示内容"
+          placeholder="正文(AI 判断相关时加载的完整业务知识)"
           value={content}
           onChange={(e) => setContent(e.target.value)}
           className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm h-20"

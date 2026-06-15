@@ -167,8 +167,8 @@ async def _run(args: argparse.Namespace) -> int:
 
     llm = LiteLLMClient(model=args.model, api_base=args.api_base, api_key=args.api_key)
     resolver = _load_vocab_resolver(args.vocab)
-    # 基础 DomainSkill(可 --no-skills 关闭)。--context 已作为 prompt context 注入,
-    # 这里只注入内置基础 DomainSkill,避免重复。
+    # 内置基线 Skill(可 --no-skills 关闭)。--context 已作为 prompt context 注入,
+    # 这里只注入内置基线常识,避免重复(项目级渐进加载 Skill 走 API 路径)。
     skills = None if args.no_skills else build_skill_manager()
     # Custom Tool(--tools <yaml>):LLM 按需调用 + custom_tool 数据断言取业务真值
     tools_registry = load_tool_registry_from_yaml(args.tools) if args.tools else None

@@ -104,14 +104,20 @@ async def execute_run(
                     suite.session_profile,
                 )
 
-        # 项目级 Skill(M2):作为常注入 DomainSkill 接入(项目业务常识)。
+        # 项目级 Skill(M2):标准 Skill 渐进披露接入(preload=False,LLM 调 load_skill 展开)。
         extra_skills = []
         if suite.project_id:
-            from harness.skills import DomainSkill
+            from harness.skills import Skill
 
             for sk in await store.list_skills(suite.project_id):
                 if sk.content.strip():
-                    extra_skills.append(DomainSkill(name=sk.name, content=sk.content.strip()))
+                    extra_skills.append(
+                        Skill(
+                            name=sk.name,
+                            content=sk.content.strip(),
+                            description=(sk.description or "").strip(),
+                        )
+                    )
 
         @asynccontextmanager
         async def make_agent():
