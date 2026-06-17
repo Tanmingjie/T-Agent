@@ -31,7 +31,7 @@ from harness.hooks import (
     ExecutionContext,
     HookManager,
 )
-from harness.llm import LLMClient, loads_lenient
+from harness.llm import LLMClient, extract_verdict, loads_lenient
 from harness.page_probe import MCPPageProbe, parse_snapshot
 from harness.permission import PermissionChecker
 from harness.precondition import (
@@ -159,15 +159,24 @@ async def _gate_step_done(llm, probe, expect_text: str) -> tuple[bool, str]:
     ]
     try:
         resp = await llm.chat(messages)
-        data = loads_lenient(resp.content)
-    except Exception as e:  # noqa: BLE001 — 判定失败放行,不阻断执行(宽松)
-        logger.warning("步骤完成门控判定失败,放行:%s", e)
-        return True, "门控判定失败,放行"
-    verdict = str(data.get("verdict") or "").strip().upper()
-    reason = str(data.get("reason") or "").strip()
+    except Exception as e:  # noqa: BLE001 — 调用失败放行,不阻断执行(门控是驱动信号)
+        logger.warning("步骤完成门控调用失败,放行:%s", e)
+        return True, "门控调用失败,放行"
+    content = resp.content or ""
+    verdict, reason = "", ""
+    try:
+        data = loads_lenient(content)
+        verdict = str(data.get("verdict") or "").strip().upper()
+        reason = str(data.get("reason") or "").strip()
+    except Exception as e:  # noqa: BLE001 — JSON 不规整 → 正则兜底捞 verdict
+        logger.warning("门控 JSON 解析失败,尝试正则兜底:%s", e)
+    if verdict not in ("PASS", "FAIL"):
+        # 模型常因 reason 含未转义引号炸 JSON;正则捞回它其实判的 FAIL,免得错误放行
+        # (2026-06-17)。门控仍是驱动信号:捞不到明确裁决 → 放行(fail-open,不阻断执行)。
+        verdict = extract_verdict(content) or ""
     if verdict == "FAIL":
         return False, reason or "当前页面明显未达成该步预期"
-    return True, reason  # PASS 或未知 → 放行(宽松)
+    return True, reason  # PASS / 未知 → 放行(驱动 fail-open;此结果不计入裁决,见铁律2(b))
 
 
 def _evidence_rank(cand: dict) -> int:

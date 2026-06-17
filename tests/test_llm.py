@@ -18,6 +18,7 @@ from harness.llm import (
     LiteLLMClient,
     LLMToolCallError,
     extract_tool_calls_from_content,
+    extract_verdict,
     loads_lenient,
 )
 
@@ -49,6 +50,26 @@ def test_loads_lenient_fails():
         loads_lenient("完全不是 json")
     with pytest.raises(ValueError):
         loads_lenient("")
+
+
+# ── 裁判 verdict 稳健提取(治 reason 含未转义引号炸 JSON,2026-06-17)──
+
+
+def test_extract_verdict_from_broken_json():
+    # 实测假绿根因:模型判 FAIL,但 reason 里的裸引号把 JSON 弄坏
+    s = '{"verdict":"FAIL","reason":"未出现"You have been logged in!"提示"}'
+    assert extract_verdict(s) == "FAIL"
+
+
+def test_extract_verdict_plain_forms():
+    assert extract_verdict('{"verdict": "PASS"}') == "PASS"
+    assert extract_verdict("verdict: pass") == "PASS"  # 大小写无关
+
+
+def test_extract_verdict_none_when_absent():
+    assert extract_verdict("一段没有裁决字样的文字") is None
+    assert extract_verdict("") is None
+    assert extract_verdict(None) is None
 
 
 # ── 纯函数:从 content 提取工具调用 ───────────────────────────

@@ -17,12 +17,15 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 铁律(违反即错,必须常驻)
 
 1. **浏览器层只用 playwright-mcp 的 stdio 模式,绝不用 CDP HTTP**(内网代理会拦截 → 504)。
-2. **LLM 眼判分两种角色,边界要守清(2026-06-10 重订)**:
-   - **(a) 驱动执行 = 鼓励用**。执行中靠 LLM「看快照判断这步成没成、要不要重试、冒出弹窗怎么绕」来随机应变——这是 Agent 的核心价值,治偶发噪声(弹窗/加载慢/改版/多一步确认),**让执行健壮**。这类眼判**不进最终裁决**,只负责「想办法走到终态」。中途若要加确定性校验,也必须是**软的、可恢复的**(不过 → 自愈/重试/绕行),**不能是一票否决的硬闸门**(那会把健壮性弄丢)。
-   - **(b) 裁定 PASS/FAIL = 以规则引擎确定性验证为主**。判断在"翻译时"一次性做(预期→结构化 Assertion),执行后只做确定性比较。**`llm_judge` 作为降级链最末档显式兜底**(无法结构化/查真值时),接 LLM 真判 PASS/FAIL 并**计入裁决**(方案A,已选择信任),但标 `ai_judged`(低置信、报告与结构化绿区分,使 false green 可见可回溯);裁判 prompt 偏向 FAIL(宁可误报失败不可误报通过)。**能用 DOM/文本/URL/custom_tool 的预期一律不准落到 llm_judge**。
-   - **守住的底线**:不让 LLM **不可见地/默认地**决定主裁决(结构化能判的不准交 LLM、AI 判绿必须标记);也不取 LLM 自报的 `TEST_RESULT`。〔方案A 由用户拍板,推翻原"绝不让 LLM 眼判 PASS/FAIL"的绝对表述——禁的是「LLM 不可见地刷绿」,不是「LLM 驱动执行」或「显式可审计的兜底裁决」。〕
-3. **本地 LLM 的 tool_call 必须容错**(宽松 JSON / 从 content 提取 / 重试),偶发格式错误不得搞崩 ReAct 循环。
-4. 最终 PASS/FAIL **以断言裁决为准**(含 `llm_judge` 兜底结果),**不取 LLM 自报的 TEST_RESULT**。
+2. **LLM 眼判分两种角色,边界要守清(2026-06-17 据真实公网评测重订)**:
+   - **(a) 驱动执行 = 鼓励用**。执行中靠 LLM 看快照随机应变(判这步成没成、要不要重试、弹窗怎么绕),治偶发噪声、**让执行健壮**;**只负责走到终态,绝不进最终裁决**。中途校验须**软、可恢复**,不能是硬闸门——**尤其不准把"业务预期/断言"挂成步骤完成判据**:不可达/写错的预期会变成无限重试 + 驱使 Agent 追错目标〔2026-06-17 FG01 实测:假预期"Logged in as 张三"把 agent 带去注册账号、烧 42 万 token 撞 max_steps〕。**预期只在裁决阶段验,不泄漏进执行驱动。**
+   - **(b) 裁定 PASS/FAIL = LLM 裁判为默认主裁决 + 确定性锚点**〔2026-06-17 推翻原"规则引擎确定性裁决为主"〕。真实公网评测(26 条真/假混合预期)实测:① 结构化规则引擎在真实页面贡献≈0(翻译几乎不产出结构化断言、业务词↔元素定位脆弱、false-fail 高到用例不可用);② **偏-FAIL 的 LLM 裁判 false-green=0/15、正确率≈96%**,"本地模型脑补成功"的恐惧未兑现。故:
+     - **主裁决 = 偏-FAIL 的 LLM 裁判**(`_check_llm_judge`):强制**引证页面证据**、拿不准判 FAIL、标 `ai_judged`。
+     - **确定性锚点优先**:能用 URL / 数据真值(`custom_tool` 查 API/DB)/ 显式 selector 的预期**优先用之**作**高置信**证据,并**自动生成免费的 URL 锚点**给裁决兜底。结构化断言从"主"降为"锚点之一"。
+     - **裁决路径 fail-closed**:裁判调用/解析失败 → 判 FAIL 或 skipped,**绝不默认绿**。**偏-PASS 的步骤门控(`_gate_step_done`)只作驱动信号,结果不计入裁决**〔2026-06-17 实测:门控 fail-open + JSON 未转义引号 = 唯一 1 例假绿,根因是工程缺陷而非脑补〕。
+   - **守住的底线**:不让 LLM **不可见地/默认地**刷绿(AI 判绿必标 `ai_judged`、裁决 fail-closed、绿色抽检);不取 LLM 自报 `TEST_RESULT`。〔演进:原"绝不让 LLM 眼判"→ 2026-06-10 方案A"末档兜底"→ 2026-06-17"LLM 裁判为主 + 确定性锚点";禁的始终是「不可见刷绿」,不是「LLM 裁决」本身。〕
+3. **本地 LLM 的 tool_call 必须容错**(宽松 JSON / 从 content 提取 / 重试),偶发格式错误不得搞崩 ReAct 循环。**裁判的 JSON 输出同样要宽松解析(容未转义引号等);但与驱动不同,裁决路径解析失败必须 fail-closed(判 FAIL/skipped),不可 fail-open 放行**〔2026-06-17 假绿根因〕。
+4. 最终 PASS/FAIL **以裁决为准**:偏-FAIL LLM 裁判为主 + URL/数据真值/selector 确定性锚点;**偏-PASS 门控判定不计入**。**不取 LLM 自报 TEST_RESULT**。裁决 **fail-closed**:裁判失败/无证据 → FAIL 或 skipped,不默认绿。
 5. 实现原则(规格 §0):前后端分离、数据层抽象(SQLModel,不直接写 SQL)、输入/输出抽象(都产出 `TestCase`/落 `ExecutionRecord`)、核心表预留 `updated_at`/`owner`/`external_id`、分阶段不跳跃。
 
 ## 架构大图(需要读多文件才能拼出的部分)
@@ -193,12 +196,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
   - **流式 ReAct 抗丢调用复核(2026-06-11)** — 流式(`on_delta`)下 `stream_chunk_builder` 重建 tool_call 有概率漏采 → 模型其实调了工具却被当「未推进」哑火,叠加几轮就触发「连续 N 次未推进→终止」(停因 `llm_finished`)。`react_loop` 在「无 tool_call 且仍有未完成步骤」时**非流式复核一次**(`chat` 不带 `on_delta`)把漏采的调用捞回来,再走哑火逻辑。仅在该分支触发(代价至多一次额外调用),治流式 ReAct 偶发早停。单测覆盖(流式丢→非流式捞回)。注:**真·模型放弃**(确实只回文字)复核也捞不回,仍按哑火兜底——长流程(结算)易撞 `max_steps`/模型变慢,需调大 `AGENT_MAX_STEPS`(80-100)+ 文本模型 `HEAL_VISUAL=0`(免视觉自愈 image_url 被网关拒的失败调用)。
   - **执行完整性闸门(2026-06-11,原则强化)** — `agent.run` 在断言裁决前加闸:**任一步骤非 DONE**(pending 未执行 / failed / skipped,即 `not plan.all_done()`)→ 用例**直接 FAIL**,`final_result` 标真因(「执行未完成:仅完成 N/M 步,停因=…」),**不靠半路断言裁决**。根因:早停(哑火上限 / max_steps / 卡死 / tool 错)会留 pending 步骤,旧代码却照跑终态断言 → 半路页面上断言**可能误绿(碰巧过)也可能误红(掩盖真因)**。这是铁律4「PASS 以断言裁决为准」的必要前提:**先确认流程真跑完,断言才有裁决资格**。前端告警条同步从「仅 max_steps」泛化到「执行未完成」。〔实测内网:10+ 步 spec 登录完(第4步)就跳断言 = 此 bug;现强制 FAIL 并标真因。〕
   - **可用 Hook 告知 LLM(2026-06-11)** — 合并翻译/分类时把**实际配置**的 Hook 名(`HookManager.hook_names()`,无则空)注入分类 prompt(`build_spec_messages(available_hooks=)`):有 Hook → 只对可用 Hook 归 state_hook+写 hook_ref;**无 Hook → 引导状态前提归 action_step(测试内执行)/ ambiguous,不许归 state_hook**。治「分类成 Hook 却没配 Hook → 该前提被静默忽略」(`session_profile=None` 时 `hooks=None`,state_hook 无人执行)。
+- **裁决哲学转向:LLM 裁判为主 + 确定性锚点(2026-06-17,据真实公网评测重订铁律 2/4)** — 用真实公网用例(automationexercise)实证:① 结构化规则引擎在真实页面贡献≈0(翻译几乎不产结构化断言、业务词↔元素定位脆弱、false-fail 高到用例不可用;AE03 6 条裁决**全是 llm_judge**、用例级 `assertions` 空);② 把裁判从执行**剥离单独压测**(`eval_fg/`:抓真实快照 × 26 条真/假混合预期)——**偏-FAIL 裁判 false-green=0/15、正确率≈96%**,"本地模型脑补成功"的恐惧未兑现;唯一 1 例假绿根因是**门控 fail-open + reason 含未转义引号炸 JSON**(工程缺陷,非脑补)。另发现 FG01:把假预期挂成步骤完成判据 → 门控硬闸门把 agent 带去**追错目标**(注册账号、烧 42 万 token 撞 max_steps),实证铁律2(a)「不可硬闸门」。据此重写铁律 2/3/4 + 产品设计文档 §5。**已落地(安全部分,Fix 1/2)**:`harness/llm.py::extract_verdict`(JSON 炸时正则捞 PASS/FAIL)+ 接入 `_check_llm_judge`/`_gate_step_done`(**裁决路径 fail-closed**;门控仍 fail-open 但尊重明确 FAIL);单测 5 条,saucedemo TC101 live 双绿无回归。
 - **下一步候选(2026-06-07 收口时的待办):**
+  - **Fix 3 = 实装新裁决架构(2026-06-17 未做,下次单开,主线)** — 据重订铁律 2(b):① 建**终态裁决路**(用例结束用偏-FAIL `_check_llm_judge` 逐条判用例级自然语言预期 + 自动生成 URL 锚点 + `custom_tool` 数据真值);② **解耦门控**(`agent.verify_step` 不再把 `_gate_step_done` 结果塞进 `step_assert_pairs`/裁决,门控只驱动 reactivate);③ **翻译配合**让用例预期能作终态裁判目标(现翻译把预期冲进 step `expect_text`、用例级 `assertions` 留空,AE03 实证);④ 配单测 + AE03 重跑(验裁决改由终态裁判+锚点给出而非门控)。⑤ 可选:用 `eval_fg/` 扩样(换 Cisco/ThingsBoard + 第二模型)把 false-green 率做到可信区间。**注**:③ 涉及翻译 prompt,改完按工作约定跑 saucedemo live 冒烟。
   - **真实内网用例 live 验证**(主线,当前被环境阻塞)— saucedemo 全链路已 live 绿(基础/结算/会话复用/custom_tool/codegen 回放),内网真实业务系统待跑。解阻塞后 CLI/API 两条路径都就绪。
   - **prompt 优化 C/D(省 token/提速,未做)** — C:每业务步约 3 次 LLM 往返(snapshot→action→mark_done),~100k token/用例,可探索「动作结果已带快照则免单独 snapshot」「mark_done 合并」(有正确性风险,实测 click 结果不总带 ref,需 live A/B);D:system 每轮重列全部 ~25 工具文本(已另经 `tools=` 传,冗余),可用 `PromptBuilder.max_tools` 按相关度截断(风险:漏掉所需工具)。已做的 prompt 优化见「prompt 优化(2026-06-07)」:BASE 强制每轮工具调用 + idle 指令修正,live 0 卡死。
   - **断言目标定位器对齐(遗留,部分缓解)** — codegen 的 action 定位器已对齐(执行捕获),但**断言目标**(如购物车角标)不经"执行定位器"产出,无 vocab/selector 时仍文本兜底。需在 vocab/selector 层对齐(断言走 probe,naming 随 LLM 漂移、子串匹配也常错过)。**2026-06-15 缓解**:`text_equals/text_contains` 在**元素定位失败 + 自愈也没救回**时,加一档**全页文本兜底**(`AssertionEngine._text_page_fallback`)——整页快照里确定性搜 `expected` 子串,命中判 PASS 但 reason 标「全页文本兜底」可审计区分。**护栏**(防短串误绿,贴铁律2「宁可误报失败」):① 有显式 `selector` 不兜底(selector 失败是真信号,如空购物车);② `expected` 须够独特(含空白短语或长度≥5,排除 "1"/"2"/状态短词);③ 放在**自愈之后**,优先元素级/自愈精确绿。治「业务词名(中文「成功提示区域」)对不上英文页面元素 → 流程跑完仍 false-fail」(saucedemo 结算「Thank you for your order!」实证)。
   - 阶段五(用例管理平台集成,规格"现在不做")。
-- 单测数量以 `python -m pytest -q` 实跑为准(当前约 378;另有 2 个 Windows 平台预存在失败:`test_recorder` 截图目录、`test_tools` 命令替换)。
+- 单测数量以 `python -m pytest -q` 实跑为准(2026-06-17 约 514 passed;**5 个预存在失败**:`test_recorder` 截图目录 + `test_tools` 命令替换(2 个 Windows 平台)+ `test_healing` 视觉自愈 3 个——**全量顺序下** vision 缓存跨用例泄漏致失败,**单跑 `tests/test_healing.py` 全绿**,已挂独立任务修)。
 
 T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规格)与 §6(实施计划)。
 
@@ -250,6 +255,10 @@ T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规
 - **SQLite WAL 必须在事务外、连接级设**:`PRAGMA journal_mode=WAL` 在 `engine.begin()`(事务)里会被**静默忽略**;要用 connect 监听器逐连接设,否则默认 rollback-journal 下写阻塞读。
 - **本机 Python 是 embeddable 版**:`~/python/python`,`sys.path` 锁定(有 `._pth`),跑临时脚本需 `sys.path.insert(0, os.getcwd())`;pytest 正常(自带 rootdir 注入)。
 - **`--reload` 不能监视运行时产物目录**:codegen 执行通过后写 `storage/generated/*.py`,默认 `uvicorn --reload` 监视项目目录 → **检测到这些写入就重启整个后端**,后果是打断正在跑的 run、SSE 断开、重启窗口内**所有 HTTP 请求 pending**(曾被误判成事件循环/DB/GIL/代理问题,绕了一大圈)。用 `scripts/serve.py`(`reload_dirs` 只限源码)。诊断启发:**"一批请求 pending 后又集中恢复" + 日志里有 `Shutting down`/`Started server process` = 服务在重启**,不是 handler 慢。`--reload-exclude "storage/*"` 在 Windows 上 `Path.match` 不一定命中,用 `reload_dirs` 白名单更稳。
+- **干净站点会骗你"裁决没问题"**(2026-06-17 裁决调查):saucedemo 英文、元素唯一,结构化断言看着稳;一上真实公网站点(automationexercise,中文业务词 ↔ 英文元素、多相似元素、广告浮层)结构化裁决 false-fail 立刻爆、且翻译几乎不产结构化断言(AE03 裁决 6 条全 llm_judge、用例级 assertions 空)。**验"裁决/定位"类设计必须用脏的真实站点,别拿 saucedemo 下结论。** "确定性裁决"的确定性只在比较层,定位层是启发式——干净站点恰好掩盖了它。
+- **量裁判可靠性要把裁判从执行【剥离】单独压测**(`eval_fg/`):全 agent 跑动会被门控耦合污染(假预期把 agent 带去追错目标、撞 max_steps),**不是干净测量仪器**。正确做法:抓真实页面快照 → 喂裁判一组**真/假混合**预期 → 直接统计 false-green/false-fail。实测(deepseek 26 条):偏-FAIL 裁判 false-green=0/15,**"本地模型脑补成功"的恐惧未被数据支持**。
+- **"假绿"多是工程缺陷,不是模型脑补**(2026-06-17 根因):唯一 1 例假绿 = 模型其实判了 FAIL,但 reason 含**未转义引号**炸了 JSON + 门控 **fail-open(解析失败放行)**。教训:**裁决路径必须 fail-closed**(解析失败 → FAIL/skipped,绝不默认绿),只有**驱动路径**可 fail-open;裁判只需 `verdict` 字段,**正则兜底捞 PASS/FAIL**(`extract_verdict`)比强解析整段 JSON 稳。
+- **别把断言/预期挂成执行的硬闸门**(铁律2a,FG01 实证):把"业务预期"当步骤完成判据,**不可达/写错的预期会变无限重试 + 驱使 agent 追错目标**(假预期"已登录张三" → agent 跑去注册账号、烧 42 万 token)。**裁决标准不能泄漏进执行驱动**:预期只在终态裁决阶段验,执行门控只判"这步操作做没做"。
 
 ## 常用命令
 

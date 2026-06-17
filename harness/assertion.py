@@ -31,7 +31,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
 
-from harness.llm import loads_lenient
+from harness.llm import extract_verdict, loads_lenient
 from input.models import Assertion
 
 logger = logging.getLogger(__name__)
@@ -184,23 +184,35 @@ class AssertionEngine:
         ]
         try:
             resp = await self.llm.chat(messages)
-            data = loads_lenient(resp.content)
-        except Exception as e:  # noqa: BLE001 — 判定失败降级 skipped,不炸裁决
-            logger.warning("llm_judge 调用/解析失败:%s", e)
+        except Exception as e:  # noqa: BLE001 — 调用失败 → skipped(fail-closed,不默认绿)
+            logger.warning("llm_judge 调用失败:%s", e)
             return AssertionResult(
                 assertion=a,
                 status=AssertionStatus.SKIPPED,
                 ai_judged=True,
-                reason=f"llm_judge 失败 → skipped:{e}",
+                reason=f"llm_judge 调用失败 → skipped:{e}",
             )
-        verdict = str(data.get("verdict") or "").strip().upper()
-        reason = str(data.get("reason") or "").strip()
+        content = resp.content or ""
+        verdict, reason = "", ""
+        try:
+            data = loads_lenient(content)
+            verdict = str(data.get("verdict") or "").strip().upper()
+            reason = str(data.get("reason") or "").strip()
+        except Exception as e:  # noqa: BLE001 — JSON 不规整 → 下面正则兜底捞 verdict
+            logger.warning("llm_judge JSON 解析失败,尝试正则兜底:%s", e)
+        if verdict not in ("PASS", "FAIL"):
+            # 解析没拿到明确裁决 → 从原文稳健捞 PASS/FAIL(治模型 reason 含未转义引号炸 JSON,
+            # 2026-06-17)。仍捞不到才 skipped(fail-closed:裁决路径绝不因解析失败默认绿)。
+            recovered = extract_verdict(content)
+            if recovered:
+                verdict = recovered
+                reason = reason or "(从非规整输出中提取 verdict)"
         if verdict not in ("PASS", "FAIL"):
             return AssertionResult(
                 assertion=a,
                 status=AssertionStatus.SKIPPED,
                 ai_judged=True,
-                actual=(resp.content or "")[:200],
+                actual=content[:200],
                 reason=f"llm_judge 未给出明确裁决 → skipped:{reason or '(无)'}",
             )
         ok = verdict == "PASS"

@@ -326,6 +326,25 @@ async def test_llm_judge_to_dict_carries_ai_judged():
     assert r.to_dict()["ai_judged"] is True
 
 
+async def test_llm_judge_recovers_verdict_from_broken_json():
+    # 2026-06-17 实测假绿根因:模型其实判 FAIL,但 reason 含未转义引号炸了 JSON。
+    # 裁决路径必须正则兜底捞回 FAIL(而非降级 skipped/默认绿)。
+    broken = '{"verdict":"FAIL","reason":"页面仍为登录页面，未出现"You have been logged in!"提示"}'
+    llm = _JudgeLLM(broken)
+    eng = AssertionEngine(DictProbe(), llm=llm)
+    r = await eng.verify(Assertion(type="llm_judge", target="显示登录成功"))
+    assert r.status == AssertionStatus.FAIL  # 捞回 FAIL,不再被 fail-open 误判通过
+    assert r.ai_judged is True
+
+
+async def test_llm_judge_no_verdict_stays_skipped_fail_closed():
+    # 完全没有 verdict 字样 → fail-closed:判 skipped(绝不默认绿),不计入可信通过。
+    llm = _JudgeLLM("这是一段没有任何裁决字样的解释文字。")
+    eng = AssertionEngine(DictProbe(), llm=llm)
+    r = await eng.verify(Assertion(type="llm_judge", target="x"))
+    assert r.status == AssertionStatus.SKIPPED
+
+
 # ── 裁决 / 聚合 ───────────────────────────────────────────────
 
 
