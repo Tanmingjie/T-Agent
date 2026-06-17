@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from harness.assertion import AssertionEngine, AssertionStatus
 from harness.healing import HealCandidate, HealingSubagent
 from harness.llm import LLMClient, LLMResponse
@@ -22,6 +24,22 @@ SNAPSHOT = """\
 - button "返回" [ref=e6]
 ```
 """
+
+
+@pytest.fixture(autouse=True)
+def _isolate_heal_visual(monkeypatch):
+    """隔离 HEAL_VISUAL 环境变量,避免跨文件污染本文件的视觉自愈用例。
+
+    根因(全量 pytest 顺序才复现):任一 test_api_* 用例 import ``api.server`` 会在
+    **导入时** ``_load_dotenv(.env)``,把项目根 ``.env`` 里的 ``HEAL_VISUAL=0`` 灌进
+    ``os.environ`` 并**持续整个进程**。本文件的视觉自愈用例默认视觉开(env 未设=默认
+    "1"),被污染成 "0" 后不再发图 → sends_image / falls_back / vision_unsupported_cached
+    三例失败;单独跑本文件不 import api、不加载 .env,故不复现。
+
+    每个用例前删除该 env 回到默认(视觉开);需要关视觉的 ``test_visual_disabled_by_env``
+    仍可在用例体内自行 ``setenv`` 覆盖,且两者均随 monkeypatch 在用例后自动还原。
+    """
+    monkeypatch.delenv("HEAL_VISUAL", raising=False)
 
 
 class _FakeLLM(LLMClient):
