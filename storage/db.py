@@ -40,7 +40,6 @@ from input.models import (
     ProjectLLMConfig,
     ProjectMember,
     ProjectSkill,
-    SessionProfile,
     Suite,
     TestCase,
     User,
@@ -56,7 +55,6 @@ class SuiteRow(SQLModel, table=True):
     id: str = Field(primary_key=True)
     name: str = ""
     base_url: str = ""
-    session_profile: str | None = None
     page_intelligence_id: str | None = None
     code_generator: str = "BDDGenerator"
     custom_prompt: str = ""
@@ -80,19 +78,6 @@ class TestCaseRow(SQLModel, table=True):
     base_url: str = ""
     suite_id: str | None = Field(default=None, index=True)
     external_id: str | None = None
-    owner: str | None = None
-    updated_at: float = 0.0
-
-
-class SessionProfileRow(SQLModel, table=True):
-    __tablename__ = "session_profile"
-    name: str = Field(primary_key=True)
-    login_aw: str = ""
-    cookie_store: str = ""
-    valid_until: float | None = None
-    base_url: str = ""
-    project_id: str = Field(default="", index=True)  # 多租户(M2)
-    cookies_encrypted: str = ""  # Cookie JSON 密文(M2;凭据,加密落库)
     owner: str | None = None
     updated_at: float = 0.0
 
@@ -520,67 +505,6 @@ class Store:
             }
             for suite in suites
         ]
-
-    # —— SessionProfile(cookies 加密落库,M2)——
-
-    async def save_session_profile(self, p: SessionProfile) -> None:
-        row = SessionProfileRow(
-            name=p.name,
-            login_aw=p.login_aw,
-            cookie_store=p.cookie_store,
-            valid_until=p.valid_until,
-            base_url=p.base_url,
-            project_id=p.project_id,
-            cookies_encrypted=(
-                crypto.encrypt(json.dumps(p.cookies, ensure_ascii=False)) if p.cookies else ""
-            ),
-            owner=p.owner,
-            updated_at=time.time(),
-        )
-        async with self._sf() as s:
-            await s.merge(row)
-            await s.commit()
-
-    def _session_from_row(self, row: SessionProfileRow) -> SessionProfile:
-        cookies: list = []
-        if row.cookies_encrypted:
-            raw = crypto.decrypt(row.cookies_encrypted)
-            try:
-                cookies = json.loads(raw) if raw else []
-            except (json.JSONDecodeError, ValueError):
-                cookies = []
-        return SessionProfile(
-            name=row.name,
-            login_aw=row.login_aw,
-            cookie_store=row.cookie_store,
-            valid_until=row.valid_until,
-            base_url=row.base_url,
-            project_id=row.project_id,
-            cookies=cookies,
-            owner=row.owner,
-            updated_at=row.updated_at,
-        )
-
-    async def get_session_profile(self, name: str) -> SessionProfile | None:
-        async with self._sf() as s:
-            row = await s.get(SessionProfileRow, name)
-            return self._session_from_row(row) if row else None
-
-    async def list_session_profiles(self, project_id: str | None = None) -> list[SessionProfile]:
-        stmt = select(SessionProfileRow)
-        if project_id is not None:
-            stmt = stmt.where(SessionProfileRow.project_id == project_id)
-        async with self._sf() as s:
-            return [self._session_from_row(r) for r in (await s.exec(stmt)).all()]
-
-    async def delete_session_profile(self, name: str) -> bool:
-        async with self._sf() as s:
-            row = await s.get(SessionProfileRow, name)
-            if row is None:
-                return False
-            await s.delete(row)
-            await s.commit()
-            return True
 
     # —— ProjectSkill(项目级业务常识,M2)——
 

@@ -162,22 +162,6 @@ class ExecutionRecord(BaseModel):
 # ── 会话 / 套件 / 词汇表 / 工具 ────────────────────────────────────
 
 
-class SessionProfile(BaseModel):
-    """账号 + 登录 AW + Cookie 缓存(规格 §5.4 Session Profile)。"""
-
-    name: str
-    login_aw: str  # 登录 AW 引用(用户已有 pytest 脚本)
-    cookie_store: str  # Cookie 持久化路径(文件型,向后兼容)
-    valid_until: float | None = None
-    base_url: str
-    project_id: str = ""  # 多租户作用域(平台化 M2);单机留空
-    cookies: list = []  # Cookie 列表(平台化 M2:落库时加密;空则用 cookie_store 文件)
-
-    # —— 预留同步字段(实现原则 4) ——
-    owner: str | None = None
-    updated_at: float = Field(default_factory=time.time)
-
-
 class ProjectSkill(BaseModel):
     """项目级 Skill(平台化 M2:项目业务常识,标准 Skill 渐进披露接入执行链)。
 
@@ -198,7 +182,6 @@ class Suite(BaseModel):
     id: str
     name: str
     base_url: str
-    session_profile: str | None = None
     page_intelligence_id: str | None = None
     code_generator: str = "BDDGenerator"
     custom_prompt: str = ""

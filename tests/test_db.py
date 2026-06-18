@@ -12,7 +12,6 @@ from input.models import (
     ActionStep,
     ExecutionRecord,
     PageVocabulary,
-    SessionProfile,
     Suite,
     TestCase,
 )
@@ -106,28 +105,14 @@ async def test_list_records_filter_by_case(store):
     assert {r.exec_id for r in recs} == {"e1", "e3"}
 
 
-# ── Suite / SessionProfile / PageVocabulary ──────────────────
+# ── Suite / PageVocabulary ───────────────────────────────────
 
 
 async def test_suite_roundtrip_with_hooks(store):
-    suite = Suite(id="S1", name="冒烟", base_url="https://x", hooks={"before_case": ["LoginHook"]})
+    suite = Suite(id="S1", name="冒烟", base_url="https://x", hooks={"before_case": ["my_login"]})
     await store.save_suite(suite)
     got = await store.get_suite("S1")
-    assert got.hooks == {"before_case": ["LoginHook"]}
-
-
-async def test_session_profile_roundtrip(store):
-    p = SessionProfile(
-        name="prof",
-        login_aw="aw.py",
-        cookie_store="/tmp/c.json",
-        base_url="https://x",
-        valid_until=123.0,
-    )
-    await store.save_session_profile(p)
-    got = await store.get_session_profile("prof")
-    assert got.login_aw == "aw.py"
-    assert got.valid_until == 123.0
+    assert got.hooks == {"before_case": ["my_login"]}
 
 
 async def test_vocabulary_roundtrip_and_cache_key(store):

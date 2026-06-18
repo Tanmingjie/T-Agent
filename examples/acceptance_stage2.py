@@ -2,9 +2,10 @@
 
 用法:
     python examples/acceptance_stage2.py suite      # 场景①:Suite 调度 + 用例间隔离
-    python examples/acceptance_stage2.py cookie      # 场景②:Cookie 复用跳过登录
     python examples/acceptance_stage2.py heal         # 场景③:断言自愈生效
     python examples/acceptance_stage2.py context      # 场景④:Context Compact token 对比
+
+注:原「场景②:Cookie 复用跳过登录」随会话/Cookie 复用退役(2026-06-18)已移除。
 
 真调 LLM(读 .env)+ playwright-mcp(--isolated --headless 规避密码弹框)。
 """
@@ -66,97 +67,6 @@ async def scenario_suite() -> None:
     ids = {r.case_id: r.exec_id for r in result.records}
     print(f"\n隔离证据:各用例独立 exec_id = {ids}")
     print("（即使某条 FAIL,另一条仍独立执行并裁决,互不污染）")
-
-
-# ── 场景②:Cookie 复用跳过登录(直接驱动 LoginHook,0 LLM)──────
-
-import json  # noqa: E402
-import tempfile  # noqa: E402
-
-from harness.hooks import ExecutionContext  # noqa: E402
-from harness.session import (  # noqa: E402
-    LoginHook,
-    SessionManager,
-    make_mcp_cookie_injector,
-)
-from input.models import SessionProfile  # noqa: E402
-
-
-def _extract_result_payload(text: str):
-    """从 browser_run_code_unsafe 的结果文本里取 ### Result 后的 JSON。"""
-    marker = "### Result"
-    if marker in text:
-        seg = text.split(marker, 1)[1]
-        seg = seg.split("### Ran", 1)[0].strip()
-        try:
-            return json.loads(seg)
-        except (json.JSONDecodeError, ValueError):
-            return None
-    return None
-
-
-async def scenario_cookie() -> None:
-    print("\n############ 场景②:Cookie 复用跳过登录 ############")
-    async with _mcp() as mcp:
-
-        async def saucedemo_login(profile, ctx):
-            """login_aw:真实浏览器登录 saucedemo,返回 Cookie 列表。"""
-            code = (
-                "async (page) => {"
-                "  await page.goto('https://www.saucedemo.com');"
-                "  await page.locator('[data-test=\"username\"]').fill('standard_user');"
-                "  await page.locator('[data-test=\"password\"]').fill('secret_sauce');"
-                "  await page.locator('[data-test=\"login-button\"]').click();"
-                "  await page.waitForURL('**/inventory.html');"
-                "  return await page.context().cookies();"
-                "}"
-            )
-            res = await mcp.call_tool("browser_run_code_unsafe", {"code": code})
-            cookies = _extract_result_payload(mcp.result_to_text(res)) or []
-            print(
-                f"  [login_aw] 真实登录完成,取到 {len(cookies)} 个 Cookie:"
-                f"{[c.get('name') for c in cookies]}"
-            )
-            return cookies
-
-        async def current_url() -> str:
-            res = await mcp.call_tool("browser_snapshot", {})
-            from harness.page_probe import parse_snapshot
-
-            return parse_snapshot(mcp.result_to_text(res)).url
-
-        with tempfile.TemporaryDirectory() as tmp:
-            profile = SessionProfile(
-                name="saucedemo",
-                login_aw="saucedemo_login",
-                cookie_store=f"{tmp}/saucedemo.cookies.json",
-                base_url=BASE_URL,
-            )
-            manager = SessionManager()
-            injector = make_mcp_cookie_injector(mcp, BASE_URL + "/inventory.html")
-            hook = LoginHook(
-                profile,
-                manager,
-                login_runner=saucedemo_login,
-                cookie_injector=injector,
-                ttl_seconds=600,
-            )
-
-            print("\n— 第 1 次 before_case(Cookie 不存在)—")
-            ctx1 = ExecutionContext()
-            await hook(ctx1)
-            print(f"  login_via = {ctx1.get('login_via')}  (应为 login_aw:跑了登录)")
-            print(f"  Cookie 是否有效 = {manager.is_valid(profile)}")
-
-            print("\n— 第 2 次 before_case(Cookie 已存在且有效)—")
-            ctx2 = ExecutionContext()
-            await hook(ctx2)
-            print(f"  login_via = {ctx2.get('login_via')}  (应为 cookie:跳过登录)")
-
-            # 验证注入 Cookie 后能直达 inventory 而不被踢回登录页
-            url = await current_url()
-            print(f"\n  注入 Cookie 后当前 URL = {url}")
-            print(f"  登录态有效(停在 inventory,未被踢回登录页)= {'inventory' in url}")
 
 
 # ── 场景③:断言自愈生效 ────────────────────────────────────
@@ -245,7 +155,6 @@ async def scenario_context() -> None:
 
 SCENARIOS = {
     "suite": scenario_suite,
-    "cookie": scenario_cookie,
     "heal": scenario_heal,
     "context": scenario_context,
 }

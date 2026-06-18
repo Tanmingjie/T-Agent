@@ -6,12 +6,14 @@
 
 要点(§5.4):
 - 顺序执行队列;同一事件的多个 hook 按注册顺序依次跑。
-- 共享 ``ExecutionContext`` 在 hook 间、hook 与 Agent 间传递状态(如登录 Cookie)。
+- 共享 ``ExecutionContext`` 在 hook 间、hook 与 Agent 间传递状态。
 - **before_case 失败 → 用例直接 FAIL,不进 Agent**(由调用方据 HookResult.ok 处理)。
-- after_case 用于清理/登出,通常无论成败都跑。
+- after_case 用于清理,通常无论成败都跑。
 
-Hook 可为同步或异步可调用,签名 ``hook(ctx: ExecutionContext)``;抛 ``HookError``
-(或任意异常)表示该 hook 失败,队列即停并返回失败结果。
+这是一个**通用扩展点**(参考 Claude Code hooks 的定位):平台只提供机制,具体逻辑由
+用户在生命周期事件上挂载自己的可调用对象实现。Hook 可为同步或异步可调用,签名
+``hook(ctx: ExecutionContext)``;抛 ``HookError``(或任意异常)表示该 hook 失败,
+队列即停并返回失败结果。
 """
 
 from __future__ import annotations
@@ -46,8 +48,7 @@ class ExecutionContext:
 
     case: Any = None  # TestCase
     suite: Any = None  # Suite
-    session: Any = None  # SessionProfile(T-14)
-    data: dict = field(default_factory=dict)  # 任意共享状态(cookies/env/…)
+    data: dict = field(default_factory=dict)  # 任意共享状态(env/登录态/…,由 hook 自定义)
 
     def set(self, key: str, value: Any) -> None:
         self.data[key] = value

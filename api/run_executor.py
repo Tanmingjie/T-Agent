@@ -48,7 +48,6 @@ async def execute_run(
     """执行一个 run 到完成(自带独立 Store/loop 资源)。失败不抛,落 failed 状态。"""
     from api.repository import SQLModelRepository, get_suite_settings
     from harness.agent import TestCaseAgent
-    from harness.hook_builder import build_session_hooks
     from harness.llm import build_llm_client
     from harness.orchestrator import Orchestrator
     from harness.skills import build_skill_manager
@@ -94,16 +93,6 @@ async def execute_run(
                 except Exception as e:  # noqa: BLE001
                     logger.warning("加载 Custom Tool 配置失败(%s):%s", tools_yaml, e)
 
-        session_profile = None
-        if suite.session_profile:
-            session_profile = await store.get_session_profile(suite.session_profile)
-            if session_profile is None:
-                logger.warning(
-                    "Suite %s 绑定的 SessionProfile %r 不存在,跳过 Session 复用",
-                    suite_id,
-                    suite.session_profile,
-                )
-
         # 项目级 Skill(M2):**暂用默认加载**(preload=True,正文常驻 prompt)。
         # 渐进披露(preload=False + LLM 调 load_skill 展开)链路已实现,但弱模型常不主动
         # load → skill 形同虚设;先默认加载保证生效,渐进式加载的调试列 TODO 后续打磨。
@@ -128,16 +117,13 @@ async def execute_run(
                 custom_prompt=suite.custom_prompt, extra=extra_skills or None
             )
             async with MCPClient(args=mcp_args) as mcp:
-                hooks = (
-                    build_session_hooks(session_profile, mcp)
-                    if session_profile is not None
-                    else None
-                )
+                # Hook 是通用扩展点(harness/hooks.py);默认不预填登录,登录态复用交由
+                # 后续「环境管理」主线维护。需要时由调用方装配 HookManager 传入。
                 agent = TestCaseAgent(
                     llm=build_llm_client(llm_config),
                     mcp=mcp,
                     vocab_resolver=vocab_resolver,
-                    hooks=hooks,
+                    hooks=None,
                     skills=skills,
                     tools_registry=tools_registry,
                     max_steps=int(os.getenv("AGENT_MAX_STEPS", "40")),

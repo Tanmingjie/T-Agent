@@ -1,11 +1,11 @@
-// 平台化 T-P11/M2:项目设置页(标签页)——LLM 配置 / HTTP 工具 / Skills / SessionProfile。
-// 后端 API 见 api/routers/projects.py;凭据(api_key/headers/cookies)不返明文。
+// 平台化 T-P11/M2:项目设置页(标签页)——LLM 配置 / HTTP 工具 / Skills。
+// 后端 API 见 api/routers/projects.py;凭据(api_key/headers)不返明文。
 import { useEffect, useState } from "react";
 import { Check, Plug, Trash2, Plus } from "lucide-react";
 import { apiGet, apiPut, apiPost, apiDelete } from "../api/client";
 import { getProjectId } from "../lib/session";
 
-type Tab = "llm" | "http" | "skills" | "session";
+type Tab = "llm" | "http" | "skills";
 
 export default function ProjectSettingsPage() {
   const pid = getProjectId();
@@ -23,7 +23,6 @@ export default function ProjectSettingsPage() {
     { id: "llm", label: "LLM 配置" },
     { id: "http", label: "HTTP 工具" },
     { id: "skills", label: "Skills" },
-    { id: "session", label: "Session" },
   ];
 
   return (
@@ -50,7 +49,6 @@ export default function ProjectSettingsPage() {
       {tab === "llm" && <LLMSection pid={pid} />}
       {tab === "http" && <HttpToolsSection pid={pid} />}
       {tab === "skills" && <SkillsSection pid={pid} />}
-      {tab === "session" && <SessionSection pid={pid} />}
     </div>
   );
 }
@@ -284,65 +282,6 @@ function SkillsSection({ pid }: { pid: string }) {
           className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm h-20"
         />
         <AddBtn onClick={add} label="添加 Skill" />
-      </div>
-    </Card>
-  );
-}
-
-// ── Session Profiles ─────────────────────────────────────────
-
-interface SP {
-  name: string;
-  base_url: string;
-  login_aw: string;
-  has_cookies: boolean;
-}
-
-function SessionSection({ pid }: { pid: string }) {
-  const [profs, setProfs] = useState<SP[]>([]);
-  const [name, setName] = useState("");
-  const [baseUrl, setBaseUrl] = useState("");
-  const [loginAw, setLoginAw] = useState("");
-
-  async function load() {
-    setProfs(await apiGet<SP[]>(`/projects/${pid}/session-profiles`));
-  }
-  useEffect(() => {
-    load();
-  }, [pid]);
-
-  async function add() {
-    if (!name) return;
-    await apiPut(`/projects/${pid}/session-profiles/${encodeURIComponent(name)}`, {
-      name,
-      base_url: baseUrl,
-      login_aw: loginAw,
-    });
-    setName("");
-    setBaseUrl("");
-    setLoginAw("");
-    load();
-  }
-  async function del(n: string) {
-    await apiDelete(`/projects/${pid}/session-profiles/${encodeURIComponent(n)}`);
-    load();
-  }
-
-  return (
-    <Card>
-      <p className="text-xs text-gray-500">登录会话(Cookie 加密落库);跨用例复用。</p>
-      <ToolList
-        items={profs.map((p) => ({
-          key: p.name,
-          label: `${p.name} @ ${p.base_url}${p.has_cookies ? " (有 cookie)" : ""}`,
-        }))}
-        onDelete={del}
-      />
-      <div className="space-y-2 pt-2">
-        <Input placeholder="名称" value={name} onChange={(e) => setName(e.target.value)} />
-        <Input placeholder="base_url" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
-        <Input placeholder="login_aw(可选)" value={loginAw} onChange={(e) => setLoginAw(e.target.value)} />
-        <AddBtn onClick={add} label="添加 Profile" />
       </div>
     </Card>
   );

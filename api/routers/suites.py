@@ -32,7 +32,6 @@ def namespaced_case_id(suite_id: str, case_id: str) -> str:
 class SuiteCreateRequest(BaseModel):
     name: str
     base_url: str
-    session_profile: str | None = None
     project_id: str = ""  # 多租户(T-P07);单机留空
     version_id: str = ""
 
@@ -84,7 +83,6 @@ async def create_suite(
         id=uuid.uuid4().hex[:12],
         name=body.name,
         base_url=body.base_url,
-        session_profile=body.session_profile,
         project_id=body.project_id,
         version_id=body.version_id,
         owner=principal.user_id,
