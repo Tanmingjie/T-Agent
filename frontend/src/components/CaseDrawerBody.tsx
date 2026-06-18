@@ -54,7 +54,7 @@ interface AssertionResult {
   healed?: boolean; // 经自愈重定位后才通过 → 与结构化绿区分(自愈绿)
   heal_note?: string | null; // 自愈摘要(重定位到哪个 target / 策略)
   step_no?: number; // 步骤级断言:属于第几步(在该步子页面即时验证)
-  phase?: string; // step=步骤级即时验证 / final=终态用例级
+  phase?: string; // step=步骤级确定性锚点 / gate=驱动门控(仅观测,不进裁决)/ final=终态用例级
 }
 
 interface StepDetail {
@@ -211,6 +211,14 @@ function AssertionRow({ a }: { a: AssertionResult }) {
         {a.expected != null && a.expected !== "" && (
           <span className="text-gray-400"> == {a.expected}</span>
         )}
+        {a.phase === "gate" && (
+          <span
+            className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200 align-middle"
+            title="步骤驱动门控判定:仅用于驱动重做,不计入用例最终裁决"
+          >
+            驱动门控·不计入裁决
+          </span>
+        )}
         {a.healed && (
           <span
             className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200 align-middle"
@@ -236,8 +244,12 @@ function AssertionVerdict({ assertions }: { assertions: AssertionResult[] }) {
   if (assertions.length === 0) {
     return <p className="ml-6 mt-1 text-sm text-gray-400">无断言记录</p>;
   }
-  const stepAsserts = assertions.filter((a) => a.phase === "step" && a.step_no != null);
-  const finalAsserts = assertions.filter((a) => !(a.phase === "step" && a.step_no != null));
+  // 步骤级:确定性锚点(step)+ 驱动门控观测(gate)都归到所属步骤;**gate 只观测、不进裁决**
+  // (Fix 3 解耦),归步骤组避免它混进「最终(用例级)」裁决块被误读为裁决依据。
+  const isStepLevel = (a: AssertionResult) =>
+    (a.phase === "step" || a.phase === "gate") && a.step_no != null;
+  const stepAsserts = assertions.filter(isStepLevel);
+  const finalAsserts = assertions.filter((a) => !isStepLevel(a));
   // 按 step_no 升序分组
   const byStep = new Map<number, AssertionResult[]>();
   for (const a of stepAsserts) {

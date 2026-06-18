@@ -736,22 +736,27 @@ class TestCaseAgent:
             return f"step_{step_no:03d}.png"
 
         # —— 步骤级完成门控 + 即时验证:某业务步 mark_step_done 落定后,在【当前子页面】判
-        # 该步是否真达成完成判据。两层:
-        #   (1) expect_text(自然语言完成判据)→ **LLM 看快照判达成 PASS/FAIL**(驱动层,不依赖
-        #       定位器对齐;经 llm_judge 通道,结果标 ai_judged 低置信可见、计入裁决)。FAIL →
-        #       返回原因,react_loop 退回该步重做 + 计预算(铁律2(a):软、可恢复)。
+        # 该步是否真达成完成判据。两层,**职责严格分离**(2026-06-17 Fix 3 解耦):
+        #   (1) expect_text(自然语言完成判据)→ **LLM 看快照判达成 PASS/FAIL**(偏向放行的
+        #       驱动门控 _gate_step_done,role a)。FAIL → 返回原因让 react_loop 退回该步重做
+        #       + 计预算(铁律2(a):软、可恢复)。**门控结果只驱动 reactivate,绝不计入裁决**
+        #       (铁律2(b):偏-PASS 的步骤门控不能当裁决证据,否则假预期/脑补会刷绿)。门控判定
+        #       仅作**观测**记入 gate_observations(落库标 phase="gate",前端可见但不进 verdict)。
         #   (2) expect(可选结构化断言)→ 门控通过后再确定性验一次,作**高置信**裁决证据(B1)。
+        #       仅 url_*/custom_tool 这类**不依赖元素定位**的确定性锚点计入裁决(step_assert_pairs)。
         # 用例预期按步写——必须在所属子页面验,不能攒到终态(跨子页元素在终态已不在 → 假阴性)。
-        # 重做时同一步会被重复验:**按 step_no 去重(后验覆盖前验)**,只让最后一次证据计入裁决,
+        # 重做时同一步会被重复验:**按 step_no 去重(后验覆盖前验)**,只让最后一次证据计入,
         # 避免中途未达成的 FAIL 残留把已重做达成的步拖成失败。返回非空原因串 = 未达成(门控拦)。
-        step_assert_pairs: list = []  # [(step_no, AssertionResult)]
+        step_assert_pairs: list = []  # [(step_no, AssertionResult)] —— **计入裁决**的确定性锚点
+        gate_observations: list = []  # [(step_no, AssertionResult)] —— **仅观测**的驱动门控判定
 
         async def verify_step(step_no: int) -> str | None:
             if not (1 <= step_no <= len(spec.steps)):
                 return None
             step = spec.steps[step_no - 1]
-            # 重做覆盖:清掉本步上一轮的证据,只保留这次(最后一次)的
+            # 重做覆盖:清掉本步上一轮的证据(裁决锚点 + 观测门控),只保留这次(最后一次)的
             step_assert_pairs[:] = [(sn, r) for sn, r in step_assert_pairs if sn != step_no]
+            gate_observations[:] = [(sn, r) for sn, r in gate_observations if sn != step_no]
             gate_reason: str | None = None
             # (1) 完成判据:LLM 看快照判达成。**用偏向放行的门控判定**(_gate_step_done,
             # 驱动层 role a:拿不准→PASS),不复用偏 FAIL 的最终裁判——后者会把做完了但
@@ -760,14 +765,15 @@ class TestCaseAgent:
                 probe_g = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
                 await probe_g.refresh()
                 met, reason = await _gate_step_done(self.llm, probe_g, step.expect_text)
-                # 门控判定记为 ai_judged 证据(低置信,计入裁决;前端不再逐条标记,占比在指标里)
+                # 门控判定仅作**观测**(落库 phase="gate"),**不进裁决**——它是偏-PASS 的驱动
+                # 信号(role a),把它当裁决证据会让假预期/脑补不可见地刷绿(铁律2(b))。
                 gate_a = Assertion(
                     type="llm_judge",
                     target=step.expect_text,
                     expected=step.expect_text,
                     confidence="low",
                 )
-                step_assert_pairs.append(
+                gate_observations.append(
                     (
                         step_no,
                         AssertionResult(
@@ -837,16 +843,24 @@ class TestCaseAgent:
         engine = AssertionEngine(
             probe, healer=healer, tool_registry=self.tools_registry, llm=self.llm
         )
-        # 终态只验【用例级 assertions】(整体/最终预期);各步 expect 已在 verify_step 于
-        # 其所属子页面即时验过(步骤级)。两者合并裁决——避免把步骤级预期拍到终态页验(假阴性)。
+        # —— 终态裁决路(Fix 3,铁律2(b)):LLM 裁判为主 + 确定性锚点 ——
+        # 终态逐条验【用例级 assertions】(整体/最终预期):自然语言预期走偏-FAIL 的
+        # _check_llm_judge(强制引证证据 + 喂实时 URL 作免费锚点);URL/数据真值/显式 selector
+        # 类走确定性 _check_*(高置信锚点)。翻译已把每条最终预期落成一条用例级 assertion(③),
+        # 故此处天然逐条裁决。各步 expect 的确定性锚点已在 verify_step 即时验过(步骤级)。
         terminal_results = await engine.verify_all(spec.assertions)
         _mark_phase("asserting")
+        # 裁决证据 = 步骤级确定性锚点(url/custom_tool) + 终态裁决;**门控观测不计入**(铁律2(b))。
         all_results = [r for _, r in step_assert_pairs] + terminal_results
-        # 记录:步骤级带 step_no/phase 标注,终态标 final;供前端区分「第几步的预期」。
+        # 记录:步骤级锚点标 phase="step";门控观测标 phase="gate"(可见但不进裁决);终态标 final。
         a_dicts: list[dict] = []
         for sn, r in step_assert_pairs:
             d = r.to_dict()
             d["step_no"], d["phase"] = sn, "step"
+            a_dicts.append(d)
+        for sn, r in gate_observations:
+            d = r.to_dict()
+            d["step_no"], d["phase"] = sn, "gate"  # 驱动门控判定:观测用,不参与 verdict
             a_dicts.append(d)
         for r in terminal_results:
             d = r.to_dict()
@@ -854,7 +868,7 @@ class TestCaseAgent:
             a_dicts.append(d)
         recorder.set_case_assertions(a_dicts)
         recorder.record.heal_count += sum(1 for r in all_results if r.healed)
-        # 裁决合并步骤级 + 终态(任一 FAIL 即不通过;全 skipped 不算可信通过)
+        # 裁决合并步骤级锚点 + 终态(任一 FAIL 即不通过;全 skipped 不算可信通过)
         assert_passed = AssertionEngine.verdict(all_results)
 
         # —— 执行完整性闸门(原则:步骤未全部完成 → 用例直接 FAIL)——

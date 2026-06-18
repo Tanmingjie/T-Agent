@@ -9,11 +9,12 @@
 - ``url_contains`` / ``url_equals`` —— URL/导航断言
 
 ``custom_tool`` —— 数据断言:接入 ``ToolRegistry`` 后经 Custom Tool 取业务真值并确定性
-比较(未接入则 skipped)。``llm_judge`` —— **降级链最末档兜底**(方案A):接入 LLM 后真判
-PASS/FAIL 并计入裁决,但结果打 ``ai_judged`` 标记(低置信、可审计),报告区分「结构化绿」
-与「AI 判绿」使 false green 可见可回溯;**能结构化/查真值的预期应优先用 DOM/文本/URL/
-custom_tool**(都比 llm_judge 可靠)。未接入 LLM 则 skipped。skipped **不静默放过**
-(裁决时全 skipped 不算可信通过)。
+比较(未接入则 skipped)。``llm_judge`` —— **默认主裁决**(2026-06-17 Fix 3,据真实公网评测从
+"最末档兜底"升格):接入 LLM 后偏-FAIL 判 PASS/FAIL 并计入裁决,**判 PASS 必须逐字引证页面
+实证、平台确定性核验该证据确在当前页**(脑补证据 → fail-closed 推翻为 FAIL);结果打
+``ai_judged`` 标记(低置信、可审计),报告区分「结构化绿」与「AI 判绿」使 false green 可见可
+回溯;**能用 URL/数据真值确定性验的预期仍优先用 URL/custom_tool**(高置信锚点)。未接入 LLM
+则 skipped。skipped **不静默放过**(裁决时全 skipped 不算可信通过)。
 
 断言失败的两种归因(§5.3):
 - 真失败:元素在、值不对 → FAIL(``healable=False``)。
@@ -36,12 +37,21 @@ from input.models import Assertion
 
 logger = logging.getLogger(__name__)
 
-# llm_judge 兜底裁判的 system prompt。偏向 FAIL:测试平台宁可误报失败、不可误报通过。
-_JUDGE_SYSTEM = """你是测试断言裁判。根据下面的页面无障碍(A11y)快照,判断给定「期望」\
-是否在当前页面真实成立。这是降级兜底判定,只在无法结构化验证时使用。
-要求:严格按快照事实判断,不臆测;证据不足或拿不准时一律判 FAIL\
-(测试平台宁可误报失败,不可误报通过)。
-只输出 JSON:{"verdict":"PASS"|"FAIL","reason":"简述依据"}"""
+# llm_judge 裁判的 system prompt。偏向 FAIL + **强制逐字引证证据**(2026-06-17 Fix 3):据真实
+# 公网评测,偏-FAIL、引证页面证据的 LLM 裁判 false-green=0/15(≈96% 正确),已是默认主裁决
+# (非"降级兜底")。**判 PASS 必须在 evidence 字段里逐字摘录页面/URL 实证**——平台据此**确定性
+# 核验该证据是否真的出现在当前页面**(见 `_check_llm_judge`:不在 → fail-closed 推翻为 FAIL),
+# 治弱模型"脑补证据"刷绿(尤其把中间页/别的页面的预期在终态页上判过)。
+_JUDGE_SYSTEM = """你是测试断言裁判。根据下面提供的【当前页面 URL】+【页面无障碍(A11y)快照】,\
+判断给定「期望」是否在当前页面**真实成立**。
+要求:
+- 严格按提供的事实判断,**绝不臆测、绝不凭记忆**;只有当快照/URL 里能找到支持该期望的【具体证据】时才判 PASS。
+- 判 PASS 时**必须在 "evidence" 字段里逐字复制**你所依据的页面证据(从快照或 URL 里**原样摘录**
+  一小段文本,如某行文案 / 标题 / URL 片段);**拿不出能逐字复制的证据,或证据不足/拿不准,一律判 FAIL**
+  (测试平台宁可误报失败,不可误报通过)。平台会确定性核验该证据确在当前页面,脑补的证据会被推翻。
+- 若期望描述的是**更早步骤/别的页面**才有的状态,而**当前页面**快照里找不到对应证据,判 FAIL——
+  不要因为"流程里它应该发生过"就判通过。
+只输出 JSON:{"verdict":"PASS"|"FAIL","evidence":"从当前页面逐字摘录的证据(PASS 必填)","reason":"结论说明"}"""
 
 # 阶段一支持的确定性断言类型
 _SUPPORTED = {
@@ -154,12 +164,13 @@ class AssertionEngine:
         )
 
     async def _check_llm_judge(self, a: Assertion) -> AssertionResult:
-        """LLM 语义断言(方案A:真判 PASS/FAIL 并计入裁决,但标 ai_judged 低置信可审计)。
+        """LLM 语义断言(Fix 3:默认主裁决,偏-FAIL + 逐字证据确定性核验)。
 
-        这是降级链**最末档兜底**:能结构化/查真值的预期应优先用 DOM/文本/URL/custom_tool。
-        AI 判出的结果打 ``ai_judged`` 标记,报告区分「结构化绿」与「AI 判绿」,使 false green
-        可见、可回溯、可调 prompt;裁判 prompt 偏向 FAIL(宁可误报失败不可误报通过)。
-        未接入 LLM → skipped(不静默放过)。
+        偏-FAIL 判 PASS/FAIL 并计入裁决;**判 PASS 必须逐字引证页面实证**,本方法再**确定性核验**
+        该 evidence 真出现在当前页(快照/URL,空白归一后子串匹配),不在 → fail-closed 推翻为
+        FAIL(治弱模型"脑补证据"刷绿,尤其把中间页/别页预期在终态页判过)。结果打 ``ai_judged``
+        标记,报告区分「结构化绿」与「AI 判绿」使 false green 可见可回溯;能用 URL/数据真值确定性
+        验的预期仍应优先用 URL/custom_tool。未接入 LLM → skipped(不静默放过)。
         """
         if self.llm is None:
             return AssertionResult(
@@ -171,6 +182,15 @@ class AssertionEngine:
         raw_fn = getattr(self.probe, "raw_snapshot", None)
         if callable(raw_fn):
             snapshot_text = raw_fn() or ""
+        # 免费 URL 锚点(Fix 3):实时 URL 总能廉价观测到,显式喂给裁判作 grounding 证据,
+        # 不再只依赖快照里可能缺失的 URL 行。取不到则留空,不阻断裁决。
+        cur_url = ""
+        url_fn = getattr(self.probe, "current_url", None)
+        if callable(url_fn):
+            try:
+                cur_url = (await url_fn()) or ""
+            except Exception as e:  # noqa: BLE001 — 取 URL 失败不阻断裁决
+                logger.warning("llm_judge 取当前 URL 失败:%s", e)
         expectation = (a.expected or a.target or "").strip()
         messages = [
             {"role": "system", "content": _JUDGE_SYSTEM},
@@ -178,6 +198,7 @@ class AssertionEngine:
                 "role": "user",
                 "content": (
                     f"期望:{expectation}\n\n"
+                    f"当前页面 URL:{cur_url or '(未知)'}\n\n"
                     f"当前页面无障碍快照:\n{snapshot_text[:6000] or '(无快照)'}"
                 ),
             },
@@ -193,11 +214,12 @@ class AssertionEngine:
                 reason=f"llm_judge 调用失败 → skipped:{e}",
             )
         content = resp.content or ""
-        verdict, reason = "", ""
+        verdict, reason, evidence = "", "", ""
         try:
             data = loads_lenient(content)
             verdict = str(data.get("verdict") or "").strip().upper()
             reason = str(data.get("reason") or "").strip()
+            evidence = str(data.get("evidence") or "").strip()
         except Exception as e:  # noqa: BLE001 — JSON 不规整 → 下面正则兜底捞 verdict
             logger.warning("llm_judge JSON 解析失败,尝试正则兜底:%s", e)
         if verdict not in ("PASS", "FAIL"):
@@ -216,11 +238,32 @@ class AssertionEngine:
                 reason=f"llm_judge 未给出明确裁决 → skipped:{reason or '(无)'}",
             )
         ok = verdict == "PASS"
+        # —— 证据核验(Fix 3 收尾,治"脑补证据"刷绿)——
+        # 判 PASS 时,裁判**逐字引证**的 evidence 必须确实出现在当前页面(快照 / URL,空白归一后
+        # 子串匹配)。引证缺失或不在页面 → fail-closed 推翻为 FAIL(贴铁律2「宁可误报失败」)。
+        # 直接命中弱模型把"中间页/别的页面的预期"在终态页脑补判过的场景(实测 saucedemo/AE03)。
+        # 仅当确有可核验来源时启用(真实探针总有快照;无快照来源的单测场景跳过,不误伤)。
+        verified = ""
+        if ok:
+            haystack = _norm_evidence(f"{snapshot_text}\n{cur_url}")
+            if haystack:  # 有可核验的页面文本
+                ev = _norm_evidence(evidence)
+                if ev and ev in haystack:
+                    verified = evidence
+                else:
+                    ok = False
+                    verdict = "FAIL"
+                    reason = (
+                        f"判 PASS 但未引证当前页面实证(evidence={evidence!r} 不在当前页)"
+                        f"→ fail-closed 推翻为 FAIL;原说明:{reason or '(无)'}"
+                    )
         return AssertionResult(
             assertion=a,
             status=_st(ok),
             actual=f"AI判定={verdict}",
-            reason=("AI 判定通过(低置信,建议复核)" if ok else f"AI 判定失败:{reason}"),
+            reason=(
+                f"AI 判定通过(低置信,建议复核);实证:{verified}" if ok else f"AI 判定失败:{reason}"
+            ),
             ai_judged=True,
         )
 
@@ -340,7 +383,10 @@ class AssertionEngine:
     async def _check_url_equals(self, a: Assertion) -> AssertionResult:
         url = await self.probe.current_url()
         expected = a.expected or ""
-        ok = url == expected
+        # 结尾斜杠容差:`https://x` 与 `https://x/`(根路径)语义等价(RFC),浏览器常自动补 `/`。
+        # 不容差会让"打开首页"类步骤的 url_equals 因一个尾斜杠 false-fail(AE03 实测)。仅归一
+        # 结尾斜杠,不碰路径/查询,保持 url_equals 的"精确"语义(比 url_contains 仍严格)。
+        ok = url.rstrip("/") == expected.rstrip("/")
         return AssertionResult(
             assertion=a,
             status=_st(ok),
@@ -442,6 +488,15 @@ class AssertionEngine:
                 reason=f"元素「{a.target}」未定位,全页文本兜底命中 {expected!r}",
             )
         return None
+
+
+def _norm_evidence(text: str) -> str:
+    """归一化用于「裁判证据确定性核验」的文本:折叠所有空白为单空格 + casefold。
+
+    快照(YAML)里换行/缩进多变,逐字引证常有空白差异;折叠空白后做子串匹配更稳。
+    casefold 让大小写不敏感(英文页面文案常见),对中文无副作用。
+    """
+    return " ".join((text or "").split()).casefold()
 
 
 def _st(ok: bool) -> AssertionStatus:

@@ -58,6 +58,23 @@ async def test_url_equals():
     ).passed
 
 
+async def test_url_equals_tolerates_trailing_slash():
+    # 浏览器常把 https://x 补成 https://x/;url_equals 容差结尾斜杠,免"打开首页"步 false-fail(AE03)。
+    eng = AssertionEngine(DictProbe(url="https://automationexercise.com/"))
+    r = await eng.verify(
+        Assertion(type="url_equals", target="URL", expected="https://automationexercise.com")
+    )
+    assert r.passed
+    # 反向亦然 + 路径差异仍判不等(不放松精确语义)
+    eng2 = AssertionEngine(DictProbe(url="https://x/a"))
+    assert (
+        await eng2.verify(Assertion(type="url_equals", target="URL", expected="https://x/a/"))
+    ).passed
+    assert not (
+        await eng2.verify(Assertion(type="url_equals", target="URL", expected="https://x/b"))
+    ).passed
+
+
 # ── element_visible ───────────────────────────────────────────
 
 
@@ -343,6 +360,74 @@ async def test_llm_judge_no_verdict_stays_skipped_fail_closed():
     eng = AssertionEngine(DictProbe(), llm=llm)
     r = await eng.verify(Assertion(type="llm_judge", target="x"))
     assert r.status == AssertionStatus.SKIPPED
+
+
+class _CapturingJudgeLLM:
+    """假 LLM:记录最近一次 user 消息,验证喂给裁判的证据(URL 锚点 + 期望)。"""
+
+    def __init__(self, content: str):
+        self._content = content
+        self.last_user = ""
+
+    async def chat(self, messages, tools=None, **kwargs):
+        self.last_user = messages[-1]["content"] if messages else ""
+
+        class _R:
+            content = self._content
+
+        return _R()
+
+
+async def test_llm_judge_feeds_url_anchor_and_expectation():
+    # Fix 3 ①:终态裁判显式收到「免费 URL 锚点」(实时 URL)+ 期望原文作引证证据。
+    # evidence 逐字摘自 URL → 通过确定性核验,判 PASS。
+    llm = _CapturingJudgeLLM('{"verdict":"PASS","evidence":"/order/done","reason":"URL 命中"}')
+    eng = AssertionEngine(DictProbe(url="https://intranet/order/done"), llm=llm)
+    r = await eng.verify(
+        Assertion(
+            type="llm_judge", target="下单成功页", expected="显示订单成功提示", confidence="low"
+        )
+    )
+    assert "当前页面 URL:https://intranet/order/done" in llm.last_user
+    assert "显示订单成功提示" in llm.last_user
+    assert r.status == AssertionStatus.PASS  # evidence 在 URL 里 → 核验通过
+
+
+async def test_llm_judge_pass_with_fabricated_evidence_overridden_to_fail():
+    # Fix 3 收尾:判 PASS 但引证的证据不在当前页(脑补) → 确定性核验失败 → fail-closed 推翻为 FAIL。
+    # 直击弱模型把"中间页/别页预期"在终态页脑补判过(如 inventory 页判"用户名框=standard_user")。
+    probe = SnapshotProbe(url="https://x/inventory", snapshot='- button "Remove" [ref=e1]')
+    llm = _JudgeLLM(
+        '{"verdict":"PASS","evidence":"用户名输入框值为 standard_user","reason":"应已登录"}'
+    )
+    eng = AssertionEngine(probe, llm=llm)
+    r = await eng.verify(Assertion(type="llm_judge", target="用户名显示 standard_user"))
+    assert r.status == AssertionStatus.FAIL
+    assert r.ai_judged is True
+    assert "未引证当前页面实证" in r.reason
+
+
+async def test_llm_judge_pass_with_verifiable_evidence_stays_pass():
+    # 判 PASS 且 evidence 逐字出现在快照里 → 核验通过,实证回写 reason(可审计)。
+    probe = SnapshotProbe(
+        url="https://x/done", snapshot='- heading "Thank you for your order!" [ref=e9]'
+    )
+    llm = _JudgeLLM(
+        '{"verdict":"PASS","evidence":"Thank you for your order!","reason":"下单完成页"}'
+    )
+    eng = AssertionEngine(probe, llm=llm)
+    r = await eng.verify(Assertion(type="llm_judge", target="显示下单成功"))
+    assert r.status == AssertionStatus.PASS
+    assert r.ai_judged is True
+    assert "Thank you for your order!" in r.reason  # 实证回写,可审计
+
+
+async def test_llm_judge_evidence_check_skipped_without_page_text():
+    # 无可核验来源(快照/URL 均空,如纯内存单测探针)→ 不做证据核验,不误伤(行为同旧)。
+    llm = _JudgeLLM('{"verdict":"PASS","reason":"无快照场景"}')
+    eng = AssertionEngine(DictProbe(), llm=llm)  # url="" 且无 raw_snapshot
+    r = await eng.verify(Assertion(type="llm_judge", target="x"))
+    assert r.status == AssertionStatus.PASS
 
 
 # ── 裁决 / 聚合 ───────────────────────────────────────────────

@@ -121,7 +121,16 @@ class Recorder:
             for a in self.case_assertions:
                 mark = {"pass": "✓", "fail": "✗", "skipped": "—"}.get(a.get("status"), "?")
                 detail = a.get("reason") or a.get("actual") or ""
-                lines.append(f"  {mark} [{a.get('type')}] {a.get('target')} {detail}".rstrip())
+                # phase="gate" 是步骤驱动门控判定:仅观测,**不计入裁决**(Fix 3 解耦),标注区分
+                tag = " 〔驱动门控·不计入裁决〕" if a.get("phase") == "gate" else ""
+                step = (
+                    f"[步骤{a['step_no']}]"
+                    if a.get("phase") in ("step", "gate") and a.get("step_no")
+                    else ""
+                )
+                lines.append(
+                    f"  {mark} {step}[{a.get('type')}] {a.get('target')} {detail}{tag}".rstrip()
+                )
         return "\n".join(lines)
 
     # ── 序列化(model_output / action_result 分离) ──────────

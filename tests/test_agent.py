@@ -214,17 +214,18 @@ class _GatingLLM(LLMClient):
         return self._r[idx]
 
 
-async def test_step_gate_llm_unmet_reverts_then_passes():
-    """完成门控(LLM 判 expect_text):首次判未达成 → 退回该步重做;重做后判达成 → 用例 PASS。
-
-    并验「重做覆盖」:同一步只保留最后一次门控证据(ai_judged PASS),中途 FAIL 不残留拖垮裁决。
+async def test_step_gate_only_drives_revert_not_verdict():
+    """Fix 3 解耦:完成门控(LLM 判 expect_text)首次判未达成 → 退回该步重做;达成后放行。
+    **门控结果只驱动 reactivate,不进裁决**——裁决由终态确定性锚点给出;门控判定仅记
+    phase="gate" 作观测(可见但不计入 verdict)。并验「重做覆盖」:门控观测只剩最后一次。
     """
     spec = TestSpec(
         case_id="TC001",
         name="一步带完成判据",
         base_url="https://intranet",
         steps=[SpecStep(action="click", target="提交按钮", expect_text="页面跳转到订单列表")],
-        assertions=[],  # 仅靠步骤级门控(LLM 判)裁决
+        # 裁决由终态确定性锚点给出(门控不参与);SNAPSHOT_OK 的 URL 命中 /order/list
+        assertions=[Assertion(type="url_contains", target="URL", expected="/order/list")],
     )
     react = [
         _resp(content="点提交", calls=[("browser_click", {"ref": "e3"})]),
@@ -235,13 +236,40 @@ async def test_step_gate_llm_unmet_reverts_then_passes():
     ]
     agent = TestCaseAgent(_GatingLLM(react, ["FAIL", "PASS"]), _FakeMCP(SNAPSHOT_OK))
     record = await agent.run(_case(), spec=spec)
-    assert record.passed is True
-    step_a = [a for a in record.case_assertions if a.get("phase") == "step"]
-    # 重做覆盖:第 1 步只剩最后一次门控证据(PASS),无残留 FAIL
-    assert len(step_a) == 1
-    assert step_a[0]["step_no"] == 1
-    assert step_a[0]["status"] == "pass"
-    assert step_a[0]["ai_judged"] is True  # 门控判定标低置信可见
+    assert record.passed is True  # 由终态 url_contains 锚点裁决,非门控
+    # 门控判定记 phase="gate"、ai_judged,仅观测;重做覆盖 → 只剩最后一次(PASS)
+    gate_a = [a for a in record.case_assertions if a.get("phase") == "gate"]
+    assert len(gate_a) == 1
+    assert gate_a[0]["step_no"] == 1
+    assert gate_a[0]["status"] == "pass"
+    assert gate_a[0]["ai_judged"] is True
+    # 裁决证据是终态锚点(phase="final"),不含门控
+    final_a = [a for a in record.case_assertions if a.get("phase") == "final"]
+    assert final_a and final_a[0]["status"] == "pass"
+    assert not [a for a in record.case_assertions if a.get("phase") == "step"]
+
+
+async def test_gate_pass_alone_is_not_green():
+    """Fix 3 解耦的安全性:门控全 PASS 但**无用例级 assertions**(无裁决证据)→ 不算可信通过。
+    证明偏-PASS 的步骤门控**不能刷绿**(铁律2(b)):门控只驱动,不当裁决依据。
+    """
+    spec = TestSpec(
+        case_id="TC001",
+        name="只有门控无裁决证据",
+        base_url="https://intranet",
+        steps=[SpecStep(action="click", target="提交按钮", expect_text="跳转到订单列表")],
+        assertions=[],  # 没有任何裁决证据
+    )
+    react = [
+        _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
+        _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),  # 门控判 PASS
+        _resp(content="结束 TEST_RESULT: PASS"),
+    ]
+    agent = TestCaseAgent(_GatingLLM(react, ["PASS"]), _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=spec)
+    assert record.passed is False  # 全步 DONE 但裁决证据为空 → 不可信通过(门控不计入)
+    gate_a = [a for a in record.case_assertions if a.get("phase") == "gate"]
+    assert gate_a and gate_a[0]["status"] == "pass"  # 门控确实判通过,但不刷绿
 
 
 async def test_step_gate_llm_unmet_exhausts_budget_fails():
@@ -265,6 +293,81 @@ async def test_step_gate_llm_unmet_exhausts_budget_fails():
     assert record.passed is False
     assert "执行未完成" in record.final_result
     assert "完成判据反复未达成" in record.final_result
+
+
+class _TerminalJudgeLLM(LLMClient):
+    """区分 ReAct 调用(按脚本序列)与终态 llm_judge 裁判调用(按 verdict 队列)。
+
+    终态裁判经 ``AssertionEngine._check_llm_judge``,其 system prompt 含「测试断言裁判」。
+    """
+
+    def __init__(self, react_responses, judge_verdicts):
+        self._r = react_responses
+        self._i = 0
+        self._verdicts = list(judge_verdicts)
+        self.last_judge_user = ""  # 记录最近一次喂给裁判的 user 内容(验 URL 锚点)
+
+    async def chat(self, messages, tools=None, **kwargs) -> LLMResponse:
+        sys = messages[0]["content"] if messages else ""
+        if "测试断言裁判" in sys:  # 终态 llm_judge(_JUDGE_SYSTEM)
+            self.last_judge_user = messages[-1]["content"] if messages else ""
+            v = self._verdicts.pop(0) if self._verdicts else "FAIL"
+            # evidence 逐字摘自 SNAPSHOT_OK(含「待审批」)→ 判 PASS 时能通过确定性证据核验
+            return LLMResponse(
+                content=json.dumps(
+                    {"verdict": v, "evidence": "待审批", "reason": "裁判:引证页面文案"}
+                )
+            )
+        idx = min(self._i, len(self._r) - 1)
+        self._i += 1
+        return self._r[idx]
+
+
+def _judge_case_spec(verdict_target="显示提交成功"):
+    return TestSpec(
+        case_id="TC001",
+        name="终态裁判",
+        base_url="https://intranet",
+        steps=[SpecStep(action="click", target="提交按钮")],
+        # 用例级自然语言最终预期 → llm_judge(Fix 3:默认主裁决)
+        assertions=[
+            Assertion(
+                type="llm_judge", target=verdict_target, expected=verdict_target, confidence="low"
+            )
+        ],
+    )
+
+
+def _judge_react():
+    return [
+        _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
+        _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
+        _resp(content="结束 TEST_RESULT: PASS"),
+    ]
+
+
+async def test_terminal_llm_judge_is_main_verdict_pass():
+    """Fix 3 ①:用例级自然语言预期 → 终态偏-FAIL llm_judge 裁决(标 ai_judged);判 PASS → 用例 PASS。"""
+    llm = _TerminalJudgeLLM(_judge_react(), ["PASS"])
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=_judge_case_spec())
+    assert record.passed is True
+    final = [a for a in record.case_assertions if a.get("phase") == "final"]
+    assert final and final[0]["ai_judged"] is True
+    assert final[0]["status"] == "pass"
+    # 免费 URL 锚点:实时 URL 显式喂进裁判证据
+    assert "当前页面 URL:https://intranet/order/list" in llm.last_judge_user
+
+
+async def test_terminal_llm_judge_fail_fails_case():
+    """Fix 3 ①:终态裁判判 FAIL(偏-FAIL,引证不出证据)→ 用例 FAIL(fail-closed,不默认绿)。"""
+    llm = _TerminalJudgeLLM(_judge_react(), ["FAIL"])
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=_judge_case_spec())
+    assert record.passed is False
+    final = [a for a in record.case_assertions if a.get("phase") == "final"]
+    assert final and final[0]["status"] == "fail"
+    assert final[0]["ai_judged"] is True
 
 
 async def test_metrics_populated_on_pass():

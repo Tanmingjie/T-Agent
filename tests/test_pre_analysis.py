@@ -40,6 +40,22 @@ def test_build_messages_includes_case_content():
     assert "状态变为待审批" in user
 
 
+def test_system_prompt_routes_final_expectations_to_case_assertions():
+    """Fix 3 ③:翻译 prompt 引导每条最终预期落成用例级 assertion(难定位的用 llm_judge 承载),
+    且澄清 expect_text 只是驱动信号、非最终裁决标准。"""
+    system = build_spec_messages(_case())[0]["content"]
+    # 用例级 assertions 是最终裁决依据、每条最终预期都要落成断言(不能漏)
+    assert "最终裁决依据" in system
+    assert "都必须落成一条用例级 assertion" in system
+    # 难以稳定 selector 定位的最终预期 → 用 llm_judge 承载,且是默认主裁决(非"最末档兜底")
+    assert "llm_judge" in system
+    assert "默认的主裁决方式" in system
+    # expect_text 被澄清为驱动信号、非最终裁决标准
+    assert "不是最终业务裁决标准" in system
+    # 收尾:解释终态裁判要逐字引证最后一页实证 → 放错的中间页预期会被判 FAIL(给模型"为何严格"的理由)
+    assert "逐字引证" in system
+
+
 # ── 响应解析 ──────────────────────────────────────────────────
 
 
