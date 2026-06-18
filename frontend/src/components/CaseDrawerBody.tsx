@@ -358,6 +358,65 @@ function ListBlock({ title, items }: { title: string; items: string[] }) {
   );
 }
 
+/** 把一条结构化断言渲染成可读文本:[type] target == expected。 */
+function assertText(a: SpecAssertion): string {
+  const exp = a.expected != null && a.expected !== "" ? ` == ${a.expected}` : "";
+  return `[${a.type}] ${a.target}${exp}`;
+}
+
+/** 步骤区块:每步显示「动作 → 预期(expect_text)」+ 其步骤级即时断言(step.expect)。
+ *  步骤级断言在该步所属页面**即时验证**(非终态),与用例级最终断言分开展示,避免混淆
+ *  ——后者才是整个流程跑完后在最后一页统一裁决的依据。 */
+function SpecStepsBlock({ title, steps }: { title: string; steps: SpecStep[] }) {
+  if (steps.length === 0) return null;
+  return (
+    <div>
+      <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
+        {title}
+      </h4>
+      <ul className="space-y-1.5">
+        {steps.map((s, i) => (
+          <li key={i} className="text-sm text-gray-600 leading-snug">
+            • {specLine(s)}
+            {s.expect && s.expect.length > 0 && (
+              <ul className="ml-4 mt-1 space-y-0.5">
+                {s.expect.map((a, j) => (
+                  <li key={j} className="text-xs text-gray-400">
+                    ↳ 断言(该步即时验):{assertText(a)}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/** 用例级最终断言:整个流程跑完后在【最后一页】统一裁决的依据(终态裁决)。
+ *  与各步骤的即时断言(SpecStepsBlock 内)分开,避免把步骤锚点误读为最终判据。 */
+function CaseAssertBlock({ asserts }: { asserts: SpecAssertion[] }) {
+  return (
+    <div>
+      <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
+        用例级最终断言 (assertions)
+      </h4>
+      {asserts.length === 0 ? (
+        <p className="text-xs text-gray-400">（翻译未产出用例级最终断言）</p>
+      ) : (
+        <ul className="space-y-1">
+          {asserts.map((a, i) => (
+            <li key={i} className="text-sm text-gray-600 leading-snug">
+              • {assertText(a)}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 const PRECOND_TYPE_META: Record<
   string,
   { label: string; cls: string }
@@ -469,18 +528,10 @@ function InfoView({
 }) {
   const given = spec?.given ?? [];
   const steps = spec?.steps ?? [];
-  // 断言聚合:用例级 + 各步 expect(与后端 collect_assertions 一致;LLM 常把断言
-  // 放进 step.expect 而非用例级,只渲染用例级会显示为空)。按语义键去重。
-  const seen = new Set<string>();
-  const assertions = [
-    ...(spec?.assertions ?? []),
-    ...[...given, ...steps].flatMap((s) => s.expect ?? []),
-  ].filter((a) => {
-    const k = `${a.type}|${a.target}|${a.expected ?? ""}`;
-    if (seen.has(k)) return false;
-    seen.add(k);
-    return true;
-  });
+  // 断言分两级、分开展示(不再拍平聚合):**步骤级即时断言**(step.expect)随所属步骤展示,
+  // 在该步页面即时验;**用例级最终断言**(spec.assertions)单列,终态统一裁决。早先为兼容
+  // 「翻译把断言全塞 step.expect、用例级空」而做的跨级聚合会抹掉级别 → 误把步骤锚点当最终判据。
+  const caseAsserts = spec?.assertions ?? [];
   return (
     <div className="p-6 space-y-6 max-w-3xl">
       {caseInfo.precondition_items && caseInfo.precondition_items.length > 0 ? (
@@ -510,22 +561,12 @@ function InfoView({
           </p>
         ) : (
           <div className="space-y-4">
-            <ListBlock title="前置 (given)" items={given.map(specLine)} />
-            <ListBlock title="步骤 (steps)" items={steps.map(specLine)} />
-            <ListBlock
-              title="断言 (assertions)"
-              items={assertions.map(
-                (a) =>
-                  `[${a.type}] ${a.target}${
-                    a.expected != null && a.expected !== ""
-                      ? ` == ${a.expected}`
-                      : ""
-                  }`,
-              )}
-            />
+            <SpecStepsBlock title="前置 (given)" steps={given} />
+            <SpecStepsBlock title="步骤 (steps)" steps={steps} />
+            <CaseAssertBlock asserts={caseAsserts} />
             {given.length === 0 &&
               steps.length === 0 &&
-              assertions.length === 0 && (
+              caseAsserts.length === 0 && (
                 <p className="text-sm text-gray-400">规格为空</p>
               )}
           </div>
