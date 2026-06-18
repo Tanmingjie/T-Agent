@@ -41,16 +41,35 @@ from input.models import Assertion  # noqa: E402
 
 
 class FakeProbe:
-    """只提供裁判需要的 raw_snapshot();其余接口给桩。"""
+    """只提供裁判需要的 raw_snapshot() + current_url();其余接口给桩。
 
-    def __init__(self, snap: str) -> None:
+    current_url 喂**真实页面 URL**(而非空串):裁判把实时 URL 当免费锚点,且证据核验
+    (Fix 3 收尾)允许裁判逐字引证 URL 片段——URL 留空会让 URL 型预期无从引证,误伤评测失真。
+    """
+
+    def __init__(self, snap: str, url: str = "") -> None:
         self._snap = snap
+        self._url = url
 
     def raw_snapshot(self) -> str:
         return self._snap
 
     async def current_url(self) -> str:
-        return ""
+        return self._url
+
+
+# page key → 真实 URL(与 capture.py 的 PAGES 对齐),供 FakeProbe.current_url。
+PAGE_URLS = {
+    "home": "https://automationexercise.com/",
+    "products": "https://automationexercise.com/products",
+    "search_dress": "https://automationexercise.com/products?search=dress",
+    "login": "https://automationexercise.com/login",
+    "cart_empty": "https://automationexercise.com/view_cart",
+}
+
+# 证据核验推翻的标记串(与 harness/assertion.py::_check_llm_judge 一致):裁判判 PASS 但
+# 引证证据无一落在当前页 → fail-closed 推翻为 FAIL。据此从断言 FAIL 中**分离出"证据核验误伤"**。
+_EVIDENCE_OVERRIDE_MARK = "疑似脑补"
 
 
 # (page, 预期文本[中文业务语言], 真值是否成立)。真值按裁判可见的前6000字人工核定。
@@ -96,20 +115,33 @@ async def main() -> None:
     # 计数:[gate, assertion] 各自的混淆
     fg = {"gate": 0, "assert": 0}  # false-green
     ff = {"gate": 0, "assert": 0}  # false-fail
+    # 证据核验(Fix 3 收尾)专项:把断言裁判的"原始模型判定"与"核验后判定"分开统计,
+    # 量化新加的核验对弱模型的**误伤**(真预期被核验推翻)与**额外拦截**(假预期被核验拦下)。
+    override_total = 0  # 证据核验推翻 PASS→FAIL 的总次数
+    override_ff = 0  # 其中误伤:真预期被推翻(本应 PASS)
+    override_caught = 0  # 其中有益:假预期被推翻(原始模型想刷绿,被核验拦下)
     n_false = sum(1 for _, _, t in EVAL if not t)
     n_true = sum(1 for _, _, t in EVAL if t)
 
-    print(f"{'真值':<4}{'gate':<6}{'assert':<8}预期")
-    print("-" * 78)
+    print(f"{'真值':<4}{'gate':<6}{'assert':<8}{'核验':<6}预期")
+    print("-" * 86)
     for page, exp, truth in EVAL:
-        probe = FakeProbe(snaps[page])
+        probe = FakeProbe(snaps[page], PAGE_URLS.get(page, ""))
         # 门控(偏 PASS)
         met, _ = await _gate_step_done(llm, probe, exp)
         gate_pass = met
-        # 断言裁判(偏 FAIL)
+        # 断言裁判(偏 FAIL + 证据确定性核验)
         engine = AssertionEngine(probe, llm=llm)
         r = await engine._check_llm_judge(Assertion(type="llm_judge", target=exp, expected=exp))
         assert_pass = r.status == AssertionStatus.PASS
+        # 证据核验是否推翻了模型的 PASS(reason 含标记串 = 模型原判 PASS 但证据不在页 → 被推翻)
+        overridden = (r.status == AssertionStatus.FAIL) and (_EVIDENCE_OVERRIDE_MARK in r.reason)
+        if overridden:
+            override_total += 1
+            if truth:
+                override_ff += 1  # 真预期被推翻 = 误伤
+            else:
+                override_caught += 1  # 假预期被推翻 = 有益拦截
 
         # 标记错误
         def mark(passed: bool) -> str:
@@ -129,9 +161,10 @@ async def main() -> None:
         if a == "FF✗":
             ff["assert"] += 1
         tval = "真" if truth else "假"
-        print(f"{tval:<5}{g:<7}{a:<9}[{page}] {exp[:40]}")
+        ov = "推翻" if overridden else ""
+        print(f"{tval:<5}{g:<7}{a:<9}{ov:<7}[{page}] {exp[:38]}")
 
-    print("-" * 78)
+    print("-" * 86)
     print(f"\n样本:假预期 {n_false} 条 / 真预期 {n_true} 条\n")
     print(f"{'裁判':<10}{'false-green(刷绿)':<22}{'false-fail(误报失败)'}")
     print(
@@ -141,6 +174,16 @@ async def main() -> None:
     print(
         f"{'断言(偏FAIL)':<12}{fg['assert']}/{n_false} = {fg['assert']/n_false:.0%}"
         f"{'':<10}{ff['assert']}/{n_true} = {ff['assert']/n_true:.0%}"
+    )
+    # 证据核验专项报告(A-2 核心:量化对弱模型的误伤率)
+    print(f"\n证据确定性核验(Fix 3 收尾)专项:")
+    print(f"  推翻 PASS→FAIL 共 {override_total} 次")
+    print(
+        f"  · 误伤(真预期被推翻)= {override_ff}/{n_true} = {override_ff/n_true:.0%}"
+        "  ← A-2 关注:核验把好用例判挂的比例"
+    )
+    print(
+        f"  · 有益拦截(假预期被推翻,阻止刷绿)= {override_caught}/{n_false} = {override_caught/n_false:.0%}"
     )
 
 

@@ -404,7 +404,26 @@ async def test_llm_judge_pass_with_fabricated_evidence_overridden_to_fail():
     r = await eng.verify(Assertion(type="llm_judge", target="用户名显示 standard_user"))
     assert r.status == AssertionStatus.FAIL
     assert r.ai_judged is True
-    assert "未引证当前页面实证" in r.reason
+    assert "疑似脑补" in r.reason
+
+
+async def test_llm_judge_pass_with_compound_summarized_evidence_stays_pass():
+    # 误伤修复(eval_fg 实测):复合预期(导航含多项)模型把证据写成概括句、非单一逐字串;
+    # 只要其中一个具体锚点(如 "Products"/"API Testing")逐字落在页上就算有据 → 不误伤推翻。
+    probe = SnapshotProbe(
+        url="https://x/",
+        snapshot='- link "Products" [ref=e1]\n- link "Cart" [ref=e2]\n- link "API Testing" [ref=e3]',
+    )
+    llm = _JudgeLLM(
+        '{"verdict":"PASS","evidence":"快照顶部导航栏含链接:Home, Products, Cart, API Testing 等入口",'
+        '"reason":"导航齐全"}'
+    )
+    eng = AssertionEngine(probe, llm=llm)
+    r = await eng.verify(
+        Assertion(type="llm_judge", target="顶部导航含 Products、Cart、API Testing")
+    )
+    assert r.status == AssertionStatus.PASS  # 锚点 Products/Cart/API Testing 命中 → 有据,不推翻
+    assert r.ai_judged is True
 
 
 async def test_llm_judge_pass_with_verifiable_evidence_stays_pass():

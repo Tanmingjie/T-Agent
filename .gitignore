@@ -51,3 +51,6 @@ storage/ui_research/
 scripts/*
 !scripts/serve.py
 !scripts/seed_demo.py
+
+# eval_fg 快照是可经 capture.py 重新抓取的 fixture 数据,不入库
+eval_fg/snapshots.json

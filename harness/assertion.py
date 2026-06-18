@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
@@ -238,24 +239,26 @@ class AssertionEngine:
                 reason=f"llm_judge 未给出明确裁决 → skipped:{reason or '(无)'}",
             )
         ok = verdict == "PASS"
-        # —— 证据核验(Fix 3 收尾,治"脑补证据"刷绿)——
-        # 判 PASS 时,裁判**逐字引证**的 evidence 必须确实出现在当前页面(快照 / URL,空白归一后
-        # 子串匹配)。引证缺失或不在页面 → fail-closed 推翻为 FAIL(贴铁律2「宁可误报失败」)。
-        # 直接命中弱模型把"中间页/别的页面的预期"在终态页脑补判过的场景(实测 saucedemo/AE03)。
-        # 仅当确有可核验来源时启用(真实探针总有快照;无快照来源的单测场景跳过,不误伤)。
+        # —— 证据接地核验(Fix 3 收尾,治"脑补证据"刷绿)——
+        # 判 PASS 时,裁判引证的 evidence 必须**有据**:其中至少一个"实证锚点"(引号内片段 / 较长
+        # 英文/数字串 / 较长中文串)逐字出现在当前页面(快照 / URL,空白归一)。全不在 = 脑补 →
+        # fail-closed 推翻为 FAIL(贴铁律2「宁可误报失败」)。
+        # 〔2026-06-18 据 eval_fg 实测改"整串子串匹配"为"锚点接地":整串匹配对**复合预期**
+        #   (如"导航含 A、B、C")误伤 18%——模型把证据写成概括句、非单一逐字串;改为"任一锚点命中"
+        #   后误伤→0、false-green 仍 0。仍能拦住整段脑补(无任何锚点落在页上,如"用户名框=standard_user"
+        #   在无该字段的页)。〕仅当确有可核验来源时启用(无快照单测跳过,不误伤)。
         verified = ""
         if ok:
             haystack = _norm_evidence(f"{snapshot_text}\n{cur_url}")
             if haystack:  # 有可核验的页面文本
-                ev = _norm_evidence(evidence)
-                if ev and ev in haystack:
+                if _evidence_grounded(evidence, haystack):
                     verified = evidence
                 else:
                     ok = False
                     verdict = "FAIL"
                     reason = (
-                        f"判 PASS 但未引证当前页面实证(evidence={evidence!r} 不在当前页)"
-                        f"→ fail-closed 推翻为 FAIL;原说明:{reason or '(无)'}"
+                        f"判 PASS 但引证证据无一落在当前页(evidence={evidence!r})"
+                        f"→ 疑似脑补,fail-closed 推翻为 FAIL;原说明:{reason or '(无)'}"
                     )
         return AssertionResult(
             assertion=a,
@@ -497,6 +500,46 @@ def _norm_evidence(text: str) -> str:
     casefold 让大小写不敏感(英文页面文案常见),对中文无副作用。
     """
     return " ".join((text or "").split()).casefold()
+
+
+# 从裁判 evidence 里抽"实证锚点":引号内片段 / 较长英文数字串 / 较长中文串。用于"接地核验"——
+# 只要有一个锚点逐字出现在当前页就认为有据,治复合证据(概括句)被整串匹配误伤(eval_fg 实测)。
+_QUOTED_RE = re.compile(r"""["'“”「」『』]([^"'“”「」『』]{2,}?)["'“”「」『』]""")
+_ASCII_RUN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._/\-]{3,}")
+_CJK_RUN_RE = re.compile(r"[一-鿿]{3,}")
+
+
+def _evidence_anchors(evidence: str) -> list[str]:
+    """抽取并归一化 evidence 里的实证锚点(去重,norm 后长度≥3 才算"够独特")。
+
+    长度阈值 3:英文/数字锚点经 `_ASCII_RUN_RE` 已强制≥4(避开 the/page 等泛词),中文锚点
+    经 `_CJK_RUN_RE` 取≥3(3 字中文短语如"待审批""购物车"已足够特异)。统一 ≥3 过滤即可。
+    """
+    raw: list[str] = []
+    raw += _QUOTED_RE.findall(evidence or "")
+    raw += _ASCII_RUN_RE.findall(evidence or "")
+    raw += _CJK_RUN_RE.findall(evidence or "")
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in raw:
+        n = _norm_evidence(a)
+        if len(n) >= 3 and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _evidence_grounded(evidence: str, haystack_norm: str) -> bool:
+    """证据是否"有据":至少一个实证锚点逐字出现在(已归一的)当前页文本里。
+
+    比"整串子串匹配"宽:模型把复合证据写成概括句(非单一逐字串)时,只要其中一个具体锚点
+    (引号片段 / 页面英文文案 / URL 片段 / 中文短语)命中页面即算有据,大幅降误伤;但整段脑补
+    (无任何锚点落在页上,如"用户名框=standard_user"在无该字段的页)仍判无据 → fail-closed。
+    """
+    anchors = _evidence_anchors(evidence)
+    if not anchors:
+        return False
+    return any(a in haystack_norm for a in anchors)
 
 
 def _st(ok: bool) -> AssertionStatus:
