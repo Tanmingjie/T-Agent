@@ -27,20 +27,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 单条用例的执行由 `harness/agent.py::TestCaseAgent.run()` 总装,串起以下模块：
 
-- `intelligence/pre_analysis.py` — TestCase → **TestSpec**(纯 LLM 翻译,阶段一无词汇表)。坏输出降级为朴素映射。
-- `harness/step_plan.py` — TestSpec.steps → **StepPlan** 状态机(pending/active/done/...),暴露 `mark_step_done` 工具给 LLM。
-- `harness/prompt.py` — System Prompt **分层**(Base+Context+Task+Tools),`PromptBuilder.build(step_plan)` 每轮重算反映进度。
-- `harness/react_loop.py` — **ReAct 主循环**。Reason→Act→Observe;护栏:循环检测(连续 3 次同调用)、max_steps、哑火续推(`max_idle_nudges`)、tool_call 容错终止、**单步定位失败预算**(同一业务步累计定位失败达 `step_fail_budget`/env `STEP_FAIL_BUDGET` 默认 3 → `STEP_FAILED` 快速失败,标明卡死步,治"点错前序元素致后续找不到目标却磨到 max_steps")。**观察以 user 消息文本回灌**(不依赖 tool_call_id 配对,本地模型更稳)。**步骤级完成门控**:`on_step_done(step_no) -> str|None` 回调在某业务步 mark_step_done 落定 DONE 时触发——返回非空原因串=该步未达成 → `reactivate` 退回该步重做 + 回灌原因 + 计 `expect_retry_budget`(env `EXPECT_RETRY_BUDGET` 默认 2),耗尽 → `EXPECT_UNMET` 判该步未真正完成(软、可恢复,铁律2(a):不达成先给重做机会,耗尽才裁决性失败)。治"未真完成就 mark done"(如误点 Cancel 没点 Finish 却标完成)。
+- `intelligence/pre_analysis.py` — TestCase → **阶段化 TestSpec**(纯 LLM 翻译,**只产意图不接地**,2026-06-22 重设计)。产出 `{intent, preconditions:[str], phases:[{steps:[str], expected}]}`:每阶段 = 一组自然语言步骤(驱动)+ 一条组级预期(验证依据)。不写 selector/不锁动作/不猜元素,接地全交运行时。坏输出降级为单阶段无损映射。契约见 `docs/test_spec_v2.md`。
+- `harness/step_plan.py` — 阶段化 TestSpec 的 `phases.steps` **摊平**成扁平步骤状态机(pending/active/done/...)+ 记每步所属阶段;暴露 `mark_step_done` 工具 + **阶段边界**查询(`is_phase_last_step`/`phase_last_step_no`)。
+- `harness/prompt.py` — System Prompt **分层**(Base+Context+Task+Tools),`PromptBuilder.build(step_plan)` 每轮重算反映进度。Task 层渲染 `intent`/`preconditions`/阶段化步骤清单,**不渲染 expected**(FG01:验证依据绝不进驱动)。
+- `harness/react_loop.py` — **ReAct 主循环**。Reason→Act→Observe;护栏:循环检测、max_steps、哑火续推(`max_idle_nudges`)、tool_call 容错、过早 mark_done 软护栏、**单步定位失败预算**(`STEP_FAIL_BUDGET` 默认 3 → `STEP_FAILED` 快速失败)。**观察以 user 消息文本回灌**(不依赖 tool_call_id 配对)。**阶段边界 Validator**(2026-06-22 取代步骤门控):`on_phase_end(phase_index) -> str|None` 在某阶段**最后一步** mark_step_done 落定时触发,核验该阶段 expected——返回非空原因 = 未达成 → `PHASE_FAILED` **阶段失败即失败**(不 replan/重试)。
 - `harness/llm.py` — LiteLLM 封装 + tool_call 容错 + token 统计。配置走 env(`LLM_MODEL`/`LLM_API_BASE`/`LLM_API_KEY`)。
 - `mcp_client/client.py` — MCP 官方 SDK(stdio)连 playwright-mcp;工具格式 MCP↔LiteLLM 转换。
 - `harness/page_probe.py` — 解析 playwright-mcp 的 `browser_snapshot`(YAML A11y 树)为节点,按语义 target 双向包含匹配(`MCPPageProbe` 实现断言引擎的 `PageProbe` 协议)。
-- `harness/assertion.py` ★ — **断言规则引擎**。阶段一支持 DOM/文本/URL;元素找不到标 `healable`;接 healer 做目标重定位复验;`verdict()` 裁决(任一 FAIL 即不通过,全 skipped 不算可信通过)。**断言验证分两处 + 步骤级完成门控(2026-06-15 重订,治内网"按步预期"用例)**:`agent.run::verify_step`(经 `on_step_done` 接进 ReAct)在某业务步落定时于**当前子页面**做两层:**(1) `step.expect_text`(自然语言完成判据)→ LLM 看快照判达成**(经 `llm_judge` 通道,偏向 FAIL、标 `ai_judged` 低置信可见、计入裁决)——这是**驱动门控**(role a,不依赖定位器对齐),FAIL 即返回原因让 react_loop 退回该步重做;**(2) `step.expect`(可选结构化断言)→ 门控通过后再确定性验**,作**高置信**裁决证据。**用例级 `assertions`** 仍**终态**验。重做时同一步重复验 → **按 `step_no` 去重(后验覆盖前验)**,中途 FAIL 不残留。三者合并裁决(`step_assert_pairs` + `terminal_results`)。根治"中间子页面的预期被攒到终态页验 → 元素已不在 → 假阴性",并把"每步完成判断"从 LLM 自报 mark_done 升级为**看快照确定它真完成**。结果按 `phase=step/final` + `step_no` 标注落库,前端断言列标「步骤N」+「AI判定·低置信」。
+- `harness/assertion.py` ★ — **断言引擎 + 阶段 Validator**。`_check_llm_judge`(偏-FAIL + **强制逐字引证页面证据** + 平台**证据接地确定性核验**,脑补→fail-closed 推翻)是阶段 Validator 的核心;另留 DOM/文本/URL/custom_tool 确定性检查 + healer 重定位 + `verdict()`(任一 FAIL 不通过)。**2026-06-22 阶段化重设计**:`agent.run::on_phase_end` 在某阶段最后一步落定时,于**当时所处页面**对该阶段 `expected` 跑一次 `_check_llm_judge`(实时 URL 作免费锚点),逐阶段裁决;**取代**旧的「步骤门控 + 终态 verify_all」三处验证。结果按 `phase_index`+`expected` 落库,前端按阶段展示。〔删旧 `_gate_step_done` 偏-PASS 门控、`step.expect` 结构化锚点、终态用例级 assertions。〕
 - `harness/healing.py` — **Healing Subagent**(独立 context)。断言侧:重定位断言目标;操作侧:工具报错时重定位并把建议回灌 ReAct。P1 角色→P5 视觉,防臆造(候选必须落在快照里)。
 - `harness/context.py` — **Context Compact**。发 LLM 前压缩:旧观察折叠成一行(L1)、近期快照按关键词相关度截断(L2),治 token 膨胀。
 - `harness/recorder.py` — 汇总 `ExecutionRecord`;`to_history()` 把 model_output / action_result 分离序列化。
 - `harness/hooks.py` — 生命周期 Hook(before_case 失败→用例 FAIL 不进 Agent)+ 共享 `ExecutionContext`。
 - `harness/session.py` — 仅留 `make_mcp_credential_login`(账号+密码表单登录回调,供主动扫描登录用)。〔**2026-06-18 会话/Cookie 复用退役**:原 `SessionManager`/`LoginHook`/`CaptureSessionHook`/`make_mcp_cookie_*` + `SessionProfile` 整体删除——Cookie 复用对 SPA/Token 型登录不对症、TTL 与真实会话寿命脱节;登录态跨用例复用改由后续「环境管理」主线维护。`harness/hook_builder.py` 随之删除,`Suite.session_profile` 及 `session_profile` 表经 alembic `0002` 降除。〕
-- `harness/precondition.py` — 预置条件 LLM 三分类(state_hook/action_step/ambiguous),低置信/无映射降级 ambiguous。
+- 〔`harness/precondition.py` 预置条件三分类器 **2026-06-22 删除**:阶段化重设计后预置条件退化为纯背景 `list[str]`(不执行、不 guard、不分类),原 state_hook/action_step/ambiguous 三分类 + 标黄确认端点一并退役。〕
 - `harness/skills.py` — Skill 体系(**2026-06-15 对齐 Anthropic/Claude Code 标准 Skill**):单一 `Skill`(name+description+content),**渐进披露**——System Prompt 常驻 `name—description` 清单,LLM 判断相关时**主动调 `load_skill(name)` 工具**展开正文(`SkillManager.load`/`render`,`load_skill` 经 agent 控制工具路由 + `SkillManager.tool_schema()` 暴露)。内置基线常识 `preload=True` 正文常驻;项目 Skill `preload=False` 走渐进加载。〔删旧 DomainSkill/PageSkill/ToolSkill 三类与 URL/关键词平台侧匹配——加载与否改由 LLM 决策。〕
 - `harness/permission.py` — 高危词 + prod 环境锁;Reason 后 Act 前拦截;trust_mode / 可注入 approver;无 approver 默认拒绝。
 - `harness/orchestrator.py` — Suite 调度:`parallelism` **可配并发**(`asyncio.Semaphore` + `gather`,默认 1=串行;>1 需 `agent_factory` 让每用例自带独立 MCP/浏览器)、用例间隔离(异常→FAIL 不拖垮他人)、suite 级 hooks、结果汇总。
@@ -94,6 +94,13 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 实施进度
 
+- **翻译/执行/裁决阶段化重设计(2026-06-22,已落地 FP0-3)** ★ — 推翻旧「盲接地翻译 + 步骤门控 + 终态裁决」,改为**阶段化(phase)**。根因:旧翻译在**翻译期接地**(盲猜 selector/动作/元素),复杂用例翻译时根本不知道页面长什么样 → 五大病(盲断言、步↔预期对齐脆、expect_text 盲编、降级断崖、词表空转)。新设计:**翻译只产意图,接地全交运行时**。
+  - **数据契约**(`docs/test_spec_v2.md`,无兼容):`TestSpec = {intent, preconditions:[str], phases:[{steps:[str], expected}]}`。阶段 = 一组自然语言步骤(**驱动**)+ 一条组级预期(**验证依据**)。`steps` 数据内联、不写 selector;`expected` **只在阶段边界给 Validator 核验,绝不进 agent 驱动**(FG01:错预期不会把 agent 带去追错目标)。前置纯背景(不执行/不 guard,具体状态保证交未来「环境管理」)。
+  - **执行 + 裁决**(取代铁律 2(b) 的「终态裁判为主」结论):**逐阶段 Validator**——某阶段最后一步落定时,在**当时所处页面**用偏-FAIL + **证据接地**的 `_check_llm_judge` 核验该阶段 expected;PASS 进下一阶段,FAIL → **阶段失败即失败**(不 replan/重试)。**取消独立终态裁决**(最后阶段的核验即终态检查)。verdict = 全阶段通过 + 执行完整。守住「偏-FAIL + 证据接地 + fail-closed + 不可见刷绿」底线。
+  - **业界印证**(调研):Skyvern 2.0 Planner-Actor-**Validator**(逐子目标验证、replan,WebVoyager 45%→85.85%)+ 30 年手工 QA(分组步骤 + 组级预期结果)+ BDD,三者独立收敛到「验证粒度 = 子目标/阶段」。browser-use 对比评估见 `browser-use_对比评估.md`(结论:不替换执行层)。
+  - **删除**(无兼容,净 −1900 行):`harness/precondition.py` 分类器、`SpecStep`、`_gate_step_done` 步骤门控、`step.expect`/`expect_text`、终态 `verify_all`、`enhance_targets`、`collect_assertions`/`ensure_navigation_step`、预置条件标黄确认端点。codegen 最小适配(phases→steps + 执行轨迹定位器)。
+  - **验证**:pytest 462 passed(2 个预存在 Windows 失败不变);前端 `npm run build` 绿;**saucedemo TC101 + AE03(脏公网站点)live 双 PASS**——各阶段 Validator 在所属页面证据接地判通过(TC101:inventory URL/商品列表 + 购物车角标=1;AE03:All Products/Searched Products/购物车 qty=1)。提交 `04b412d`(后端)/ `f02cd0e`(前端)。
+  - **下一步候选**:阶段失败的 replan(本轮"阶段失败即失败")、运行时锚点自动捕获(URL/数据)、codegen 轨迹化、每阶段 system prompt 优化(任务清单已记)。
 - 阶段一 ✅ T-01~T-10(主干跑通,断言驱动 PASS/FAIL;saucedemo 端到端验证过)
 - 阶段二 ✅ T-11~T-19(自愈 / Context Compact / Hooks / Session+LoginHook / 预置条件分类器 / Skill / Permission / Orchestrator / Custom Tool)。四条验收标准 saucedemo 真实演示通过(见 `examples/acceptance_stage2.py`)。
 - 阶段三 ✅ T-20~T-22(`codegen/`BDDGenerator / `storage/db.py` SQLModel 持久化 / `intelligence/`词汇表+Scanner)。
