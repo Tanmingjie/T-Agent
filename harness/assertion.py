@@ -13,8 +13,10 @@
 "最末档兜底"升格):接入 LLM 后偏-FAIL 判 PASS/FAIL 并计入裁决,**判 PASS 必须逐字引证页面
 实证、平台确定性核验该证据确在当前页**(脑补证据 → fail-closed 推翻为 FAIL);结果打
 ``ai_judged`` 标记(低置信、可审计),报告区分「结构化绿」与「AI 判绿」使 false green 可见可
-回溯;**能用 URL/数据真值确定性验的预期仍优先用 URL/custom_tool**(高置信锚点)。未接入 LLM
-则 skipped。skipped **不静默放过**(裁决时全 skipped 不算可信通过)。
+回溯;**能用 URL/数据真值确定性验的预期仍优先用 URL/custom_tool**(高置信锚点)。**llm_judge
+的主裁决缺失三态(未接 LLM / 调用失败 / 解析不出 verdict)一律 FAIL**(2026-06-23 G1:阶段化下
+LLM 是主裁决,缺失不默认绿,自动化平台无人工复核环节——SKIPPED 在 llm_judge 路径退役;
+custom_tool/未知类型未接入时仍 skipped,属非阶段化路径)。
 
 断言失败的两种归因(§5.3):
 - 真失败:元素在、值不对 → FAIL(``healable=False``)。
@@ -185,13 +187,18 @@ class AssertionEngine:
         该 evidence 真出现在当前页(快照/URL,空白归一后子串匹配),不在 → fail-closed 推翻为
         FAIL(治弱模型"脑补证据"刷绿,尤其把中间页/别页预期在终态页判过)。结果打 ``ai_judged``
         标记,报告区分「结构化绿」与「AI 判绿」使 false green 可见可回溯;能用 URL/数据真值确定性
-        验的预期仍应优先用 URL/custom_tool。未接入 LLM → skipped(不静默放过)。
+        验的预期仍应优先用 URL/custom_tool。**主裁决缺失三态(未接 LLM / 调用失败 / 解析不出
+        verdict)一律 FAIL**(2026-06-23 G1:阶段化下 LLM 是主裁决,缺失不能默认绿,且自动化
+        平台无"skipped 等人工复核"环节——SKIPPED 在此路径退役)。
         """
         if self.llm is None:
+            # 阶段化重设计后 LLM judge 是主裁决:没有 LLM = 主裁决缺失 = 信号缺失,
+            # 不能默认绿 → FAIL(而非旧设计的 skipped 等人工复核;自动化平台无此环节)。
             return AssertionResult(
                 assertion=a,
-                status=AssertionStatus.SKIPPED,
-                reason="llm_judge 未接入 LLM → skipped(需人工复核)",
+                status=AssertionStatus.FAIL,
+                ai_judged=True,
+                reason="llm_judge 未接入 LLM,无法裁决 → FAIL(主裁决缺失不默认绿)",
             )
         snapshot_text = ""
         raw_fn = getattr(self.probe, "raw_snapshot", None)
@@ -263,17 +270,17 @@ class AssertionEngine:
                     logger.warning("llm_judge 退回纯文本仍失败:%s", e2)
                     return AssertionResult(
                         assertion=a,
-                        status=AssertionStatus.SKIPPED,
+                        status=AssertionStatus.FAIL,
                         ai_judged=True,
-                        reason=f"llm_judge 调用失败 → skipped:{e2}",
+                        reason=f"llm_judge 调用失败,无法裁决 → FAIL(主裁决缺失不默认绿):{e2}",
                     )
             else:
                 logger.warning("llm_judge 调用失败:%s", e)
                 return AssertionResult(
                     assertion=a,
-                    status=AssertionStatus.SKIPPED,
+                    status=AssertionStatus.FAIL,
                     ai_judged=True,
-                    reason=f"llm_judge 调用失败 → skipped:{e}",
+                    reason=f"llm_judge 调用失败,无法裁决 → FAIL(主裁决缺失不默认绿):{e}",
                 )
         content = resp.content or ""
         verdict, reason, evidence = "", "", ""
@@ -292,12 +299,14 @@ class AssertionEngine:
                 verdict = recovered
                 reason = reason or "(从非规整输出中提取 verdict)"
         if verdict not in ("PASS", "FAIL"):
+            # 解析 + 正则都捞不出 verdict → 裁判输出不可用 = 主裁决缺失,fail-closed 判 FAIL
+            # (绝不因输出乱默认绿;阶段化下无"skipped 等人工复核"环节)。
             return AssertionResult(
                 assertion=a,
-                status=AssertionStatus.SKIPPED,
+                status=AssertionStatus.FAIL,
                 ai_judged=True,
                 actual=content[:200],
-                reason=f"llm_judge 未给出明确裁决 → skipped:{reason or '(无)'}",
+                reason=f"llm_judge 未给出明确裁决,无法裁决 → FAIL:{reason or '(无)'}",
             )
         ok = verdict == "PASS"
         # —— 证据接地核验(Fix 3 收尾,治"脑补证据"刷绿)——
@@ -431,11 +440,12 @@ class AssertionEngine:
 
     @staticmethod
     def verdict(results: list[AssertionResult]) -> bool:
-        """裁决:只要有 FAIL 即 PASS=False;无断言或全为 SKIPPED 时不算可信通过。
+        """[非阶段化路径化石] 旧的"至少一条 PASS、全 SKIPPED 不可信"裁决门槛。
 
-        方案A 后 PASS 可来自结构化断言**或** llm_judge 兜底(后者标 ``ai_judged``);
-        SKIPPED 收窄为「custom_tool 未接 / llm_judge 未接 LLM / 未知类型」。裁决本身仍确定性:
-        任一 FAIL 即不通过,需至少一条 PASS 才算可信通过。
+        服务于旧设计"结构化为主、LLM 不可信需兜底"的假设——要求至少一条结构化绿。
+        **阶段化重设计(FP0-3)后 LLM judge 是主裁决,本方法不再被 ``agent.run`` 调用**
+        (⑤ 闸门改为「无阶段 FAIL + 执行完整」,G1 又把 llm_judge 的 SKIPPED 三态收成
+        FAIL → 阶段裁决只剩 PASS/FAIL 二态)。保留供非阶段化/历史路径与外部调用使用。
         """
         if not results:
             return False

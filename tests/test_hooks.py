@@ -122,21 +122,23 @@ async def test_agent_before_case_failure_skips_execution():
 
 async def test_agent_after_case_runs_on_success():
     from harness.agent import TestCaseAgent
-    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
+    from tests.test_agent import (
+        SNAPSHOT_OK,
+        _case,
+        _FakeMCP,
+        _PhaseJudgeLLM,
+        _react_one_step,
+        _spec,
+    )
 
     mgr = HookManager()
     cleaned = []
     mgr.register(AFTER_CASE, lambda ctx: cleaned.append(ctx.get("passed")))
 
-    llm = _ScriptedLLM(
-        [
-            _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
-            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
-            _resp(content="TEST_RESULT: PASS"),
-        ]
-    )
+    # 带 expected + 判 PASS 才是成功路径(G1 后空 expected 会 PHASE_FAILED)
+    llm = _PhaseJudgeLLM(_react_one_step(), ["PASS"])
     agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), hooks=mgr)
-    await agent.run(_case(), spec=_spec())
+    await agent.run(_case(), spec=_spec(expected="出现待审批"))
     assert cleaned == [True]  # after_case 跑了,且能读到 passed
 
 

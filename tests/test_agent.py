@@ -185,13 +185,14 @@ async def test_run_fails_when_execution_incomplete():
     assert "执行未完成" in record.final_result
 
 
-async def test_empty_expected_phase_passes_on_completion():
-    """阶段无 expected → Validator 记 skipped(不裁决),执行完整即通过。"""
+async def test_empty_expected_phase_fails():
+    """G1:阶段无 expected = 无裁决依据 = 主裁决缺失 → FAIL(暴露翻译退化,不再放过)。"""
     llm = _ScriptedLLM(_react_one_step())
     agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
     record = await agent.run(_case(), spec=_spec(expected=""))
-    assert record.passed is True
-    assert record.case_assertions[0]["status"] == "skipped"
+    assert record.passed is False
+    assert record.case_assertions[0]["status"] == "fail"
+    assert "翻译退化" in record.case_assertions[0]["reason"]
 
 
 async def test_verdict_not_taken_from_llm_self_report():
@@ -326,14 +327,15 @@ async def test_phase_validator_dedup_runs_once_per_phase():
 
 
 async def test_live_progress_streams_phases_and_steps_in_order():
-    llm = _ScriptedLLM(_react_one_step())
+    # 带 expected + 判 PASS,执行完整才走到 codegen(G1 后空 expected 会 PHASE_FAILED 早停)
+    llm = _PhaseJudgeLLM(_react_one_step(), ["PASS"])
     events: list[tuple[str, dict]] = []
 
     async def cb(event, data):
         events.append((event, data))
 
     agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
-    await agent.run(_case(), spec=_spec(), step_callback=cb)
+    await agent.run(_case(), spec=_spec(expected="出现待审批"), step_callback=cb)
 
     phases = [d["phase"] for e, d in events if e == "phase"]
     # 阶段化重设计后撤掉 asserting 独立阶段(F1):Validator 在 ③ 内即时跑,无独立 SSE 阶段事件

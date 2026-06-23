@@ -202,10 +202,11 @@ async def test_text_page_fallback_miss_stays_healable_fail():
 
 
 async def test_unsupported_types_skipped():
+    # custom_tool 未接 ToolRegistry → skipped(非阶段化路径,不在 G1 收 FAIL 范围)。
+    # llm_judge 未接 LLM 的 FAIL 行为见 test_llm_judge_fails_without_llm。
     eng = AssertionEngine(DictProbe())
-    for t in ("custom_tool", "llm_judge"):
-        r = await eng.verify(Assertion(type=t, target="x", confidence="low"))
-        assert r.status == AssertionStatus.SKIPPED
+    r = await eng.verify(Assertion(type="custom_tool", target="x", confidence="low"))
+    assert r.status == AssertionStatus.SKIPPED
 
 
 # ── custom_tool 数据断言(经 ToolRegistry 取业务真值) ──────────
@@ -284,12 +285,13 @@ async def test_custom_tool_fail_when_tool_errors():
     assert "执行失败" in r.reason
 
 
-async def test_llm_judge_skipped_without_llm():
-    # 未接入 LLM 时 llm_judge 仍 skipped(不静默放过)
+async def test_llm_judge_fails_without_llm():
+    # G1:阶段化下 LLM 是主裁决,未接入 LLM = 主裁决缺失 → FAIL(不再 skipped 默认放过)
     reg = _registry_with("x", "y")
     eng = AssertionEngine(DictProbe(), tool_registry=reg)
     r = await eng.verify(Assertion(type="llm_judge", target="x", confidence="low"))
-    assert r.status == AssertionStatus.SKIPPED
+    assert r.status == AssertionStatus.FAIL
+    assert r.ai_judged is True
 
 
 # ── llm_judge 方案A:真判 PASS/FAIL 并计入裁决,但标 ai_judged 低置信 ────
@@ -328,11 +330,12 @@ async def test_llm_judge_fail_counts():
     assert r.ai_judged is True
 
 
-async def test_llm_judge_unclear_verdict_skipped():
+async def test_llm_judge_unclear_verdict_fails():
+    # G1:解析不出明确 verdict = 裁判输出不可用 = 主裁决缺失 → FAIL(不再 skipped)
     llm = _JudgeLLM('{"reason":"说不准"}')  # 无明确 verdict
     eng = AssertionEngine(DictProbe(), llm=llm)
     r = await eng.verify(Assertion(type="llm_judge", target="x"))
-    assert r.status == AssertionStatus.SKIPPED
+    assert r.status == AssertionStatus.FAIL
     assert r.ai_judged is True
 
 
@@ -354,12 +357,12 @@ async def test_llm_judge_recovers_verdict_from_broken_json():
     assert r.ai_judged is True
 
 
-async def test_llm_judge_no_verdict_stays_skipped_fail_closed():
-    # 完全没有 verdict 字样 → fail-closed:判 skipped(绝不默认绿),不计入可信通过。
+async def test_llm_judge_no_verdict_fails_fail_closed():
+    # 完全没有 verdict 字样 → fail-closed:判 FAIL(绝不默认绿)。G1:从 skipped 收成 FAIL。
     llm = _JudgeLLM("这是一段没有任何裁决字样的解释文字。")
     eng = AssertionEngine(DictProbe(), llm=llm)
     r = await eng.verify(Assertion(type="llm_judge", target="x"))
-    assert r.status == AssertionStatus.SKIPPED
+    assert r.status == AssertionStatus.FAIL
 
 
 class _CapturingJudgeLLM:

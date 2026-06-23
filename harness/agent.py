@@ -514,21 +514,22 @@ class TestCaseAgent:
                 return None
             expected = (spec.phases[phase_index].expected or "").strip()
             if not expected:
-                # 阶段没有 expected(翻译没产出)→ 无可核验,视为通过(不阻断;记一条 skipped 观测)
+                # 阶段没有 expected(翻译退化:本该产出组级预期却空)→ 无可核验依据 = 主裁决
+                # 缺失,FAIL(G1:不再放过;暴露翻译质量问题)→ 返回原因触发 PHASE_FAILED 停 ReAct。
                 phase_results.append(
                     (
                         phase_index,
                         AssertionResult(
                             assertion=Assertion(type="llm_judge", target="", expected=""),
-                            status=AssertionStatus.SKIPPED,
-                            reason="该阶段无 expected,未核验",
+                            status=AssertionStatus.FAIL,
+                            reason="该阶段无 expected,无法裁决 → FAIL(疑似翻译退化,请检查 spec)",
                             ai_judged=True,
                             phase_index=phase_index,
                         ),
                     )
                 )
                 validated_phases.add(phase_index)
-                return None
+                return f"阶段 {phase_index + 1} 无 expected,无法裁决"
             # E4 判前 settle:mark_step_done 不触发 settle,Validator 在 mark 当场抓快照
             # 可能抓到「上一动作还在加载」的页面(裁判要么白等要么把过渡态误判)。先等
             # 页面稳定再 refresh,确保 judge 看的是**稳定终态页**。
@@ -594,10 +595,12 @@ class TestCaseAgent:
         total_steps = len(plan.steps)
         execution_complete = plan.all_done()
         n_phases = len(spec.phases)
-        validated = len(phase_results)
+        validated = len(validated_phases)  # 真实裁决过的阶段数(占位不计;为 G2 铺路)
         phase_fail = any(r.status == AssertionStatus.FAIL for _, r in phase_results)
-        # 可信通过:每个阶段都被验过(validated==n_phases)且无 FAIL 且执行完整。
-        passed = execution_complete and n_phases > 0 and validated == n_phases and not phase_fail
+        # 可信通过:执行完整 + 有阶段 + 无阶段 FAIL。G1:llm_judge 的 SKIPPED 三态已收成
+        # FAIL,阶段裁决只剩 PASS/FAIL → 不再需要 validated==n_phases 守门(执行完整即蕴含
+        # 每阶段末步都触发过 on_phase_end,故全被裁决过)。
+        passed = execution_complete and n_phases > 0 and not phase_fail
 
         incomplete_reason = ""
         if not passed:
