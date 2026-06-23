@@ -60,40 +60,7 @@ async def test_run_lifecycle(repo):
     assert r["passed_cases"] == 5
 
 
-@pytest.mark.asyncio
-async def test_update_precondition_item_persists_user_choice(repo):
-    """标黄确认:把模糊项改为用户选择(Hook/Given/忽略),落库 + 标记 confirmed。"""
-    from input.models import PreconditionItem
-
-    tc = TestCase(
-        id="tc1",
-        name="Case",
-        preconditions=["准备好测试环境", "已登录"],
-        precondition_items=[
-            PreconditionItem(text="准备好测试环境", type="ambiguous", confidence=0.3),
-            PreconditionItem(
-                text="已登录", type="state_hook", hook_ref="LoginHook", confidence=0.9
-            ),
-        ],
-        suite_id="s1",
-    )
-    await repo.bulk_insert([tc])
-
-    # 模糊项 → 用户选 action_step(Given)
-    ok = await repo.update_precondition_item("tc1", 0, "action_step", None)
-    assert ok is True
-    got = await repo.get_case("tc1")
-    assert got.precondition_items[0].type == "action_step"
-    assert got.precondition_items[0].confirmed_by_user is True
-    assert got.precondition_items[0].hook_ref is None  # 非 state_hook 不带 hook_ref
-
-    # 用户选 ignore
-    assert await repo.update_precondition_item("tc1", 0, "ignore", None) is True
-    assert (await repo.get_case("tc1")).precondition_items[0].type == "ignore"
-
-    # 越界 / 不存在
-    assert await repo.update_precondition_item("tc1", 9, "ignore", None) is False
-    assert await repo.update_precondition_item("nope", 0, "ignore", None) is False
+# 〔2026-06-22 预置条件分类/确认随分类器退役,update_precondition_item 测试删除。〕
 
 
 @pytest.mark.asyncio

@@ -56,30 +56,33 @@ class Assertion(BaseModel):
     confidence: str = "high"  # high | low(llm_judge 为 low)
 
 
-class SpecStep(BaseModel):
-    """软计划的一步:动作 + 目标语义 + 数据 + 完成判据 + 即时断言,不锁 selector。"""
+class Phase(BaseModel):
+    """执行阶段 = 一组步骤 + 一条组级预期(阶段化 TestSpec,2026-06-22 重设计)。
 
-    action: str  # navigate | fill | click | select | hover | wait | ...
-    target: str  # 目标语义描述,不锁 selector
-    data: str | None = None  # 步骤里写死的数据
-    # 该步【完成判据】(自然语言):这一步做完后页面应出现/变为什么。执行时由 LLM 看当前
-    # 子页面快照判「达没达成」→ 达成才放行、否则退回重做(门控重试,驱动层 role a,不依赖
-    # 定位器对齐;裁决侧把该 LLM 判定记为 ai_judged 低置信可见证据)。每步尽量都有。
-    expect_text: str = ""
-    expect: list[Assertion] = []  # 该步骤的即时结构化断言(可选,高置信裁决证据)
+    - ``steps``:自然语言祈使句,数据**内联**在句子里("在用户名框输入 standard_user")。
+      这就是【驱动】——agent 看真实页面自己选工具/定位,翻译期不接地、不写 selector。
+    - ``expected``:该阶段完成判据(自然语言)。**只给阶段边界的 Validator 偏-FAIL 证据核验**,
+      **绝不进 agent 驱动循环**(FG01 血泪:错预期若进驱动会把 agent 带去追错目标)。
+    契约见 docs/test_spec_v2.md。
+    """
+
+    __test__ = False
+
+    steps: list[str] = []
+    expected: str = ""
 
 
 class TestSpec(BaseModel):
-    """结构化执行规格(本产品关键中间产物,规格 §5.2)。软计划而非硬脚本。"""
+    """结构化执行规格(阶段化软计划,2026-06-22 重设计)。翻译只产意图,不接地。"""
 
     __test__ = False  # 名字以 Test 开头,告知 pytest 这不是测试类
 
     case_id: str
     name: str
     base_url: str
-    given: list[SpecStep] = []  # 来自预置条件②类(操作步骤)
-    steps: list[SpecStep] = []  # 来自测试步骤
-    assertions: list[Assertion] = []  # 用例级最终断言(来自预期结果)
+    intent: str = ""  # 整体测试意图(背景,助 agent/Validator 理解;不是判据,不喂硬门控)
+    preconditions: list[str] = []  # 前置声明(背景上下文;不执行、不 guard)
+    phases: list["Phase"] = []  # 有序阶段(步骤分组)
 
 
 class PreconditionItem(BaseModel):

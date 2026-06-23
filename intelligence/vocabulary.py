@@ -3,15 +3,16 @@
 业务词 → UI 元素映射。缓存键 = ``url_pattern + page_title + login_role``,URL 用路由
 匹配(``/order/{id}``)。**手动条目优先级高于 AI 扫描**;自愈失败可标记 ``stale``。
 
-``VocabularyManager`` 基于 Store(T-21)读写;``enhance_targets`` 用解析出的映射把
-TestSpec 里的模糊业务词改写成页面真实词("提交" → "保存并提交"),供 §5.2 预解析增强。
+``VocabularyManager`` 基于 Store(T-21)读写,供运行时探针/自愈按业务词查页面真实元素
+(``VocabularyResolver``)。〔2026-06-22 翻译阶段化后 ``enhance_targets`` 已移除——翻译只产
+意图、不接地,不再在翻译期改写 target。〕
 """
 
 from __future__ import annotations
 
 import re
 
-from input.models import Assertion, PageVocabulary, SpecStep, TestSpec
+from input.models import PageVocabulary
 
 MANUAL = "manual"
 AI = "ai"
@@ -141,21 +142,3 @@ class VocabularyResolver:
         ):
             return entry
         return None
-
-
-def enhance_targets(spec: TestSpec, mapping: dict[str, str]) -> TestSpec:
-    """用 {业务词: 页面真实词} 改写 TestSpec 的 step/assertion 目标(纯函数)。
-
-    未命中的目标保持不变。返回新的 TestSpec(不改原对象)。
-    """
-
-    def _rewrite(target: str) -> str:
-        return mapping.get(target, target)
-
-    new = spec.model_copy(deep=True)
-    new.given = [SpecStep(**{**g.model_dump(), "target": _rewrite(g.target)}) for g in new.given]
-    new.steps = [SpecStep(**{**s.model_dump(), "target": _rewrite(s.target)}) for s in new.steps]
-    new.assertions = [
-        Assertion(**{**a.model_dump(), "target": _rewrite(a.target)}) for a in new.assertions
-    ]
-    return new

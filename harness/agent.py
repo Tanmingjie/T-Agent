@@ -19,7 +19,7 @@ import time
 from pathlib import Path
 
 from codegen.bdd import BDDGenerator
-from codegen.locators import locators_from_steps, resolve_locators
+from codegen.locators import locators_from_steps
 from harness.assertion import AssertionEngine, AssertionResult, AssertionStatus
 from harness.context import ContextCompactor
 from harness.healing import HealingSubagent
@@ -31,17 +31,9 @@ from harness.hooks import (
     ExecutionContext,
     HookManager,
 )
-from harness.llm import LLMClient, extract_verdict, loads_lenient
+from harness.llm import LLMClient
 from harness.page_probe import MCPPageProbe, parse_snapshot
 from harness.permission import PermissionChecker
-from harness.precondition import (
-    ACTION_STEP,
-    AMBIGUOUS,
-    STATE_HOOK,
-    PreconditionClassifier,
-    needs_confirmation,
-    to_given_steps,
-)
 from harness.prompt import PromptBuilder
 from harness.react_loop import ReActLoop
 from harness.react_loop import StopReason as ReActStopReason
@@ -54,14 +46,11 @@ from input.models import (
     Assertion,
     ExecutionRecord,
     PageVocabulary,
-    PreconditionItem,
-    SpecStep,
     TestCase,
     TestSpec,
 )
 from intelligence.pre_analysis import SpecGenerator
 from intelligence.scanner import Scanner, url_scope
-from intelligence.vocabulary import enhance_targets
 from storage.artifacts import get_artifact_store
 
 logger = logging.getLogger(__name__)
@@ -124,59 +113,6 @@ _LOOP_WINDOW = int(os.getenv("LOOP_WINDOW", "4"))
 
 # 生成代码落盘目录:从 ArtifactStore 抽象取(T-P10),与 results 路由读取端单一真相
 _GENERATED_ROOT = str(get_artifact_store().generated_dir())
-
-
-# 步骤完成门控判定 prompt。**偏向放行**(与最终裁判 _JUDGE_SYSTEM 的偏 FAIL 相反):这是
-# 执行【驱动】判断(铁律2(a)),要健壮——只在【明显】没做到时才退回重做,拿不准就放行
-# (后面还有最终结构化断言把关)。偏 FAIL 会把做完了但"拿不准"的步反复退回 → 循环 mark →
-# EXPECT_UNMET 误失败(实测根因)。
-_GATE_SYSTEM = """你在判断测试的某个步骤【是否可以继续往下走】。这是执行过程中的驱动判断,\
-不是最终裁决——要宽松、利于推进。看当前页面无障碍(A11y)快照,判断这一步的预期是否【大体达成】:
-- 只要页面大体符合预期、没有明显矛盾,就回 PASS 让流程继续;
-- 只有当页面【明显】还停在上一步、明显报错、或明显没有发生预期的变化时,才回 FAIL;
-- 拿不准 / 信息不足时一律回 PASS(继续走,后面还有最终断言把关)。
-只输出 JSON:{"verdict":"PASS"|"FAIL","reason":"简述依据"}"""
-
-
-async def _gate_step_done(llm, probe, expect_text: str) -> tuple[bool, str]:
-    """步骤完成门控:LLM 看当前快照判这一步是否【大体达成】。偏向放行(拿不准→PASS)。
-
-    返回 ``(met, reason)``。判定调用/解析失败 → 放行(``True``),不因偶发 LLM 噪声阻断执行。
-    """
-    snapshot = ""
-    raw = getattr(probe, "raw_snapshot", None)
-    if callable(raw):
-        snapshot = raw() or ""
-    messages = [
-        {"role": "system", "content": _GATE_SYSTEM},
-        {
-            "role": "user",
-            "content": (
-                f"这一步的预期:{expect_text}\n\n"
-                f"当前页面无障碍快照:\n{snapshot[:6000] or '(无快照)'}"
-            ),
-        },
-    ]
-    try:
-        resp = await llm.chat(messages)
-    except Exception as e:  # noqa: BLE001 — 调用失败放行,不阻断执行(门控是驱动信号)
-        logger.warning("步骤完成门控调用失败,放行:%s", e)
-        return True, "门控调用失败,放行"
-    content = resp.content or ""
-    verdict, reason = "", ""
-    try:
-        data = loads_lenient(content)
-        verdict = str(data.get("verdict") or "").strip().upper()
-        reason = str(data.get("reason") or "").strip()
-    except Exception as e:  # noqa: BLE001 — JSON 不规整 → 正则兜底捞 verdict
-        logger.warning("门控 JSON 解析失败,尝试正则兜底:%s", e)
-    if verdict not in ("PASS", "FAIL"):
-        # 模型常因 reason 含未转义引号炸 JSON;正则捞回它其实判的 FAIL,免得错误放行
-        # (2026-06-17)。门控仍是驱动信号:捞不到明确裁决 → 放行(fail-open,不阻断执行)。
-        verdict = extract_verdict(content) or ""
-    if verdict == "FAIL":
-        return False, reason or "当前页面明显未达成该步预期"
-    return True, reason  # PASS / 未知 → 放行(驱动 fail-open;此结果不计入裁决,见铁律2(b))
 
 
 def _evidence_rank(cand: dict) -> int:
@@ -250,16 +186,6 @@ def _build_metrics(
     }
 
 
-# 预置条件「状态声明」关键词 → Hook 名 的默认映射(用户可在构造时覆盖)。
-# 命中即把该状态声明标为对应 Hook 负责(如「已登录」→ LoginHook,由 before_case 保证)。
-DEFAULT_HOOK_MAP = {
-    "已登录": "LoginHook",
-    "登录系统": "LoginHook",
-    "登陆": "LoginHook",
-    "登录": "LoginHook",
-}
-
-
 async def settle_page(mcp, *, timeout: float, interval: float) -> int:
     """等页面加载稳定:轮询 a11y 快照,ref 节点数 >0 且连续两次不变即返回(或超时)。
 
@@ -281,43 +207,6 @@ async def settle_page(mcp, *, timeout: float, interval: float) -> int:
             return n  # 连续两次节点数一致且非空 → 稳定
         prev = n
     return prev if prev > 0 else 0
-
-
-def ensure_navigation_step(spec: TestSpec) -> TestSpec:
-    """codegen 前置:若 spec 无导航步但有 base_url,**注入隐式首步导航**。
-
-    很多用例把"打开页面"写在预置条件(被分类为 state_hook,不进 steps),或干脆默认浏览器
-    已在目标页。这样生成的 pytest-bdd 代码会缺 `page.goto`,**回放时根本不打开页面**而失败。
-    这里在生成前补一个 navigate 步,使产物可独立回放。仅用于 codegen 输入,不影响执行。
-    """
-    if not spec.base_url:
-        return spec
-    if any(s.action == "navigate" for s in spec.steps):
-        return spec
-    nav = SpecStep(action="navigate", target=spec.base_url)
-    return spec.model_copy(update={"steps": [nav, *spec.steps]})
-
-
-def collect_assertions(spec: TestSpec) -> list[Assertion]:
-    """聚合一个 TestSpec 里的全部断言:用例级 + given/steps 的步骤级 expect。
-
-    LLM 生成 TestSpec 时把断言放在用例级 assertions 还是步骤级 expect 并不稳定,
-    聚合后统一验证,确保断言不被静默忽略(否则会出现"无断言→判 FAIL 且无明细")。
-    """
-    out: list[Assertion] = list(spec.assertions)
-    for step in list(spec.given) + list(spec.steps):
-        out.extend(step.expect)
-    # 去重:LLM 常把同一断言既放用例级又放某步 expect,聚合后会重复计入,
-    # 导致裁决里出现两条一模一样的结果(见真实跑 TC101)。按语义键去重,保序。
-    seen: set[tuple] = set()
-    deduped: list[Assertion] = []
-    for a in out:
-        key = (a.type, a.target, a.expected, a.selector)
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(a)
-    return deduped
 
 
 def make_executor(step_plan: StepPlan, mcp) -> ToolExecutor:
@@ -350,7 +239,6 @@ class TestCaseAgent:
         context: str = "",
         max_steps: int = 30,
         spec_generator: SpecGenerator | None = None,
-        precondition_classifier: PreconditionClassifier | None = None,
         hooks: HookManager | None = None,
         skills: SkillManager | None = None,
         permission: PermissionChecker | None = None,
@@ -363,131 +251,20 @@ class TestCaseAgent:
         self.context = context
         self.max_steps = max_steps
         self.spec_generator = spec_generator or SpecGenerator(llm)
-        # 预置条件三分类器:默认自带一个(始终接通,不靠调用方手动注入)。
-        # 传 False 可显式关闭(纯翻译,不分类);传实例可自定义 hook_map/阈值。
-        if precondition_classifier is None:
-            self.precondition_classifier = PreconditionClassifier(llm, hook_map=DEFAULT_HOOK_MAP)
-        elif precondition_classifier is False:
-            self.precondition_classifier = None
-        else:
-            self.precondition_classifier = precondition_classifier
         self.hooks = hooks
         self.skills = skills
         self.permission = permission
         self.tools_registry = tools_registry
         self.step_callback = step_callback
         self.vocab_resolver = vocab_resolver
-        # 最近一次分类结果(供 run() 写入 ctx / 日志;generate_spec 与 run 解耦时复用)
-        self._last_precondition_items: list[PreconditionItem] = []
 
     async def generate_spec(self, case: TestCase, *, on_delta=None) -> TestSpec:
-        """生成 TestSpec(供 CLI 先打印给用户审查)。
+        """生成阶段化 TestSpec(纯 LLM 翻译,单次调用)。供 CLI 先打印给用户审查。
 
-        含预置条件三分类(规格 §5.1/§5.2)。**默认合并**:当有待分类的预置条件时,用
-        **一次** LLM 调用同时完成「分类 + 翻译」(省掉单独的分类往返,与模型快慢无关的结构
-        优化);分类结果确定性建项(置信阈值 / Hook 映射 / 用户确认优先)并把 action_step
-        合入 given。无待分类(无预置 / 全命中 memory / 无分类器)时退回单次翻译(分类 0 调用)。
+        预置条件不再分类(纯背景 list[str],原样进 spec.preconditions);翻译只产意图,
+        阶段化分组 + 组级预期,不接地。``on_delta`` 给定走流式(长生成不被网关空闲超时切断)。
         """
-        classifier = self.precondition_classifier
-        # 合并需分类器支持(memory + classify_from_raw);自定义/精简分类器不支持时退回两次调用。
-        supports_merge = classifier is not None and hasattr(classifier, "classify_from_raw")
-        valid_pre = (
-            [p for p in case.preconditions if p and p.strip()]
-            if (classifier is not None and case.preconditions)
-            else []
-        )
-        pending: list[str] = []
-        if valid_pre and supports_merge:
-            self._seed_confirmed_preconditions(case)
-            pending = [p for p in dict.fromkeys(valid_pre) if p not in classifier.memory]
-
-        if valid_pre and supports_merge and pending:
-            # —— 合并:一次调用同时分类 + 翻译 ——
-            # 把**实际配置**的 Hook 列表告知 LLM:有则引导只对可用 Hook 归 state_hook,
-            # 无则引导状态前提归 action_step/ambiguous(防「分类成 Hook 却没人执行」)。
-            available_hooks = self.hooks.hook_names() if self.hooks is not None else []
-            spec, raw = await self.spec_generator.generate_with_classification(
-                case, on_delta=on_delta, available_hooks=available_hooks
-            )
-            try:
-                items = classifier.classify_from_raw(case.preconditions, raw)
-            except Exception as e:  # noqa: BLE001 — 分类不阻断翻译,降级为不分类
-                logger.warning("预置条件分类(合并)失败(%s):%s,降级为不分类", case.id, e)
-                items = []
-            if items:
-                self._record_classification(case, items)
-                spec = self._merge_given_from_preconditions(spec, items)
-            else:
-                self._last_precondition_items = []
-            return spec
-
-        # —— 无待分类:分类不耗 LLM(空 / 全命中 memory),单独翻译 ——
-        items = await self._classify_preconditions(case)
-        spec = await self.spec_generator.generate(
-            case, precondition_items=items or None, on_delta=on_delta
-        )
-        if items:
-            spec = self._merge_given_from_preconditions(spec, items)
-        return spec
-
-    def _seed_confirmed_preconditions(self, case: TestCase) -> None:
-        """把用例里 confirmed_by_user 的条目灌进分类器 memory(§3.2:确认后记忆、跳过 LLM、
-        用户选择优先)。"""
-        if self.precondition_classifier is None:
-            return
-        for it in case.precondition_items:
-            if it.confirmed_by_user and it.text:
-                self.precondition_classifier.memory[it.text] = it
-
-    def _record_classification(self, case: TestCase, items: list[PreconditionItem]) -> None:
-        """分类结果记账:写回用例(落库 + 前端标黄确认闭环)、记 _last_、state_hook 日志、
-        模糊项告警。"""
-        self._last_precondition_items = items
-        case.precondition_items = items
-        for it in items:
-            if it.type == STATE_HOOK:
-                logger.info("预置条件[状态声明]→ %s 负责:%s", it.hook_ref, it.text)
-        pending = needs_confirmation(items)
-        if pending:
-            logger.warning(
-                "用例 %s 有 %d 条模糊预置条件需用户确认:%s",
-                case.id,
-                len(pending),
-                "; ".join(p.text for p in pending),
-            )
-
-    async def _classify_preconditions(self, case: TestCase) -> list[PreconditionItem]:
-        """对 case.preconditions 做三分类;无分类器/无预置条件时返回空列表。
-
-        注:有待分类条目时,``generate_spec`` 走**合并调用**(分类随翻译一次出),本方法
-        仅在「无待分类(空 / 全命中 memory)」时被调用——此时 ``classify`` 不触发 LLM。
-        """
-        self._last_precondition_items = []
-        if self.precondition_classifier is None or not case.preconditions:
-            return []
-        self._seed_confirmed_preconditions(case)
-        try:
-            items = await self.precondition_classifier.classify(case.preconditions)
-        except Exception as e:  # noqa: BLE001 — 分类失败不阻断翻译,降级为不分类
-            logger.warning("预置条件分类失败(%s):%s,降级为不分类", case.id, e)
-            return []
-        self._record_classification(case, items)
-        return items
-
-    @staticmethod
-    def _merge_given_from_preconditions(spec: TestSpec, items: list[PreconditionItem]) -> TestSpec:
-        """把 action_step 类预置条件确定性合入 spec.given(按 target 去重,放在最前)。
-
-        LLM 已被引导把 action_step 放进 given,这里兜底补齐 LLM 漏放的,避免前置操作丢失。
-        """
-        derived = to_given_steps(items)
-        if not derived:
-            return spec
-        existing_targets = {g.target for g in spec.given}
-        missing = [g for g in derived if g.target not in existing_targets]
-        if not missing:
-            return spec
-        return spec.model_copy(update={"given": [*missing, *spec.given]})
+        return await self.spec_generator.generate(case, on_delta=on_delta)
 
     async def run(
         self,
@@ -620,25 +397,7 @@ class TestCaseAgent:
         if spec is None:
             spec = await self.generate_spec(case, on_delta=emit_spec_delta)
             await _flush_delta()  # 冲刷尾部不足 50 字符的增量
-            # 词汇表增强(规格 §5.2):用页面真实文案改写模糊业务词("提交"→"保存并提交")。
-            # 仅当本次自动生成 spec 时增强;调用方显式传入(如 CLI 审查后)的 spec 不动。
-            spec = await self._enhance_spec_with_vocab(spec, case)
         _mark_phase("spec")
-
-        # 预置条件分类结果入 ctx:state_hook 要求的 Hook 名供 before_case 侧参考(P2)。
-        if self._last_precondition_items:
-            required_hooks = sorted(
-                {
-                    it.hook_ref
-                    for it in self._last_precondition_items
-                    if it.type == STATE_HOOK and it.hook_ref
-                }
-            )
-            ctx.set("required_hooks", required_hooks)
-            ctx.set(
-                "ambiguous_preconditions",
-                [it.text for it in needs_confirmation(self._last_precondition_items)],
-            )
 
         recorder.set_spec(spec)  # 存档翻译产物,供前端可视化
         await emit_spec(spec)  # 实时推送给抽屉(执行中也能看执行规格)
@@ -735,78 +494,45 @@ class TestCaseAgent:
             Path(path).write_bytes(img)
             return f"step_{step_no:03d}.png"
 
-        # —— 步骤级完成门控 + 即时验证:某业务步 mark_step_done 落定后,在【当前子页面】判
-        # 该步是否真达成完成判据。两层,**职责严格分离**(2026-06-17 Fix 3 解耦):
-        #   (1) expect_text(自然语言完成判据)→ **LLM 看快照判达成 PASS/FAIL**(偏向放行的
-        #       驱动门控 _gate_step_done,role a)。FAIL → 返回原因让 react_loop 退回该步重做
-        #       + 计预算(铁律2(a):软、可恢复)。**门控结果只驱动 reactivate,绝不计入裁决**
-        #       (铁律2(b):偏-PASS 的步骤门控不能当裁决证据,否则假预期/脑补会刷绿)。门控判定
-        #       仅作**观测**记入 gate_observations(落库标 phase="gate",前端可见但不进 verdict)。
-        #   (2) expect(可选结构化断言)→ 门控通过后再确定性验一次,作**高置信**裁决证据(B1)。
-        #       仅 url_*/custom_tool 这类**不依赖元素定位**的确定性锚点计入裁决(step_assert_pairs)。
-        # 用例预期按步写——必须在所属子页面验,不能攒到终态(跨子页元素在终态已不在 → 假阴性)。
-        # 重做时同一步会被重复验:**按 step_no 去重(后验覆盖前验)**,只让最后一次证据计入,
-        # 避免中途未达成的 FAIL 残留把已重做达成的步拖成失败。返回非空原因串 = 未达成(门控拦)。
-        step_assert_pairs: list = []  # [(step_no, AssertionResult)] —— **计入裁决**的确定性锚点
-        gate_observations: list = []  # [(step_no, AssertionResult)] —— **仅观测**的驱动门控判定
+        # —— 阶段边界 Validator(逐阶段裁决,取代终态裁决):某阶段【最后一步】mark_step_done
+        # 落定后,在当时所处页面用**偏-FAIL + 证据接地**的 LLM 裁判核验该阶段 ``expected``。
+        #   · 通过 → 记为该阶段裁决证据,继续下一阶段;
+        #   · 未达成 → 返回原因串 → react_loop 判 PHASE_FAILED,用例直接失败(阶段失败即失败)。
+        # expected **只在此核验,绝不进 agent 驱动**(FG01)。复用 AssertionEngine._check_llm_judge
+        # (内部以 llm_judge Assertion 承载阶段预期),与旧终态裁判同一套证据接地、fail-closed 逻辑。
+        phase_results: list = []  # [(phase_index, AssertionResult)] —— 逐阶段裁决证据
 
-        async def verify_step(step_no: int) -> str | None:
-            if not (1 <= step_no <= len(spec.steps)):
+        async def on_phase_end(phase_index: int) -> str | None:
+            if not (0 <= phase_index < len(spec.phases)):
                 return None
-            step = spec.steps[step_no - 1]
-            # 重做覆盖:清掉本步上一轮的证据(裁决锚点 + 观测门控),只保留这次(最后一次)的
-            step_assert_pairs[:] = [(sn, r) for sn, r in step_assert_pairs if sn != step_no]
-            gate_observations[:] = [(sn, r) for sn, r in gate_observations if sn != step_no]
-            gate_reason: str | None = None
-            # (1) 完成判据:LLM 看快照判达成。**用偏向放行的门控判定**(_gate_step_done,
-            # 驱动层 role a:拿不准→PASS),不复用偏 FAIL 的最终裁判——后者会把做完了但
-            # 拿不准的步反复退回 → 循环 mark_step_done → EXPECT_UNMET 误失败(实测根因)。
-            if step.expect_text:
-                probe_g = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
-                await probe_g.refresh()
-                met, reason = await _gate_step_done(self.llm, probe_g, step.expect_text)
-                # 门控判定仅作**观测**(落库 phase="gate"),**不进裁决**——它是偏-PASS 的驱动
-                # 信号(role a),把它当裁决证据会让假预期/脑补不可见地刷绿(铁律2(b))。
-                gate_a = Assertion(
-                    type="llm_judge",
-                    target=step.expect_text,
-                    expected=step.expect_text,
-                    confidence="low",
-                )
-                gate_observations.append(
+            expected = (spec.phases[phase_index].expected or "").strip()
+            if not expected:
+                # 阶段没有 expected(翻译没产出)→ 无可核验,视为通过(不阻断;记一条 skipped 观测)
+                phase_results.append(
                     (
-                        step_no,
+                        phase_index,
                         AssertionResult(
-                            assertion=gate_a,
-                            status=AssertionStatus.PASS if met else AssertionStatus.FAIL,
-                            actual=("门控:达成" if met else "门控:未达成"),
-                            reason=reason,
+                            assertion=Assertion(type="llm_judge", target="", expected=""),
+                            status=AssertionStatus.SKIPPED,
+                            reason="该阶段无 expected,未核验",
                             ai_judged=True,
                         ),
                     )
                 )
-                if not met:
-                    gate_reason = reason or "当前页面明显未达成该步完成判据"
-            # (2) 结构化 expect(可选,高置信证据);仅门控通过后验。**防御性过滤**:步骤级
-            # 只验【不依赖元素定位】的可靠类型(url_* / custom_tool);text/element 类依赖按
-            # 业务词名定位,中间页多个相似元素时极易误判失败(实测:6 个 Add to cart 按钮 →
-            # "按钮变 Remove" 匹配到别的按钮 false-fail)。这类检查交给 expect_text 的 LLM 门控
-            # 看整页判定,步骤级不做(即便翻译漂移产出了也跳过)。终态用例级断言不受此限。
-            if gate_reason is None and step.expect:
-                reliable = [
-                    a
-                    for a in step.expect
-                    if a.type in ("url_contains", "url_equals", "custom_tool")
-                ]
-                if reliable:
-                    probe_s = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
-                    await probe_s.refresh()
-                    engine_s = AssertionEngine(
-                        probe_s, healer=healer, tool_registry=self.tools_registry, llm=self.llm
-                    )
-                    for r in await engine_s.verify_all(reliable):
-                        step_assert_pairs.append((step_no, r))
-            return gate_reason
+                return None
+            probe_p = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
+            await probe_p.refresh()  # 抓当时所处页面快照(阶段边界,页面还在那一刻)
+            engine_p = AssertionEngine(
+                probe_p, healer=healer, tool_registry=self.tools_registry, llm=self.llm
+            )
+            r = await engine_p._check_llm_judge(
+                Assertion(type="llm_judge", target=expected, expected=expected, confidence="low")
+            )
+            phase_results.append((phase_index, r))
+            # PASS / SKIPPED(裁判调用失败等)→ 不阻断继续;FAIL → 返回原因 → 阶段失败即失败。
+            if r.status == AssertionStatus.FAIL:
+                return r.reason or f"阶段 {phase_index + 1} 的预期未在当前页面达成"
+            return None
 
         loop = ReActLoop(
             self.llm,
@@ -824,9 +550,8 @@ class TestCaseAgent:
             on_step=emit_step,  # 每步落定即时推送(实时进度)
             on_llm_delta=emit_think_delta,  # 思考过程流式 + ReAct 期网关保活
             vocab_resolver=self.vocab_resolver,  # 操作侧自愈词汇表优先
-            on_step_done=verify_step,  # 步骤级完成门控(LLM 判达成→放行 / 未达成→退回重做)
+            on_phase_end=on_phase_end,  # 阶段边界 Validator(偏-FAIL 证据接地;未达成→PHASE_FAILED)
             step_fail_budget=_STEP_FAIL_BUDGET,  # #1 单步定位失败预算 → 快速失败
-            expect_retry_budget=_EXPECT_RETRY_BUDGET,  # 完成判据未达成预算 → EXPECT_UNMET
         )
         await emit_phase("executing", "驱动浏览器逐步执行")
         result = await loop.run()
@@ -835,95 +560,68 @@ class TestCaseAgent:
         recorder.set_token_usage(self._token_usage())
         recorder.set_stop_reason(f"{result.stop_reason.value}/iter={result.iterations}")
 
-        # —— 断言裁决(确定性,非 LLM 眼判;目标找不到时自愈重定位) ——
-        await emit_phase("asserting", "结构化断言裁决")
-        probe = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
-        await probe.refresh()  # 用例结束后抓一次终态快照
-        # 数据断言(custom_tool)经 ToolRegistry 取业务真值;未注入则该类断言 skipped
-        engine = AssertionEngine(
-            probe, healer=healer, tool_registry=self.tools_registry, llm=self.llm
-        )
-        # —— 终态裁决路(Fix 3,铁律2(b)):LLM 裁判为主 + 确定性锚点 ——
-        # 终态逐条验【用例级 assertions】(整体/最终预期):自然语言预期走偏-FAIL 的
-        # _check_llm_judge(强制引证证据 + 喂实时 URL 作免费锚点);URL/数据真值/显式 selector
-        # 类走确定性 _check_*(高置信锚点)。翻译已把每条最终预期落成一条用例级 assertion(③),
-        # 故此处天然逐条裁决。各步 expect 的确定性锚点已在 verify_step 即时验过(步骤级)。
-        terminal_results = await engine.verify_all(spec.assertions)
+        # —— 阶段裁决汇总(逐阶段 Validator 已在执行中、各阶段边界即时验过)——
+        await emit_phase("asserting", "阶段裁决汇总")
         _mark_phase("asserting")
-        # 裁决证据 = 步骤级确定性锚点(url/custom_tool) + 终态裁决;**门控观测不计入**(铁律2(b))。
-        all_results = [r for _, r in step_assert_pairs] + terminal_results
-        # 记录:步骤级锚点标 phase="step";门控观测标 phase="gate"(可见但不进裁决);终态标 final。
+        all_results = [r for _, r in phase_results]
+        # 落库:每条标 phase_index + expected,前端按阶段展示 Validator 裁决
         a_dicts: list[dict] = []
-        for sn, r in step_assert_pairs:
+        for pi, r in phase_results:
             d = r.to_dict()
-            d["step_no"], d["phase"] = sn, "step"
-            a_dicts.append(d)
-        for sn, r in gate_observations:
-            d = r.to_dict()
-            d["step_no"], d["phase"] = sn, "gate"  # 驱动门控判定:观测用,不参与 verdict
-            a_dicts.append(d)
-        for r in terminal_results:
-            d = r.to_dict()
-            d["phase"] = "final"
+            d["phase_index"] = pi
+            d["expected"] = spec.phases[pi].expected if pi < len(spec.phases) else ""
             a_dicts.append(d)
         recorder.set_case_assertions(a_dicts)
         recorder.record.heal_count += sum(1 for r in all_results if r.healed)
-        # 裁决合并步骤级锚点 + 终态(任一 FAIL 即不通过;全 skipped 不算可信通过)
-        assert_passed = AssertionEngine.verdict(all_results)
 
-        # —— 执行完整性闸门(原则:步骤未全部完成 → 用例直接 FAIL)——
-        # 任一步骤非 DONE(pending 未执行 / failed / skipped)即视为执行未完成:此时
-        # 终态断言是在**半路页面**上跑的,既可能误绿(碰巧通过)也可能误红(报成断言失败、
-        # 掩盖真因)。原则:不靠半路断言裁决、不静默跳过剩余步骤就收尾——直接判 FAIL 并
-        # 标明真因(停在第几步 / 停因)。only when 全步 DONE 才以断言裁决。
+        # —— 裁决:全阶段通过 + 执行完整 ——
+        # 阶段失败即失败(PHASE_FAILED):某阶段 Validator 判 FAIL → react_loop 已停,该阶段
+        # 记 FAIL。其余早停(max_steps/卡死/tool 错)→ 部分阶段未被验证 → 执行未完成 → FAIL。
         done_steps = sum(1 for st in plan.steps if st.status == StepStatus.DONE)
         total_steps = len(plan.steps)
         execution_complete = plan.all_done()
+        n_phases = len(spec.phases)
+        validated = len(phase_results)
+        phase_fail = any(r.status == AssertionStatus.FAIL for _, r in phase_results)
+        # 可信通过:每个阶段都被验过(validated==n_phases)且无 FAIL 且执行完整。
+        passed = execution_complete and n_phases > 0 and validated == n_phases and not phase_fail
+
         incomplete_reason = ""
-        if not execution_complete:
-            # #1 快速失败:单步定位失败超预算 → 标明卡死步 + 目标(疑似点错前序元素)
-            if result.stop_reason == ReActStopReason.STEP_FAILED and result.failed_step_no:
+        if not passed:
+            if phase_fail:
+                fi = result.failed_phase_index
+                incomplete_reason = (
+                    f"[FAIL] 阶段 {fi + 1 if fi >= 0 else '?'} 的预期未达成:"
+                    f"{result.failed_phase_reason or '(见阶段裁决)'};"
+                    f"仅完成 {done_steps}/{total_steps} 步。"
+                )
+            elif result.stop_reason == ReActStopReason.STEP_FAILED and result.failed_step_no:
                 incomplete_reason = (
                     f"[FAIL] 执行未完成:第 {result.failed_step_no} 步"
                     f"「{result.failed_step_target}」反复定位失败(快速失败),"
                     f"疑似前序步骤点错元素致此步找不到目标;仅完成 {done_steps}/{total_steps} 步。"
                 )
-            elif result.stop_reason == ReActStopReason.EXPECT_UNMET and result.failed_step_no:
-                incomplete_reason = (
-                    f"[FAIL] 执行未完成:第 {result.failed_step_no} 步"
-                    f"「{result.failed_step_target}」的完成判据反复未达成(重试 "
-                    f"{_EXPECT_RETRY_BUDGET} 次仍不满足),判定该步未真正完成;"
-                    f"仅完成 {done_steps}/{total_steps} 步。"
-                )
-            else:
+            elif not execution_complete:
                 incomplete_reason = (
                     f"[FAIL] 执行未完成:仅完成 {done_steps}/{total_steps} 步"
-                    f"(停因={result.stop_reason.value}),后续步骤未执行;不以半路断言裁决。"
+                    f"(停因={result.stop_reason.value}),后续步骤未执行;"
+                    f"{validated}/{n_phases} 个阶段被验证。"
                 )
+            else:
+                incomplete_reason = f"[FAIL] {validated}/{n_phases} 个阶段被验证,未全部通过。"
             logger.warning("用例 %s %s", case.id, incomplete_reason)
-        passed = assert_passed and execution_complete
 
-        # 断言逐条记账(便于失败定位):全部走 DEBUG,失败/跳过额外 WARNING 抬到默认可见。
-        for r in all_results:
-            logger.debug(
-                "断言 [%s] %s target=%r expected=%r actual=%r %s",
+        # 阶段裁决逐条记账(便于失败定位)。
+        for pi, r in phase_results:
+            level = logging.WARNING if r.status != AssertionStatus.PASS else logging.DEBUG
+            logger.log(
+                level,
+                "阶段 %d 裁决 [%s] expected=%r reason=%s",
+                pi + 1,
                 r.status.value.upper(),
-                r.assertion.type,
-                r.assertion.target,
                 r.assertion.expected,
-                r.actual,
-                f"reason={r.reason}" if r.reason else "",
+                r.reason or "(无)",
             )
-            if r.status != AssertionStatus.PASS:
-                logger.warning(
-                    "断言未通过 [%s] %s target=%r expected=%r actual=%r reason=%s",
-                    r.status.value.upper(),
-                    r.assertion.type,
-                    r.assertion.target,
-                    r.assertion.expected,
-                    r.actual,
-                    r.reason or "(无)",
-                )
 
         # 收尾 Hooks:发生自愈触发 on_heal;失败触发 on_failure;after_case 无论成败都跑。
         if self.hooks is not None:
@@ -951,23 +649,16 @@ class TestCaseAgent:
         record = recorder.finalize(passed=passed, final_result=incomplete_reason)
 
         # —— 代码生成(规格 §5.6):仅执行通过后产出 pytest-bdd 代码 ——
+        # 阶段化重设计后 codegen 走最小适配:步骤=phases 摊平的自然语言串,Then=各阶段 expected
+        # (作 BDD 文本/注释,NL 无法确定性断言)。定位优先用执行轨迹捕获的真实 role+name。
+        # 质量打磨(轨迹驱动 codegen)留后续任务,这里只保证不崩、产出可读的回放骨架。
         if passed:
             await emit_phase("codegen", "生成测试代码")
             try:
-                # 把断言聚合进 spec(LLM 常放 step.expect),否则生成的 Then 段为空
-                gen_spec = spec.model_copy(update={"assertions": collect_assertions(spec)})
-                # 无导航步则注入隐式首步导航,使生成的测试可独立回放(否则缺 page.goto)
-                gen_spec = ensure_navigation_step(gen_spec)
-                # 解析层(框架无关):语义 target → 稳健 Locator(词汇表 role+name 优先)
-                targets = [s.target for s in gen_spec.steps] + [
-                    a.target for a in gen_spec.assertions
-                ]
-                locators = await resolve_locators(targets, self.vocab_resolver, url=state["url"])
-                # 执行期捕获的真实 role+name 优先级最高,覆盖词汇表解析结果
-                locators = {**locators, **locators_from_steps(record.steps)}
-                # black.format_str + ast.parse 是同步 CPU,挪线程避免占用事件循环(收尾不卡)
+                # 执行期捕获的真实定位器(按步骤文本归类),给 codegen 渲染稳健选择器
+                locators = locators_from_steps(record.steps)
                 gen = await asyncio.to_thread(
-                    BDDGenerator().generate, gen_spec, record, locators=locators
+                    BDDGenerator().generate, spec, record, locators=locators
                 )
                 record.generated_code = f"{gen.feature}\n\n{gen.step_defs}"
                 gen.write(_GENERATED_ROOT)  # storage/generated/(供下载)
@@ -1007,34 +698,6 @@ class TestCaseAgent:
             result.stop_reason.value,
         )
         return record
-
-    async def _enhance_spec_with_vocab(self, spec: TestSpec, case: TestCase) -> TestSpec:
-        """翻译期词汇表增强(规格 §5.2):按 base_url 命中的页面词汇表,把 spec 里精确等于
-        某业务词的 target 改写成页面真实文案。保守(仅精确键匹配)、best-effort。"""
-        if self.vocab_resolver is None:
-            return spec
-        manager = getattr(self.vocab_resolver, "manager", None)
-        if manager is None:
-            return spec
-        url = case.base_url or spec.base_url
-        if not url:
-            return spec
-        login_role = getattr(self.vocab_resolver, "login_role", "") or ""
-        try:
-            page = await manager.find_page(url, "", login_role)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("翻译期查词汇表失败:%s", e)
-            return spec
-        if page is None or page.stale:
-            return spec
-        mapping = {
-            term: str(e["name"])
-            for term, e in page.vocabulary.items()
-            if isinstance(e, dict) and e.get("name")
-        }
-        if not mapping:
-            return spec
-        return enhance_targets(spec, mapping)
 
     async def _incremental_scan(self, result, emit_phase) -> None:
         """执行后增量补充(策略C,**辅助**):用执行轨迹里**跑通的真实元素**(ground truth)

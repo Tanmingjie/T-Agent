@@ -11,7 +11,7 @@ from harness.prompt import (
     render_tools,
 )
 from harness.step_plan import StepPlan
-from input.models import Assertion, SpecStep, TestSpec
+from input.models import Phase, TestSpec
 
 
 def _spec() -> TestSpec:
@@ -19,9 +19,9 @@ def _spec() -> TestSpec:
         case_id="TC001",
         name="提交订单",
         base_url="http://intranet.example",
-        given=[SpecStep(action="execute", target="新建草稿订单")],
-        steps=[SpecStep(action="click", target="提交按钮")],
-        assertions=[Assertion(type="text_equals", target="订单状态", expected="待审批")],
+        intent="验证能提交订单进入待审批",
+        preconditions=["已新建一条草稿订单"],
+        phases=[Phase(steps=["点击提交按钮"], expected="订单状态变为待审批")],
     )
 
 
@@ -66,15 +66,17 @@ def test_merge_context_skips_empty_levels():
 # ── Task 层 ───────────────────────────────────────────────────
 
 
-def test_render_task_contains_spec_and_plan():
+def test_render_task_contains_intent_preconditions_and_plan():
     plan = StepPlan.from_spec(_spec())
     text = render_task(_spec(), plan)
     assert "提交订单" in text
     assert "http://intranet.example" in text
-    assert "新建草稿订单" in text  # given
+    assert "验证能提交订单" in text  # intent(背景)
+    assert "已新建一条草稿订单" in text  # preconditions(背景)
     assert "执行计划" in text  # StepPlan 清单
-    assert "text_equals" in text  # 用例级断言
-    assert "待审批" in text
+    assert "点击提交按钮" in text  # 步骤
+    # expected 绝不进驱动 prompt(FG01)
+    assert "订单状态变为待审批" not in text
 
 
 # ── Tools 层 ──────────────────────────────────────────────────

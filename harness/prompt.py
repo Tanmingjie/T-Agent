@@ -92,22 +92,21 @@ def merge_context(
 
 
 def render_task(spec: TestSpec, step_plan: StepPlan) -> str:
-    """Task 层:TestSpec 概要 + StepPlan 进度清单。"""
+    """Task 层:测试意图 + 前置背景 + StepPlan 进度清单(阶段化)。
+
+    **不渲染阶段 expected**:expected 是阶段边界的验证依据,绝不进 agent 驱动 prompt
+    (FG01:错预期若进驱动会把 agent 带去追错目标)。agent 只管按步骤把事做到。
+    """
     lines = ["## 测试任务", f"用例:{spec.name}(ID: {spec.case_id})", f"系统地址:{spec.base_url}"]
-    if spec.given:
+    if spec.intent:
+        lines.append(f"测试意图(背景):{spec.intent}")
+    if spec.preconditions:
         lines.append("")
-        lines.append("前置操作(given,已由系统准备或需先完成):")
-        for g in spec.given:
-            d = f"(数据: {g.data})" if g.data else ""
-            lines.append(f"  - {g.action} → {g.target}{d}")
+        lines.append("前置条件(背景,系统假设其成立,你无需主动核验;如实际未满足按页面情况处理):")
+        for p in spec.preconditions:
+            lines.append(f"  - {p}")
     lines.append("")
     lines.append(step_plan.to_prompt())
-    if spec.assertions:
-        lines.append("")
-        lines.append("用例级最终断言(由系统在结束后自动验证,你无需手动判断):")
-        for a in spec.assertions:
-            exp = f" == {a.expected}" if a.expected is not None else ""
-            lines.append(f"  - [{a.type}] {a.target}{exp}")
     return "\n".join(lines)
 
 

@@ -73,24 +73,20 @@ def _print_spec(spec: TestSpec) -> None:
     print("\n" + "═" * 60)
     print(f"TestSpec:{spec.name}(case_id={spec.case_id})")
     print(f"  base_url: {spec.base_url}")
-    if spec.given:
-        print("  given(前置操作):")
-        for g in spec.given:
-            d = f"  数据={g.data}" if g.data else ""
-            print(f"    - {g.action} → {g.target}{d}")
-    print("  steps(测试步骤):")
-    for i, s in enumerate(spec.steps, 1):
-        d = f"  数据={s.data}" if s.data else ""
-        print(f"    {i}. {s.action} → {s.target}{d}")
-        for a in s.expect:
-            print(
-                f"        · 即时断言 [{a.type}] {a.target}"
-                + (f" == {a.expected}" if a.expected else "")
-            )
-    print("  assertions(用例级最终断言):")
-    for a in spec.assertions:
-        exp = f" == {a.expected}" if a.expected is not None else ""
-        print(f"    - [{a.type}] {a.target}{exp}  (置信度={a.confidence})")
+    if spec.intent:
+        print(f"  intent(测试意图): {spec.intent}")
+    if spec.preconditions:
+        print("  preconditions(前置背景):")
+        for p in spec.preconditions:
+            print(f"    - {p}")
+    print(f"  phases(共 {len(spec.phases)} 个阶段):")
+    no = 0
+    for pi, ph in enumerate(spec.phases, 1):
+        print(f"    ── 阶段 {pi} ──")
+        for s in ph.steps:
+            no += 1
+            print(f"      {no}. {s}")
+        print(f"      预期⟶ {ph.expected or '(无)'}")
     print("═" * 60 + "\n")
 
 

@@ -12,7 +12,6 @@ from abc import ABC, abstractmethod
 from sqlmodel import delete as sql_delete
 from sqlmodel import select as sql_select
 
-from harness.precondition import STATE_HOOK
 from input.models import (
     ExecutionRecord,
     PageVocabulary,
@@ -45,16 +44,6 @@ class TestCaseRepository(ABC):
 
     @abstractmethod
     async def get_case(self, case_id: str) -> TestCase | None: ...
-
-    @abstractmethod
-    async def update_precondition(
-        self, case_id: str, precondition_index: int, confirmed: bool
-    ) -> bool: ...
-
-    @abstractmethod
-    async def update_precondition_item(
-        self, case_id: str, index: int, item_type: str, hook_ref: str | None
-    ) -> bool: ...
 
 
 class ExecutionRepository(ABC):
@@ -186,43 +175,6 @@ class SQLModelRepository(
 
     async def get_case(self, case_id: str) -> TestCase | None:
         return await self._store.get_case(case_id)
-
-    async def update_precondition(
-        self, case_id: str, precondition_index: int, confirmed: bool
-    ) -> bool:
-        tc = await self._store.get_case(case_id)
-        if tc is None:
-            return False
-        confirmed_list = list(tc.precondition_confirmed)
-        while len(confirmed_list) < len(tc.preconditions):
-            confirmed_list.append(False)
-        if 0 <= precondition_index < len(confirmed_list):
-            confirmed_list[precondition_index] = confirmed
-        tc_dict = tc.model_dump()
-        tc_dict["precondition_confirmed"] = confirmed_list
-        await self._store.save_case(TestCase(**tc_dict))
-        return True
-
-    async def update_precondition_item(
-        self, case_id: str, index: int, item_type: str, hook_ref: str | None
-    ) -> bool:
-        """用户标黄确认:把第 index 条预置条件分类改为用户选择(Hook/Given/忽略)并落库,
-        标记 confirmed_by_user=True(下次执行据此跳过 LLM 重分类)。"""
-        tc = await self._store.get_case(case_id)
-        if tc is None:
-            return False
-        items = list(tc.precondition_items)
-        if not (0 <= index < len(items)):
-            return False
-        it = items[index]
-        it.type = item_type
-        it.hook_ref = hook_ref if item_type == STATE_HOOK else None
-        it.confirmed_by_user = True
-        items[index] = it
-        tc_dict = tc.model_dump()
-        tc_dict["precondition_items"] = [i.model_dump() for i in items]
-        await self._store.save_case(TestCase(**tc_dict))
-        return True
 
     # ── Execution ──
 

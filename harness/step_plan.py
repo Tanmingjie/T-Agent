@@ -1,14 +1,15 @@
-"""StepPlan / TodoWrite 机制(规格 §5.4 StepPlan,T-04)。
+"""StepPlan / TodoWrite 机制(阶段化重设计,2026-06-22)。
 
-把 TestSpec.steps 展开成带状态机的执行计划,防止多步骤用例跳步/遗漏/重复:
+把阶段化 TestSpec 的 ``phases`` 摊平成带状态机的**扁平步骤清单**驱动 ReAct,同时记住每步
+所属阶段,以便在**阶段边界**(某阶段最后一步落定)触发该阶段的 Validator。
 
 - 状态机:``pending → active → done`` / ``failed`` / ``skipped``。
-- 初始第 1 步为 ``active``,其余 ``pending``。
-- LLM 每完成一步调用 ``mark_step_done(step_no)`` 工具更新状态,自动推进下一步。
-- 序列化为 System Prompt 片段(TodoWrite 清单),注入给 LLM 感知进度。
+- 初始第 1 步 ``active``,其余 ``pending``。
+- LLM 每完成一步调 ``mark_step_done(step_no)`` 推进。
+- 序列化为 System Prompt 片段:按阶段分组展示步骤,**只展示步骤、不展示阶段 expected**
+  (expected 是验证依据,绝不进驱动 prompt——FG01 血泪)。
 
-对本地 LLM 取**宽容**策略:允许标记非当前步(只告警),非法编号返回错误文本
-而非抛栈,避免偶发误调用炸掉 ReAct 循环。
+对本地 LLM 取**宽容**策略:标记非当前步只告警,非法编号返回错误文本而非抛栈。
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 
-from input.models import SpecStep, TestSpec
+from input.models import TestSpec
 
 logger = logging.getLogger(__name__)
 
@@ -44,35 +45,35 @@ MARK_STEP_DONE_TOOL = "mark_step_done"
 
 @dataclass
 class PlanStep:
-    step_no: int  # 1-based
-    action: str
-    target: str
-    data: str | None = None
+    step_no: int  # 全局 1-based
+    text: str  # 自然语言步骤
+    phase_index: int  # 所属阶段(0-based)
     status: StepStatus = StepStatus.PENDING
     note: str = ""  # 失败原因等
 
     def describe(self) -> str:
-        s = f"{self.action} → {self.target}"
-        if self.data:
-            s += f"(数据: {self.data})"
-        return s
+        return self.text
 
 
 class StepPlan:
-    """多步骤执行计划 + 状态机。"""
+    """多步骤执行计划 + 状态机(扁平步骤,记阶段归属)。"""
 
-    def __init__(self, steps: list[SpecStep]) -> None:
-        self.steps: list[PlanStep] = [
-            PlanStep(step_no=i, action=s.action, target=s.target, data=s.data)
-            for i, s in enumerate(steps, start=1)
-        ]
+    def __init__(self, phases: list) -> None:
+        """``phases``:list[Phase](每个 Phase 有 ``steps: list[str]``)。"""
+        self.phases = list(phases)
+        self.steps: list[PlanStep] = []
+        no = 0
+        for pi, ph in enumerate(self.phases):
+            for text in getattr(ph, "steps", []):
+                no += 1
+                self.steps.append(PlanStep(step_no=no, text=text, phase_index=pi))
         if self.steps:
             self.steps[0].status = StepStatus.ACTIVE
 
     @classmethod
     def from_spec(cls, spec: TestSpec) -> "StepPlan":
-        """由 TestSpec 构建(given 步骤由 Hook/前置处理,这里只排业务步骤)。"""
-        return cls(spec.steps)
+        """由阶段化 TestSpec 构建(摊平 phases.steps,记每步所属阶段)。"""
+        return cls(spec.phases)
 
     # ── 查询 ──────────────────────────────────────────────────
 
@@ -106,6 +107,33 @@ class StepPlan:
     def has_failure(self) -> bool:
         return any(st.status == StepStatus.FAILED for st in self.steps)
 
+    # ── 阶段边界 ──────────────────────────────────────────────
+
+    @property
+    def phase_count(self) -> int:
+        return len(self.phases)
+
+    def phase_of(self, step_no: int) -> int:
+        st = self.get(step_no)
+        return st.phase_index if st is not None else -1
+
+    def phase_last_step_no(self, phase_index: int) -> int | None:
+        """某阶段最后一步的全局 step_no(空阶段返回 None)。"""
+        nos = [s.step_no for s in self.steps if s.phase_index == phase_index]
+        return nos[-1] if nos else None
+
+    def is_phase_last_step(self, step_no: int) -> bool:
+        """该步是否是其所属阶段的最后一步(→ 触发该阶段 Validator)。"""
+        st = self.get(step_no)
+        if st is None:
+            return False
+        return self.phase_last_step_no(st.phase_index) == step_no
+
+    def phase_steps_done(self, phase_index: int) -> bool:
+        """某阶段的全部步骤是否都已 DONE。"""
+        steps = [s for s in self.steps if s.phase_index == phase_index]
+        return bool(steps) and all(s.status == StepStatus.DONE for s in steps)
+
     # ── 状态转移 ──────────────────────────────────────────────
 
     def _activate_next(self) -> None:
@@ -126,12 +154,7 @@ class StepPlan:
         return st
 
     def reactivate(self, step_no: int) -> PlanStep:
-        """把一个已 DONE 的步骤退回 ACTIVE(完成门控未达成,需重做)。
-
-        撤销 ``mark_done`` 时 ``_activate_next`` 误激活的后继步(置回 PENDING),避免出现
-        两个 active(``current`` 取首个 active,正好回到本步)。供步骤级完成门控未通过时
-        退回该步让 ReAct 重做。
-        """
+        """把一个已 DONE 的步骤退回 ACTIVE(撤销误激活的后继步)。"""
         st = self._require(step_no)
         st.status = StepStatus.ACTIVE
         st.note = ""
@@ -187,10 +210,7 @@ class StepPlan:
         }
 
     def apply_tool_call(self, name: str, arguments: dict) -> str | None:
-        """若该 tool_call 属于 StepPlan,处理并返回结果文本;否则返回 None。
-
-        返回 None 表示「不是我管的工具」,ReAct 循环应转交 MCP/Custom Tool。
-        """
+        """若该 tool_call 属于 StepPlan,处理并返回结果文本;否则返回 None。"""
         if name != MARK_STEP_DONE_TOOL:
             return None
         raw = arguments.get("step_no")
@@ -213,15 +233,20 @@ class StepPlan:
     # ── 序列化为 Prompt 片段 ─────────────────────────────────
 
     def to_prompt(self) -> str:
-        """TodoWrite 风格清单,注入 System Prompt。"""
+        """TodoWrite 风格清单,按阶段分组注入 System Prompt(**不含阶段 expected**)。"""
         if not self.steps:
             return "执行计划:无步骤。"
-        lines = [f"## 执行计划(共 {len(self.steps)} 步)"]
-        for st in self.steps:
-            line = f"{_MARK[st.status]} {st.step_no}. {st.describe()}"
-            if st.note:
-                line += f" — {st.note}"
-            lines.append(line)
+        lines = [f"## 执行计划(共 {len(self.steps)} 步,{self.phase_count} 个阶段)"]
+        for pi in range(self.phase_count):
+            steps = [s for s in self.steps if s.phase_index == pi]
+            if not steps:
+                continue
+            lines.append(f"— 阶段 {pi + 1} —")
+            for st in steps:
+                line = f"{_MARK[st.status]} {st.step_no}. {st.describe()}"
+                if st.note:
+                    line += f" — {st.note}"
+                lines.append(line)
         cur = self.current
         if cur is not None:
             lines.append("")

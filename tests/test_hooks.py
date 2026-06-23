@@ -141,7 +141,7 @@ async def test_agent_after_case_runs_on_success():
 
 
 async def test_agent_fires_on_heal_when_assertion_healed(monkeypatch):
-    """断言侧发生自愈(重定位后复验通过)时,on_heal 被触发且 ctx 带自愈详情。"""
+    """阶段 Validator 侧发生自愈(重定位后复验通过)时,on_heal 被触发且 ctx 带自愈详情。"""
     from harness import agent as agent_mod
     from harness.agent import TestCaseAgent
     from harness.assertion import AssertionResult, AssertionStatus
@@ -149,16 +149,17 @@ async def test_agent_fires_on_heal_when_assertion_healed(monkeypatch):
     from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
 
     healed = AssertionResult(
-        assertion=Assertion(type="dom_exists", target="提交按钮", expected=""),
+        assertion=Assertion(type="llm_judge", target="x", expected="x"),
         status=AssertionStatus.PASS,
         healed=True,
-        heal_note="P1 角色重定位到 button[name=提交]",
+        heal_note="P1 角色重定位",
+        ai_judged=True,
     )
 
-    async def fake_verify_all(self, assertions):
-        return [healed]
+    async def fake_judge(self, a):
+        return healed
 
-    monkeypatch.setattr(agent_mod.AssertionEngine, "verify_all", fake_verify_all)
+    monkeypatch.setattr(agent_mod.AssertionEngine, "_check_llm_judge", fake_judge)
 
     mgr = HookManager()
     seen: list = []
@@ -172,7 +173,7 @@ async def test_agent_fires_on_heal_when_assertion_healed(monkeypatch):
         ]
     )
     agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), hooks=mgr)
-    record = await agent.run(_case(), spec=_spec())
+    record = await agent.run(_case(), spec=_spec(expected="出现待审批"))
 
     assert seen == [1]  # on_heal 触发,且自愈计数=1
     assert record.passed is True
@@ -187,15 +188,16 @@ async def test_agent_no_on_heal_without_healing(monkeypatch):
     from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
 
     clean = AssertionResult(
-        assertion=Assertion(type="dom_exists", target="提交按钮", expected=""),
+        assertion=Assertion(type="llm_judge", target="x", expected="x"),
         status=AssertionStatus.PASS,
         healed=False,
+        ai_judged=True,
     )
 
-    async def fake_verify_all(self, assertions):
-        return [clean]
+    async def fake_judge(self, a):
+        return clean
 
-    monkeypatch.setattr(agent_mod.AssertionEngine, "verify_all", fake_verify_all)
+    monkeypatch.setattr(agent_mod.AssertionEngine, "_check_llm_judge", fake_judge)
 
     mgr = HookManager()
     seen: list = []
@@ -209,6 +211,6 @@ async def test_agent_no_on_heal_without_healing(monkeypatch):
         ]
     )
     agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), hooks=mgr)
-    await agent.run(_case(), spec=_spec())
+    await agent.run(_case(), spec=_spec(expected="出现待审批"))
 
     assert seen == []  # 无自愈 → on_heal 不触发

@@ -117,20 +117,14 @@ class Recorder:
             head += f"(停因={self.stop_reason})"
         lines = [head]
         if self.case_assertions:
-            lines.append("用例级断言:")
+            lines.append("阶段裁决(逐阶段 Validator):")
             for a in self.case_assertions:
                 mark = {"pass": "✓", "fail": "✗", "skipped": "—"}.get(a.get("status"), "?")
                 detail = a.get("reason") or a.get("actual") or ""
-                # phase="gate" 是步骤驱动门控判定:仅观测,**不计入裁决**(Fix 3 解耦),标注区分
-                tag = " 〔驱动门控·不计入裁决〕" if a.get("phase") == "gate" else ""
-                step = (
-                    f"[步骤{a['step_no']}]"
-                    if a.get("phase") in ("step", "gate") and a.get("step_no")
-                    else ""
-                )
-                lines.append(
-                    f"  {mark} {step}[{a.get('type')}] {a.get('target')} {detail}{tag}".rstrip()
-                )
+                pi = a.get("phase_index")
+                tag = f"[阶段{pi + 1}]" if isinstance(pi, int) and pi >= 0 else ""
+                exp = a.get("expected") or a.get("target") or ""
+                lines.append(f"  {mark} {tag} 预期:{exp} {detail}".rstrip())
         return "\n".join(lines)
 
     # ── 序列化(model_output / action_result 分离) ──────────

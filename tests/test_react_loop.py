@@ -19,11 +19,19 @@ from harness.react_loop import (
     parse_test_result,
 )
 from harness.step_plan import StepPlan
-from input.models import SpecStep
+from input.models import Phase
 
 
 def _plan(n: int) -> StepPlan:
-    return StepPlan([SpecStep(action="click", target=f"按钮{i}") for i in range(1, n + 1)])
+    """单阶段 n 步(n=0 → 空 plan)。"""
+    if n == 0:
+        return StepPlan([])
+    return StepPlan([Phase(steps=[f"点击按钮{i}" for i in range(1, n + 1)])])
+
+
+def _multi_phase_plan(*sizes: int) -> StepPlan:
+    """多阶段:每个 size 一个阶段。"""
+    return StepPlan([Phase(steps=[f"步骤{j}" for j in range(s)]) for s in sizes])
 
 
 class _ScriptedLLM(LLMClient):
@@ -127,20 +135,22 @@ async def test_step_fail_budget_fast_fails():
     assert not plan.all_done()
 
 
-async def test_on_step_done_fires_when_step_resolved():
-    """#2:mark_step_done 让某业务步落定 DONE → on_step_done(step_no) 触发(供步骤级验证)。"""
-    plan = _plan(2)
+async def test_on_phase_end_fires_at_each_phase_boundary():
+    """阶段边界 Validator:每个阶段最后一步 mark_step_done 落定 → on_phase_end(phase_index) 触发。"""
+    plan = _multi_phase_plan(2, 1)  # 阶段0 两步、阶段1 一步
     fired: list[int] = []
 
-    async def on_done(step_no: int) -> None:
-        fired.append(step_no)
+    async def on_phase(pi: int) -> None:
+        fired.append(pi)
 
     llm = _ScriptedLLM(
         [
-            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e1"})]),
-            _resp(calls=[("mark_step_done", {"step_no": 1})]),
-            _resp(calls=[("browser_click", {"element": "按钮2", "ref": "e2"})]),
-            _resp(calls=[("mark_step_done", {"step_no": 2})]),
+            _resp(calls=[("browser_click", {"ref": "e1"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # 阶段0 未完(还有 step2)→ 不触发
+            _resp(calls=[("browser_click", {"ref": "e2"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 2})]),  # 阶段0 最后一步 → 触发 pi=0
+            _resp(calls=[("browser_click", {"ref": "e3"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 3})]),  # 阶段1 最后一步 → 触发 pi=1
             _resp(content="完成 TEST_RESULT: PASS"),
         ]
     )
@@ -150,56 +160,23 @@ async def test_on_step_done_fires_when_step_resolved():
         execute=_make_executor(plan),
         step_plan=plan,
         build_system=_build_system,
-        on_step_done=on_done,
+        on_phase_end=on_phase,
     )
     await loop.run()
-    assert fired == [1, 2]  # 两步各落定时各触发一次,按序
+    assert fired == [0, 1]  # 仅阶段边界触发,按序
 
 
-async def test_gate_unmet_reverts_and_retries_then_completes():
-    """完成门控:首次 mark_done 判未达成 → 退回该步重做;重做后达成 → 用例正常完成。"""
-    plan = _plan(1)
-    verdicts = iter([False, True])  # 第一次门控未达成,第二次达成
+async def test_phase_validator_fail_stops_with_phase_failed():
+    """阶段失败即失败:on_phase_end 返回原因 → PHASE_FAILED,记录失败阶段(不 replan/重试)。"""
+    plan = _multi_phase_plan(1, 1)
 
-    async def gate(step_no: int) -> str | None:
-        return None if next(verdicts) else "页面未达成预期"
-
-    llm = _ScriptedLLM(
-        [
-            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e1"})]),
-            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # 被门控打回
-            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e2"})]),  # 重做
-            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # 这次达成
-            _resp(content="TEST_RESULT: PASS"),
-        ]
-    )
-    loop = ReActLoop(
-        llm,
-        tools=[],
-        execute=_make_executor(plan),
-        step_plan=plan,
-        build_system=_build_system,
-        on_step_done=gate,
-        expect_retry_budget=2,
-    )
-    result = await loop.run()
-    assert result.stop_reason == StopReason.COMPLETED
-    assert plan.all_done()
-
-
-async def test_gate_unmet_exhausts_budget_expect_unmet():
-    """完成门控:反复未达成达预算 → EXPECT_UNMET,标明卡死步,不判该步完成。"""
-    plan = _plan(2)
-
-    async def gate(step_no: int) -> str | None:
-        return "始终不达成"  # 第 1 步永远判未达成
+    async def on_phase(pi: int) -> str | None:
+        return "该阶段预期未达成" if pi == 0 else None
 
     llm = _ScriptedLLM(
         [
-            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e1"})]),
-            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # 未达成 1
-            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e2"})]),
-            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # 未达成 2 → 预算耗尽
+            _resp(calls=[("browser_click", {"ref": "e1"})]),
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # 阶段0 → Validator FAIL → 停
             _resp(content="不该到这"),
         ]
     )
@@ -209,13 +186,12 @@ async def test_gate_unmet_exhausts_budget_expect_unmet():
         execute=_make_executor(plan),
         step_plan=plan,
         build_system=_build_system,
-        on_step_done=gate,
-        expect_retry_budget=2,
+        on_phase_end=on_phase,
     )
     result = await loop.run()
-    assert result.stop_reason == StopReason.EXPECT_UNMET
-    assert result.failed_step_no == 1
-    assert "按钮1" in result.failed_step_target
+    assert result.stop_reason == StopReason.PHASE_FAILED
+    assert result.failed_phase_index == 0
+    assert "未达成" in result.failed_phase_reason
     assert not plan.all_done()
 
 

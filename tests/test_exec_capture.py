@@ -12,7 +12,7 @@ from harness.llm import LLMClient, LLMResponse, ToolCall
 from harness.page_probe import build_ref_index
 from harness.react_loop import ReActLoop
 from harness.step_plan import StepPlan
-from input.models import ActionStep, SpecStep
+from input.models import ActionStep, Phase
 
 _SNAPSHOT = """\
 ### Snapshot
@@ -52,7 +52,7 @@ def _resp(content="", calls=None):
 
 async def test_react_loop_captures_real_role_name():
     """先快照(观察含 ref),再点击 ref → 该步 ActionStep 记下真实 role+name + 步骤 target。"""
-    plan = StepPlan([SpecStep(action="click", target="登录按钮")])
+    plan = StepPlan([Phase(steps=["登录按钮"])])
 
     async def execute(name, arguments):
         handled = plan.apply_tool_call(name, arguments)
@@ -97,12 +97,7 @@ async def test_capture_survives_mark_step_done_between_ops():
     回归 last_snapshot_text 被 mark_step_done 非快照输出覆盖的 bug——若覆盖,
     第二步操作的 ref 索引会空、捕获漏采。两步都应拿到真实 role+name。
     """
-    plan = StepPlan(
-        [
-            SpecStep(action="type", target="用户名输入框"),
-            SpecStep(action="click", target="登录按钮"),
-        ]
-    )
+    plan = StepPlan([Phase(steps=["用户名输入框", "登录按钮"])])
 
     async def execute(name, arguments):
         from harness.react_loop import ToolOutcome

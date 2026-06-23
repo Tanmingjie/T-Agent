@@ -96,7 +96,7 @@ class StopReason(str, Enum):
     LOOP_DETECTED = "loop_detected"  # 连续重复同一调用
     TOOL_CALL_ERROR = "tool_call_error"  # tool_call 容错+重试仍失败
     STEP_FAILED = "step_failed"  # 单步连续定位失败超预算(快速失败,疑似点错前序元素)
-    EXPECT_UNMET = "expect_unmet"  # 单步完成判据反复未达成超预算(门控判该步未真正完成)
+    PHASE_FAILED = "phase_failed"  # 阶段边界 Validator 判该阶段 expected 未达成(阶段失败即失败)
 
 
 @dataclass
@@ -108,6 +108,8 @@ class ReActResult:
     idle_nudges: int = 0  # 模型"哑火"(只回文字不调工具)被续推的累计次数(健康度指标)
     failed_step_no: int = 0  # STEP_FAILED 时:卡死的业务步编号(0=无)
     failed_step_target: str = ""  # STEP_FAILED 时:该步的目标语义(诊断"点错哪个")
+    failed_phase_index: int = -1  # PHASE_FAILED 时:未达成的阶段(0-based;-1=无)
+    failed_phase_reason: str = ""  # PHASE_FAILED 时:Validator 给的未达成原因
 
 
 def _signature(tool_calls: list[ToolCall]) -> str:
@@ -192,9 +194,8 @@ class ReActLoop:
         on_step=None,
         on_llm_delta=None,
         vocab_resolver=None,
-        on_step_done=None,
+        on_phase_end=None,
         step_fail_budget: int = 3,
-        expect_retry_budget: int = 2,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -214,17 +215,14 @@ class ReActLoop:
         # 词汇表解析器(可选):操作侧自愈时按业务词查真实页面名,作为 P1 候选(规格 §5.4
         # "词汇表第一优先查询")。无则自愈退回纯快照启发式。
         self.vocab_resolver = vocab_resolver
-        # 步骤完成门控回调(可选):async (step_no) -> str | None。某业务步 mark_step_done
-        # 落定 DONE 后触发,在【当前子页面】判该步是否真达成完成判据(LLM 看快照判,驱动层)。
-        # 返回 None/空 = 达成、放行;返回**非空原因串** = 未达成 → 退回该步重做 + 回灌原因 +
-        # 计 expect_retry_budget,耗尽则 EXPECT_UNMET 判该步未完成(治"未真完成就 mark done")。
-        self.on_step_done = on_step_done
+        # 阶段边界 Validator 回调(可选):async (phase_index) -> str | None。某阶段**最后一步**
+        # mark_step_done 落定后触发,在【当时所处页面】用偏-FAIL 证据接地裁判核验该阶段 expected。
+        # 返回 None/空 = 该阶段通过、继续;返回**非空原因串** = 未达成 → 用例直接失败(阶段失败
+        # 即失败,本轮不做 replan/重试),停因 PHASE_FAILED。expected 只在此核验,不进驱动(FG01)。
+        self.on_phase_end = on_phase_end
         # 单步定位失败预算(#1 快速失败):同一业务步**累计**定位失败(自愈也没救回)达此数 →
         # 快速判 STEP_FAILED 终止(疑似点错前序元素致后续找不到目标),不再磨到 max_steps。
         self.step_fail_budget = step_fail_budget
-        # 单步完成判据未达成预算:同一业务步被门控判「未达成」累计达此数 → EXPECT_UNMET 终止
-        # (判该步未真正完成)。默认 2(留两次重做机会);软、可恢复(铁律2(a)),耗尽才裁决性失败。
-        self.expect_retry_budget = expect_retry_budget
         self.execute = execute
         self.step_plan = step_plan
         self.build_system = build_system
@@ -249,7 +247,6 @@ class ReActLoop:
         acted_steps: set[int] = set()  # 该 step_no 下执行过「操作类」工具(非 snapshot/非 mark)
         nudged_mark: set[int] = set()  # 已就「过早 mark_done」提示过的 step_no
         step_fail_count: dict[int, int] = {}  # 业务步 → 累计定位失败次数(#1 单步失败预算)
-        expect_fail_count: dict[int, int] = {}  # 业务步 → 完成判据累计未达成次数(门控重试预算)
 
         for iteration in range(1, self.max_steps + 1):
             result.iterations = iteration
@@ -384,9 +381,8 @@ class ReActLoop:
             # 本轮所有 ref 都基于「上一次观察到的快照」分配,先建一份 ref→节点 索引
             ref_index = build_ref_index(last_snapshot_text)
             cur_step = self.step_plan.current
-            cur_target = cur_step.target if cur_step is not None else ""
-            step_failed_stop = False  # 本轮内是否触发单步失败预算(快速失败)
-            replan = False  # 本轮内门控判某步未达成 → 退回重做,跳出本轮 tool_calls 重新规划
+            cur_target = cur_step.text if cur_step is not None else ""
+            step_failed_stop = False  # 本轮内是否触发单步失败预算 / 阶段失败(均终止)
             for tc in resp.tool_calls:
                 step_no += 1
                 started = time.monotonic()
@@ -481,66 +477,53 @@ class ReActLoop:
                     logger.warning(
                         "第 %d 步「%s」累计定位失败 %d 次(预算 %d),快速失败终止",
                         cur_step.step_no,
-                        cur_step.target,
+                        cur_step.text,
                         step_fail_count[cur_step.step_no],
                         self.step_fail_budget,
                     )
                     result.stop_reason = StopReason.STEP_FAILED
                     result.failed_step_no = cur_step.step_no
-                    result.failed_step_target = cur_step.target
+                    result.failed_step_target = cur_step.text
                     step_failed_stop = True
                     break
 
-                # 步骤级完成门控:mark_step_done 让某业务步落定 DONE → 在【当前子页面】判该步
-                # 是否真达成完成判据(LLM 看快照判,不依赖定位器)。达成放行;未达成 → 退回该步
-                # 重做 + 回灌原因 + 计预算,耗尽 EXPECT_UNMET。治"未真完成就 mark done"(如误点
-                # Cancel 没点 Finish 却标完成)。回调由外层提供;无回调时保持原直通行为。
-                if tc.name == MARK_STEP_DONE_TOOL and self.on_step_done is not None:
+                # 阶段边界 Validator:mark_step_done 让某【阶段最后一步】落定 DONE → 在当时所处
+                # 页面用偏-FAIL 证据接地裁判核验该阶段 expected。通过 → 继续;未达成 → 用例直接
+                # 失败(阶段失败即失败,不做 replan/重试),停因 PHASE_FAILED。回调由外层提供。
+                if (
+                    tc.name == MARK_STEP_DONE_TOOL
+                    and self.on_phase_end is not None
+                    and self.step_plan.is_phase_last_step(_safe_int(tc.arguments.get("step_no")))
+                ):
                     done_no = _safe_int(tc.arguments.get("step_no"))
-                    ps = self.step_plan.get(done_no) if done_no else None
+                    ps = self.step_plan.get(done_no)
                     if ps is not None and ps.status == StepStatus.DONE:
                         reason = None
                         try:
-                            reason = await self.on_step_done(done_no)
-                        except Exception as e:  # noqa: BLE001 — 门控异常不拦,放行(best-effort)
-                            logger.warning("步骤级完成门控回调失败(step %s):%s", done_no, e)
-                            reason = None
-                        if reason:  # 非空 → 未达成,退回该步重做
-                            expect_fail_count[done_no] = expect_fail_count.get(done_no, 0) + 1
-                            self.step_plan.reactivate(done_no)
-                            if expect_fail_count[done_no] >= self.expect_retry_budget:
-                                logger.warning(
-                                    "第 %d 步「%s」完成判据累计未达成 %d 次(预算 %d),判该步未完成",
-                                    done_no,
-                                    ps.target,
-                                    expect_fail_count[done_no],
-                                    self.expect_retry_budget,
-                                )
-                                result.stop_reason = StopReason.EXPECT_UNMET
-                                result.failed_step_no = done_no
-                                result.failed_step_target = ps.target
-                                step_failed_stop = True
-                                break
-                            messages.append(
-                                {
-                                    "role": "user",
-                                    "content": (
-                                        f"[步骤未达成] 第 {done_no} 步「{ps.target}」的完成判据"
-                                        f"尚未在当前页面达成:{reason} 该步已退回,请**继续操作**真正"
-                                        f"达成预期后,再调用 mark_step_done(step_no={done_no});"
-                                        "不要在未达成时反复标记完成。"
-                                    ),
-                                }
+                            reason = await self.on_phase_end(ps.phase_index)
+                        except Exception as e:  # noqa: BLE001 — 回调异常按"未拦"处理,继续
+                            logger.warning(
+                                "阶段 Validator 回调失败(phase %s):%s", ps.phase_index, e
                             )
-                            replan = True
+                            reason = None
+                        if reason:  # 非空 → 该阶段 expected 未达成 → 阶段失败即失败
+                            logger.warning(
+                                "阶段 %d 的 expected 未达成(在第 %d 步边界核验):%s",
+                                ps.phase_index + 1,
+                                done_no,
+                                reason,
+                            )
+                            result.stop_reason = StopReason.PHASE_FAILED
+                            result.failed_phase_index = ps.phase_index
+                            result.failed_phase_reason = reason
+                            result.failed_step_no = done_no
+                            result.failed_step_target = ps.text
+                            step_failed_stop = True
                             break
 
             if step_failed_stop:
                 break
-            # 门控退回了某步 → 不判完成,直接重新规划(回灌的重做提示已入 messages)
-            if replan:
-                continue
-            # 所有步骤已落定 → 完成(交由外层跑断言裁决)
+            # 所有步骤已落定 → 完成(交由外层跑阶段裁决汇总)
             if self.step_plan.all_resolved():
                 result.stop_reason = StopReason.COMPLETED
                 break
@@ -597,11 +580,10 @@ class ReActLoop:
         cur = self.step_plan.current
         if cur is None:
             return []
-        kws = [cur.target, cur.action]
-        if cur.data:
-            kws.append(cur.data)
-        # target 里的分词也加入(中文按整体,英文/空格切分)
-        kws += [w for w in cur.target.replace("(", " ").replace(")", " ").split() if w]
+        text = cur.text or ""
+        # 步骤文本整体 + 分词(中文按整体,英文/空格切分)
+        kws = [text]
+        kws += [w for w in text.replace("(", " ").replace(")", " ").split() if w]
         return [k for k in kws if k]
 
     async def _safe_snapshot(self) -> str:

@@ -10,9 +10,9 @@ import json
 import pytest
 
 from harness.llm import LLMClient, LLMResponse
-from input.models import Assertion, PageVocabulary, SpecStep, TestSpec
+from input.models import PageVocabulary
 from intelligence.scanner import Scanner
-from intelligence.vocabulary import VocabularyManager, enhance_targets, route_match
+from intelligence.vocabulary import VocabularyManager, route_match
 from storage.db import Store
 
 
@@ -388,35 +388,6 @@ async def test_agent_incremental_scan_skips_covered_term(store):
     assert llm.calls == 1  # 只总结了一次
 
 
-async def test_agent_enhance_spec_with_vocab_rewrites_target(store):
-    """翻译期增强:base_url 命中的词汇表把精确业务词 target 改写成页面真实文案。"""
-    from harness.agent import TestCaseAgent
-    from input.models import SpecStep, TestCase, TestSpec
-    from intelligence.vocabulary import VocabularyManager, VocabularyResolver
-
-    await store.save_vocabulary(
-        PageVocabulary(
-            url_pattern="/order",
-            page_title="",
-            login_role="",
-            vocabulary={"提交": {"role": "button", "name": "保存并提交"}},
-        )
-    )
-    resolver = VocabularyResolver(VocabularyManager(store))
-    agent = TestCaseAgent(llm=_FakeLLM(), mcp=None, vocab_resolver=resolver)
-
-    spec = TestSpec(
-        case_id="T1",
-        name="下单",
-        base_url="https://intranet/order/9",
-        steps=[SpecStep(action="click", target="提交"), SpecStep(action="click", target="取消")],
-    )
-    case = TestCase(id="T1", name="下单", base_url="https://intranet/order/9", steps=[])
-    out = await agent._enhance_spec_with_vocab(spec, case)
-    assert out.steps[0].target == "保存并提交"  # 命中改写
-    assert out.steps[1].target == "取消"  # 未命中保持
-
-
 async def test_agent_incremental_scan_skips_without_element_evidence(store):
     """无任何带真实元素证据(element_name/selector)的步时,不调 LLM、不写库(best-effort 早退)。"""
     from harness.agent import TestCaseAgent
@@ -439,30 +410,3 @@ async def test_agent_incremental_scan_skips_without_element_evidence(store):
 
     await agent._incremental_scan(result, _noop_phase)  # 不应抛
     assert await store.list_vocabularies() == []
-
-
-# ── 注入增强:用词汇表改写 TestSpec 目标 ────────────────────
-
-
-def test_enhance_targets_rewrites_vague_terms():
-    spec = TestSpec(
-        case_id="TC1",
-        name="x",
-        base_url="https://x",
-        steps=[SpecStep(action="click", target="提交")],
-        assertions=[Assertion(type="element_visible", target="提交")],
-    )
-    enhanced = enhance_targets(spec, {"提交": "保存并提交"})
-    assert enhanced.steps[0].target == "保存并提交"
-    assert enhanced.assertions[0].target == "保存并提交"
-
-
-def test_enhance_targets_leaves_unknown_unchanged():
-    spec = TestSpec(
-        case_id="TC1",
-        name="x",
-        base_url="https://x",
-        steps=[SpecStep(action="click", target="登录")],
-    )
-    enhanced = enhance_targets(spec, {"提交": "保存并提交"})
-    assert enhanced.steps[0].target == "登录"

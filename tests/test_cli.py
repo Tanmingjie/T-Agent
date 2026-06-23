@@ -5,7 +5,7 @@ from __future__ import annotations
 import pytest
 
 from cli.run_case import _load_vocab_resolver, _print_spec, _select_case
-from input.models import Assertion, SpecStep, TestCase, TestSpec
+from input.models import Phase, TestCase, TestSpec
 
 
 def _cases():
@@ -38,15 +38,16 @@ def test_print_spec_runs(capsys):
         case_id="TC001",
         name="提交订单",
         base_url="http://x",
-        given=[SpecStep(action="execute", target="新建订单")],
-        steps=[SpecStep(action="click", target="提交", data="now")],
-        assertions=[Assertion(type="url_contains", target="URL", expected="/list")],
+        intent="验证提交订单",
+        preconditions=["已新建订单"],
+        phases=[Phase(steps=["点击提交"], expected="状态变为待审批")],
     )
     _print_spec(spec)
     out = capsys.readouterr().out
     assert "提交订单" in out
-    assert "新建订单" in out
-    assert "url_contains" in out
+    assert "已新建订单" in out
+    assert "点击提交" in out
+    assert "状态变为待审批" in out
 
 
 # ── --vocab 加载与校验 ────────────────────────────────────────
