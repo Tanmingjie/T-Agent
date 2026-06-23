@@ -94,7 +94,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 实施进度
 
-- **执行健壮化(stage③ ReAct 主循环 redesign,2026-06-23,已落地 E1-6)** ★ — 在阶段化
+### 执行线 7 阶段走查(主线,2026-06-22 起)
+
+`agent.run()` 按 7 阶段拆解,逐阶段走查→暴露设计问题→必要时 redesign。状态:
+
+| # | 阶段(`agent.run` 子段) | 状态 | 落地 |
+|---|---|---|---|
+| ① | before_case Hooks | ✅ 走查完(2026-06-18) | cookie/session 退役、Hook 回归通用扩展点 `3b49864` |
+| ② | spec 翻译 → TestSpec | ✅ 走查 + redesign(2026-06-22) | 阶段化 FP0-3 `a9df22e`→`38483fb`(翻译只产意图、不接地) |
+| ③ | executing — ReAct 主循环 | ✅ 走查 + redesign(2026-06-23) | 执行健壮化 E1-7 `a7c9ba3`→`1831508`(驱动/裁决两层分离) |
+| **④** | **asserting — 阶段裁决汇总** | **← 下一个** | (E5/E6 已加固 LLM judge;阶段④独立走查待启动) |
+| ⑤ | 合并裁决 + 执行完整性闸门 | 待走查 | (重设计已动过:`passed = 全阶段过 + 执行完整`) |
+| ⑥ | 收尾 Hooks(on_heal/on_failure/after_case) | 待走查 | (E1 阶段没碰过) |
+| ⑦ | codegen → scanning(产物) | 待走查 | (FP1 做了 phases→steps 最小适配,可能仍有改进空间) |
+
+走查范式:**读真实代码 → 设计张力清单 → 用户拍设计方向 → 必要时 redesign(`F<n>` 命名,按
+功能点拆分单独 commit/push,每点单测 + saucedemo live 冒烟)**。
+
+### 重大 redesign 实施记录
+
+- **执行健壮化(stage③ ReAct 主循环 redesign,2026-06-23,已落地 E1-7)** ★ — 在阶段化
   重设计(FP0-3)之上,把③ executing 阶段从「按步打勾」升级成「像 Claude 一样盯目标、
   失败诊断换法」。两层分离更彻底:**驱动层(role a,鼓励·软·可恢复)** + **裁决层
   (role b,可审计·硬·fail-closed)**。
