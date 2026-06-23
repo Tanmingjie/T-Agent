@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 from dataclasses import dataclass, field
 from enum import Enum
@@ -35,6 +36,12 @@ from typing import Protocol, runtime_checkable
 
 from harness.llm import extract_verdict, loads_lenient
 from input.models import Assertion
+
+# E6 多模态裁判通道开关:默认**关**(JUDGE_VISUAL=0)。开启后,_check_llm_judge 抓截图
+# 作第二通道喂给裁判(配合 a11y 快照 + URL),治 a11y 树看不全的角标/图标/canvas 类预期
+# 容易被 judge 看走眼的情况。需多模态模型支持;一次失败后该 run 内不再尝试(沿用 healing
+# 的 _vision_unsupported 设计哲学)。本地弱模型多模态质量不稳,故默认关,有多模态模型再开。
+_JUDGE_VISUAL_DEFAULT = os.getenv("JUDGE_VISUAL", "0") not in ("0", "false", "False")
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +139,9 @@ class AssertionEngine:
         self.tool_registry = tool_registry
         # llm_judge 兜底裁判用(方案A)。未接入则 llm_judge 断言保持 skipped。
         self.llm = llm
+        # E6 多模态裁判通道:运行期记忆「该模型不支持图像」,首次失败后退回纯文本通道,
+        # 避免每次浪费一次失败请求(对齐 healing._vision_unsupported)。
+        self._vision_unsupported = False
 
     async def verify(self, a: Assertion) -> AssertionResult:
         res = await self._verify_once(a)
@@ -193,27 +203,74 @@ class AssertionEngine:
             except Exception as e:  # noqa: BLE001 — 取 URL 失败不阻断裁决
                 logger.warning("llm_judge 取当前 URL 失败:%s", e)
         expectation = (a.expected or a.target or "").strip()
-        messages = [
-            {"role": "system", "content": _JUDGE_SYSTEM},
-            {
-                "role": "user",
-                "content": (
-                    f"期望:{expectation}\n\n"
-                    f"当前页面 URL:{cur_url or '(未知)'}\n\n"
-                    f"当前页面无障碍快照:\n{snapshot_text[:6000] or '(无快照)'}"
-                ),
-            },
-        ]
+        user_text = (
+            f"期望:{expectation}\n\n"
+            f"当前页面 URL:{cur_url or '(未知)'}\n\n"
+            f"当前页面无障碍快照:\n{snapshot_text[:6000] or '(无快照)'}"
+        )
+        # E6 多模态裁判通道(默认关,env JUDGE_VISUAL=1 开启):
+        # 抓一张截图作第二通道,治 a11y 树看不全的角标/图标/canvas 类预期(judge 容易看走眼)。
+        # probe 需提供 `raw_screenshot() -> base64 | None`;模型不支持图像 → 本 run 内退回纯文本。
+        screenshot_b64: str | None = None
+        if _JUDGE_VISUAL_DEFAULT and not self._vision_unsupported:
+            shot_fn = getattr(self.probe, "raw_screenshot", None)
+            if callable(shot_fn):
+                try:
+                    screenshot_b64 = await shot_fn()
+                except Exception as e:  # noqa: BLE001 — 取截图失败 → 退回纯文本,不阻断
+                    logger.warning("llm_judge 取截图失败,退回纯文本:%s", e)
+                    screenshot_b64 = None
+        if screenshot_b64:
+            url_data = (
+                screenshot_b64
+                if screenshot_b64.startswith("data:")
+                else f"data:image/png;base64,{screenshot_b64}"
+            )
+            messages = [
+                {"role": "system", "content": _JUDGE_SYSTEM},
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_text},
+                        {"type": "image_url", "image_url": {"url": url_data}},
+                    ],
+                },
+            ]
+        else:
+            messages = [
+                {"role": "system", "content": _JUDGE_SYSTEM},
+                {"role": "user", "content": user_text},
+            ]
         try:
             resp = await self.llm.chat(messages)
         except Exception as e:  # noqa: BLE001 — 调用失败 → skipped(fail-closed,不默认绿)
-            logger.warning("llm_judge 调用失败:%s", e)
-            return AssertionResult(
-                assertion=a,
-                status=AssertionStatus.SKIPPED,
-                ai_judged=True,
-                reason=f"llm_judge 调用失败 → skipped:{e}",
-            )
+            # E6:多模态首次失败 → 标记不支持图像,**本次直接退回纯文本重试**(贴 healing 同款)
+            if screenshot_b64:
+                self._vision_unsupported = True
+                logger.warning("llm_judge 多模态调用失败(%s),退回纯文本重试", e)
+                try:
+                    resp = await self.llm.chat(
+                        [
+                            {"role": "system", "content": _JUDGE_SYSTEM},
+                            {"role": "user", "content": user_text},
+                        ]
+                    )
+                except Exception as e2:  # noqa: BLE001
+                    logger.warning("llm_judge 退回纯文本仍失败:%s", e2)
+                    return AssertionResult(
+                        assertion=a,
+                        status=AssertionStatus.SKIPPED,
+                        ai_judged=True,
+                        reason=f"llm_judge 调用失败 → skipped:{e2}",
+                    )
+            else:
+                logger.warning("llm_judge 调用失败:%s", e)
+                return AssertionResult(
+                    assertion=a,
+                    status=AssertionStatus.SKIPPED,
+                    ai_judged=True,
+                    reason=f"llm_judge 调用失败 → skipped:{e}",
+                )
         content = resp.content or ""
         verdict, reason, evidence = "", "", ""
         try:

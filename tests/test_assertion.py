@@ -521,6 +521,103 @@ async def test_llm_judge_expected_without_strong_anchors_unchanged():
     assert r.status == AssertionStatus.PASS  # expected 无强锚点 → E5 跳过不参与
 
 
+# ── E6:多模态裁判通道(开关默认关) ─────────────────────────
+
+
+class _VisualCapturingLLM:
+    """记录最近一次 messages 结构,验证多模态裁判通道是否正确组装图像消息。"""
+
+    def __init__(self, content: str):
+        self._content = content
+        self.last_messages = []
+        self.calls = 0
+
+    async def chat(self, messages, tools=None, **kwargs):
+        self.last_messages = messages
+        self.calls += 1
+
+        class _R:
+            content = self._content
+
+        return _R()
+
+
+class _VisualSnapshotProbe(SnapshotProbe):
+    """提供 raw_screenshot 返回 base64 PNG 字节串(模拟有截图通道)。"""
+
+    def __init__(self, url="", elements=None, snapshot="", screenshot=""):
+        super().__init__(url=url, elements=elements, snapshot=snapshot)
+        self._shot = screenshot
+
+    async def raw_screenshot(self):
+        return self._shot or None
+
+
+async def test_judge_visual_off_by_default(monkeypatch):
+    """E6 默认关:_JUDGE_VISUAL_DEFAULT=False 时,judge 走纯文本通道,不抓截图。"""
+    from harness import assertion as a_mod
+
+    monkeypatch.setattr(a_mod, "_JUDGE_VISUAL_DEFAULT", False)
+    probe = _VisualSnapshotProbe(url="https://x/", snapshot="- text", screenshot="FAKE_B64")
+    llm = _VisualCapturingLLM('{"verdict":"PASS","evidence":"text","reason":"ok"}')
+    eng = AssertionEngine(probe, llm=llm)
+    await eng.verify(Assertion(type="llm_judge", target="x"))
+    user = llm.last_messages[-1]
+    assert isinstance(user["content"], str)  # 纯文本通道
+
+
+async def test_judge_visual_on_attaches_screenshot(monkeypatch):
+    """E6 开启时:有 raw_screenshot → user content 变为含 image_url 的 list。"""
+    from harness import assertion as a_mod
+
+    monkeypatch.setattr(a_mod, "_JUDGE_VISUAL_DEFAULT", True)
+    probe = _VisualSnapshotProbe(url="https://x/", snapshot="- text", screenshot="ZZZ_B64")
+    llm = _VisualCapturingLLM('{"verdict":"PASS","evidence":"text","reason":"ok"}')
+    eng = AssertionEngine(probe, llm=llm)
+    await eng.verify(Assertion(type="llm_judge", target="x"))
+    user = llm.last_messages[-1]
+    assert isinstance(user["content"], list)
+    types = [b.get("type") for b in user["content"]]
+    assert "image_url" in types
+    img_block = next(b for b in user["content"] if b.get("type") == "image_url")
+    assert img_block["image_url"]["url"].startswith("data:image/png;base64,")
+    assert "ZZZ_B64" in img_block["image_url"]["url"]
+
+
+async def test_judge_visual_falls_back_when_model_rejects_image(monkeypatch):
+    """E6:多模态调用失败 → 标记 _vision_unsupported + 当次退回纯文本重试,后续不再尝试图像。"""
+    from harness import assertion as a_mod
+
+    monkeypatch.setattr(a_mod, "_JUDGE_VISUAL_DEFAULT", True)
+
+    class _RejectingLLM:
+        def __init__(self):
+            self.calls = []
+
+        async def chat(self, messages, tools=None, **kwargs):
+            user = messages[-1]
+            self.calls.append("multi" if isinstance(user["content"], list) else "text")
+            if isinstance(user["content"], list):
+                raise RuntimeError("model has no vision support")
+
+            class _R:
+                content = '{"verdict":"PASS","evidence":"text","reason":"ok"}'
+
+            return _R()
+
+    probe = _VisualSnapshotProbe(url="https://x/", snapshot="- text", screenshot="ZZZ")
+    llm = _RejectingLLM()
+    eng = AssertionEngine(probe, llm=llm)
+    r1 = await eng.verify(Assertion(type="llm_judge", target="x"))
+    assert r1.status == AssertionStatus.PASS  # 退回纯文本成功
+    assert llm.calls == ["multi", "text"]
+    assert eng._vision_unsupported is True
+    # 第二次调用同 engine 应直接走纯文本(不再尝试 multi)
+    r2 = await eng.verify(Assertion(type="llm_judge", target="y"))
+    assert r2.status == AssertionStatus.PASS
+    assert llm.calls == ["multi", "text", "text"]
+
+
 # ── 裁决 / 聚合 ───────────────────────────────────────────────
 
 
