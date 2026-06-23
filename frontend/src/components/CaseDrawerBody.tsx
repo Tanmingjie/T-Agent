@@ -46,15 +46,14 @@ interface CaseInfo {
 interface AssertionResult {
   type: string;
   target: string;
-  expected?: string | null;
+  expected?: string | null; // 该阶段的预期判据(自然语言)
   status: string; // pass | fail | skipped
   actual?: string | null;
-  reason?: string | null;
-  ai_judged?: boolean; // 由 llm_judge 兜底判定(低置信)→ 与结构化绿区分,使 false green 可见
-  healed?: boolean; // 经自愈重定位后才通过 → 与结构化绿区分(自愈绿)
-  heal_note?: string | null; // 自愈摘要(重定位到哪个 target / 策略)
-  step_no?: number; // 步骤级断言:属于第几步(在该步子页面即时验证)
-  phase?: string; // step=步骤级确定性锚点 / gate=驱动门控(仅观测,不进裁决)/ final=终态用例级
+  reason?: string | null; // 裁判结论 + 逐字引证的页面实证
+  ai_judged?: boolean; // 阶段 Validator 走 llm_judge,默认 true
+  healed?: boolean; // 经自愈重定位后才通过
+  heal_note?: string | null;
+  phase_index?: number; // 属于第几个阶段(0-based)
 }
 
 interface StepDetail {
@@ -75,27 +74,18 @@ interface StepDetail {
   };
 }
 
-interface SpecAssertion {
-  type: string;
-  target: string;
-  expected?: string | null;
-}
-
-interface SpecStep {
-  action: string;
-  target: string;
-  data?: string | null;
-  expect_text?: string;
-  expect?: SpecAssertion[];
+interface Phase {
+  steps: string[];
+  expected: string;
 }
 
 interface TestSpec {
   case_id: string;
   name: string;
   base_url: string;
-  given?: SpecStep[];
-  steps?: SpecStep[];
-  assertions?: SpecAssertion[];
+  intent?: string;
+  preconditions?: string[];
+  phases?: Phase[];
 }
 
 interface CaseMetrics {
@@ -207,16 +197,13 @@ function AssertionRow({ a }: { a: AssertionResult }) {
         <AssertIcon status={a.status} />
       </span>
       <span className="text-gray-700">
-        <span className="text-gray-400">[{a.type}]</span> {a.target}
-        {a.expected != null && a.expected !== "" && (
-          <span className="text-gray-400"> == {a.expected}</span>
-        )}
-        {a.phase === "gate" && (
+        <span className="text-gray-400">预期:</span> {a.expected || a.target}
+        {a.ai_judged && (
           <span
-            className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-amber-50 text-amber-700 border border-amber-200 align-middle"
-            title="步骤驱动门控判定:仅用于驱动重做,不计入用例最终裁决"
+            className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-50 text-violet-700 border border-violet-200 align-middle"
+            title="阶段 Validator 由 LLM 看真实页面、强制引证证据后判定(偏-FAIL、fail-closed)"
           >
-            驱动门控·不计入裁决
+            AI判定
           </span>
         )}
         {a.healed && (
@@ -227,10 +214,11 @@ function AssertionRow({ a }: { a: AssertionResult }) {
             已自愈
           </span>
         )}
-        {a.status === "fail" && (a.actual || a.reason) && (
-          <span className="block text-xs text-red-600 mt-0.5">
-            实际: {a.actual ?? "—"}
-            {a.reason ? ` · ${a.reason}` : ""}
+        {(a.actual || a.reason) && (
+          <span
+            className={`block text-xs mt-0.5 ${a.status === "fail" ? "text-red-600" : "text-gray-400"}`}
+          >
+            {a.reason || a.actual}
           </span>
         )}
       </span>
@@ -238,49 +226,27 @@ function AssertionRow({ a }: { a: AssertionResult }) {
   );
 }
 
-/** 断言裁决视图:步骤级裁决按所属步骤分组(各步一块),用例级/终态裁决单列一块。
- *  把分散在大列表里的「步骤N」断言归到各自步骤,阅读时一眼看清每步验了什么。 */
+/** 阶段裁决视图:每个阶段一条 Validator 裁决(在该阶段所属页面证据接地判定)。
+ *  按 phase_index 升序分组展示;最后一个阶段的裁决即天然终态检查(无独立终态裁决)。 */
 function AssertionVerdict({ assertions }: { assertions: AssertionResult[] }) {
   if (assertions.length === 0) {
-    return <p className="ml-6 mt-1 text-sm text-gray-400">无断言记录</p>;
+    return <p className="ml-6 mt-1 text-sm text-gray-400">无阶段裁决记录</p>;
   }
-  // 步骤级:确定性锚点(step)+ 驱动门控观测(gate)都归到所属步骤;**gate 只观测、不进裁决**
-  // (Fix 3 解耦),归步骤组避免它混进「最终(用例级)」裁决块被误读为裁决依据。
-  const isStepLevel = (a: AssertionResult) =>
-    (a.phase === "step" || a.phase === "gate") && a.step_no != null;
-  const stepAsserts = assertions.filter(isStepLevel);
-  const finalAsserts = assertions.filter((a) => !isStepLevel(a));
-  // 按 step_no 升序分组
-  const byStep = new Map<number, AssertionResult[]>();
-  for (const a of stepAsserts) {
-    const k = a.step_no as number;
-    (byStep.get(k) ?? byStep.set(k, []).get(k)!).push(a);
-  }
-  const stepNos = [...byStep.keys()].sort((x, y) => x - y);
+  const sorted = [...assertions].sort(
+    (x, y) => (x.phase_index ?? 0) - (y.phase_index ?? 0),
+  );
   return (
     <div className="ml-6 mt-1 space-y-3">
-      {stepNos.map((no) => (
-        <div key={no}>
-          <p className="text-[11px] font-medium text-surface-500 mb-1">步骤 {no}</p>
+      {sorted.map((a, i) => (
+        <div key={i}>
+          <p className="text-[11px] font-medium text-surface-500 mb-1">
+            阶段 {(a.phase_index ?? i) + 1}
+          </p>
           <ul className="space-y-1.5 pl-2 border-l-2 border-surface-100">
-            {byStep.get(no)!.map((a, i) => (
-              <AssertionRow key={i} a={a} />
-            ))}
+            <AssertionRow a={a} />
           </ul>
         </div>
       ))}
-      {finalAsserts.length > 0 && (
-        <div>
-          {stepNos.length > 0 && (
-            <p className="text-[11px] font-medium text-surface-500 mb-1">最终(用例级)</p>
-          )}
-          <ul className="space-y-1.5">
-            {finalAsserts.map((a, i) => (
-              <AssertionRow key={i} a={a} />
-            ))}
-          </ul>
-        </div>
-      )}
     </div>
   );
 }
@@ -332,13 +298,6 @@ const ACTION_LABEL: Record<string, string> = {
   wait: "等待",
 };
 
-function specLine(s: SpecStep): string {
-  const verb = ACTION_LABEL[s.action] ?? s.action;
-  const data = s.data ? ` “${s.data}”` : "";
-  const expect = s.expect_text ? ` → 预期:${s.expect_text}` : "";
-  return `${verb} ${s.target}${data}${expect}`.trim();
-}
-
 /** 列表区块:标题 + 条目,空则不渲染。供右栏「用例信息」用。 */
 function ListBlock({ title, items }: { title: string; items: string[] }) {
   if (items.length === 0) return null;
@@ -358,61 +317,36 @@ function ListBlock({ title, items }: { title: string; items: string[] }) {
   );
 }
 
-/** 把一条结构化断言渲染成可读文本:[type] target == expected。 */
-function assertText(a: SpecAssertion): string {
-  const exp = a.expected != null && a.expected !== "" ? ` == ${a.expected}` : "";
-  return `[${a.type}] ${a.target}${exp}`;
-}
-
-/** 步骤区块:每步显示「动作 → 预期(expect_text)」+ 其步骤级即时断言(step.expect)。
- *  步骤级断言在该步所属页面**即时验证**(非终态),与用例级最终断言分开展示,避免混淆
- *  ——后者才是整个流程跑完后在最后一页统一裁决的依据。 */
-function SpecStepsBlock({ title, steps }: { title: string; steps: SpecStep[] }) {
-  if (steps.length === 0) return null;
+/** 阶段区块:每个阶段显示其步骤(全局连续编号)+ 该阶段的预期(组级,边界由 Validator 验)。
+ *  步骤是驱动、预期是验证依据(执行时只在阶段边界核验,不进 agent 驱动)。 */
+function SpecPhasesBlock({ phases }: { phases: Phase[] }) {
+  if (phases.length === 0) {
+    return <p className="text-xs text-gray-400">（翻译未产出阶段)</p>;
+  }
+  let no = 0;
   return (
-    <div>
-      <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
-        {title}
-      </h4>
-      <ul className="space-y-1.5">
-        {steps.map((s, i) => (
-          <li key={i} className="text-sm text-gray-600 leading-snug">
-            • {specLine(s)}
-            {s.expect && s.expect.length > 0 && (
-              <ul className="ml-4 mt-1 space-y-0.5">
-                {s.expect.map((a, j) => (
-                  <li key={j} className="text-xs text-gray-400">
-                    ↳ 断言(该步即时验):{assertText(a)}
-                  </li>
-                ))}
-              </ul>
-            )}
-          </li>
-        ))}
-      </ul>
-    </div>
-  );
-}
-
-/** 用例级最终断言:整个流程跑完后在【最后一页】统一裁决的依据(终态裁决)。
- *  与各步骤的即时断言(SpecStepsBlock 内)分开,避免把步骤锚点误读为最终判据。 */
-function CaseAssertBlock({ asserts }: { asserts: SpecAssertion[] }) {
-  return (
-    <div>
-      <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1.5">
-        用例级最终断言 (assertions)
-      </h4>
-      {asserts.length === 0 ? (
-        <p className="text-xs text-gray-400">（翻译未产出用例级最终断言）</p>
-      ) : (
-        <ul className="space-y-1">
-          {asserts.map((a, i) => (
-            <li key={i} className="text-sm text-gray-600 leading-snug">
-              • {assertText(a)}
-            </li>
-          ))}
-        </ul>
-      )}
+    <div className="space-y-3">
+      {phases.map((ph, pi) => (
+        <div key={pi}>
+          <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+            阶段 {pi + 1}
+          </h4>
+          <ul className="space-y-1 pl-2 border-l-2 border-surface-100">
+            {ph.steps.map((s) => {
+              no += 1;
+              return (
+                <li key={no} className="text-sm text-gray-600 leading-snug">
+                  {no}. {s}
+                </li>
+              );
+            })}
+          </ul>
+          <p className="text-xs text-gray-500 mt-1 pl-2">
+            <span className="text-gray-400">预期⟶ </span>
+            {ph.expected || "(无)"}
+          </p>
+        </div>
+      ))}
     </div>
   );
 }
@@ -526,34 +460,21 @@ function InfoView({
   caseInfo: CaseInfo;
   spec?: TestSpec | null;
 }) {
-  const given = spec?.given ?? [];
-  const steps = spec?.steps ?? [];
-  // 断言分两级、分开展示(不再拍平聚合):**步骤级即时断言**(step.expect)随所属步骤展示,
-  // 在该步页面即时验;**用例级最终断言**(spec.assertions)单列,终态统一裁决。早先为兼容
-  // 「翻译把断言全塞 step.expect、用例级空」而做的跨级聚合会抹掉级别 → 误把步骤锚点当最终判据。
-  const caseAsserts = spec?.assertions ?? [];
+  const phases = spec?.phases ?? [];
   return (
     <div className="p-6 space-y-6 max-w-3xl">
-      {caseInfo.precondition_items && caseInfo.precondition_items.length > 0 ? (
-        <PreconditionBlock
-          suiteId={suiteId}
-          caseId={caseInfo.id}
-          items={caseInfo.precondition_items}
-        />
-      ) : (
-        <ListBlock title="预置条件" items={caseInfo.preconditions} />
-      )}
+      <ListBlock title="预置条件" items={caseInfo.preconditions} />
       <ListBlock title="测试步骤" items={caseInfo.steps} />
       <ListBlock title="预期结果" items={caseInfo.expected} />
 
       <section className="border-t border-gray-200 pt-5">
         <h3 className="flex items-center gap-1.5 text-sm font-semibold text-surface-900 mb-1">
           <FileText size={15} className="text-brand-600" />
-          执行规格 (TestSpec)
+          执行规格 (TestSpec · 阶段化)
         </h3>
         <p className="text-xs text-gray-400 mb-4">
-          AI
-          把用例翻译成的结构化执行规格,断言在此一次性结构化。可据此核对翻译是否准确。
+          AI 把用例翻译成的阶段化执行规格:每个阶段 = 一组步骤(驱动)+ 一条预期(阶段边界由
+          Validator 证据接地核验)。可据此核对翻译是否准确。
         </p>
         {!spec ? (
           <p className="text-sm text-gray-400">
@@ -561,14 +482,16 @@ function InfoView({
           </p>
         ) : (
           <div className="space-y-4">
-            <SpecStepsBlock title="前置 (given)" steps={given} />
-            <SpecStepsBlock title="步骤 (steps)" steps={steps} />
-            <CaseAssertBlock asserts={caseAsserts} />
-            {given.length === 0 &&
-              steps.length === 0 &&
-              caseAsserts.length === 0 && (
-                <p className="text-sm text-gray-400">规格为空</p>
-              )}
+            {spec.intent && (
+              <div>
+                <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+                  测试意图(背景)
+                </h4>
+                <p className="text-sm text-gray-600 leading-snug">{spec.intent}</p>
+              </div>
+            )}
+            <ListBlock title="前置条件(背景)" items={spec.preconditions ?? []} />
+            <SpecPhasesBlock phases={phases} />
           </div>
         )}
       </section>
