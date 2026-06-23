@@ -260,6 +260,71 @@ async def test_metrics_marks_incomplete_execution():
     assert record.metrics["execution"]["idle_nudges"] >= 1
 
 
+# ── E4:裁决判前 settle + 恰好一次 ──────────────────────────
+
+
+async def test_settle_called_before_phase_validator(monkeypatch):
+    """E4:`on_phase_end` 抓快照前先 settle_page,确保 judge 看的是稳定终态页。"""
+    from harness import agent as agent_mod
+
+    settle_calls: list[float] = []
+
+    async def fake_settle(mcp, *, timeout, interval):
+        settle_calls.append(timeout)
+        return 1
+
+    monkeypatch.setattr(agent_mod, "settle_page", fake_settle)
+    monkeypatch.setattr(agent_mod, "_SETTLE_ENABLED", True)
+    llm = _PhaseJudgeLLM(_react_one_step(), ["PASS"])
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=_spec(expected="出现待审批"))
+    # 至少有一次 settle(阶段 Validator 触发的);settle 也会被 navigator 工具触发,
+    # 但本测试的 _FakeMCP 只走 click,所以 settle 主要来自 Validator + click 后。
+    assert len(settle_calls) >= 1
+    assert record.passed is True
+
+
+async def test_settle_disabled_skips_settle_before_validator(monkeypatch):
+    """E4:MCP_SETTLE=0 时,Validator 前不调 settle(尊重开关)。"""
+    from harness import agent as agent_mod
+
+    settle_calls: list[float] = []
+
+    async def fake_settle(mcp, *, timeout, interval):
+        settle_calls.append(timeout)
+        return 1
+
+    monkeypatch.setattr(agent_mod, "settle_page", fake_settle)
+    monkeypatch.setattr(agent_mod, "_SETTLE_ENABLED", False)
+    llm = _PhaseJudgeLLM(_react_one_step(), ["PASS"])
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    await agent.run(_case(), spec=_spec(expected="出现待审批"))
+    assert settle_calls == []
+
+
+async def test_phase_validator_dedup_runs_once_per_phase():
+    """E4 恰好一次:同一 phase 即便末步被重复 mark_done,Validator 只跑一次。"""
+    llm = _PhaseJudgeLLM(
+        [
+            _resp(content="点提交", calls=[("browser_click", {"ref": "e3"})]),
+            # 同一轮内重复 mark_step_done 同一末步(模拟弱模型奇怪行为)
+            _resp(
+                content="完成",
+                calls=[
+                    ("mark_step_done", {"step_no": 1}),
+                    ("mark_step_done", {"step_no": 1}),
+                ],
+            ),
+        ],
+        ["PASS"],  # 只准备一个裁判结果——若 dedup 失败会爆 IndexError
+    )
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=_spec(expected="出现待审批"))
+    assert record.passed is True
+    # case_assertions 只有一条裁决证据(无重复)
+    assert len([a for a in record.case_assertions if a.get("phase_index") == 0]) == 1
+
+
 async def test_live_progress_streams_phases_and_steps_in_order():
     llm = _ScriptedLLM(_react_one_step())
     events: list[tuple[str, dict]] = []

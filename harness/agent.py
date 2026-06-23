@@ -503,8 +503,14 @@ class TestCaseAgent:
         # (内部以 llm_judge Assertion 承载阶段预期),与旧终态裁判同一套证据接地、fail-closed 逻辑。
         phase_results: list = []  # [(phase_index, AssertionResult)] —— 逐阶段裁决证据
 
+        validated_phases: set[int] = set()  # E4 去重:同一 phase 只裁决一次
+
         async def on_phase_end(phase_index: int) -> str | None:
             if not (0 <= phase_index < len(spec.phases)):
+                return None
+            # E4 同 phase 只裁决一次:即便模型重复 mark 同一末步,Validator 不再重复跑。
+            # 已通过的 phase 跳过(返回 None 放行);已 FAIL 的 phase 已经停了不会到这。
+            if phase_index in validated_phases:
                 return None
             expected = (spec.phases[phase_index].expected or "").strip()
             if not expected:
@@ -520,7 +526,13 @@ class TestCaseAgent:
                         ),
                     )
                 )
+                validated_phases.add(phase_index)
                 return None
+            # E4 判前 settle:mark_step_done 不触发 settle,Validator 在 mark 当场抓快照
+            # 可能抓到「上一动作还在加载」的页面(裁判要么白等要么把过渡态误判)。先等
+            # 页面稳定再 refresh,确保 judge 看的是**稳定终态页**。
+            if _SETTLE_ENABLED:
+                await settle_page(self.mcp, timeout=_SETTLE_TIMEOUT, interval=_SETTLE_INTERVAL)
             probe_p = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
             await probe_p.refresh()  # 抓当时所处页面快照(阶段边界,页面还在那一刻)
             engine_p = AssertionEngine(
@@ -530,6 +542,7 @@ class TestCaseAgent:
                 Assertion(type="llm_judge", target=expected, expected=expected, confidence="low")
             )
             phase_results.append((phase_index, r))
+            validated_phases.add(phase_index)
             # PASS / SKIPPED(裁判调用失败等)→ 不阻断继续;FAIL → 返回原因 → 阶段失败即失败。
             if r.status == AssertionStatus.FAIL:
                 return r.reason or f"阶段 {phase_index + 1} 的预期未在当前页面达成"
