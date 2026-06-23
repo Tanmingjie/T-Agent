@@ -114,10 +114,14 @@ def test_builder_assembles_all_layers():
     plan = StepPlan.from_spec(_spec())
     builder = PromptBuilder(_spec(), _tools(), context="业务背景:订单系统 {{x}}")
     out = builder.build(plan)
-    # Base 层关键约束在
-    assert "TEST_RESULT" in out
+    # E1 驱动契约关键词
+    assert "要达成的目标" in out
+    assert "先验后进" in out or "mark 前" in out
     assert "mark_step_done" in out
-    assert "防循环" in out
+    # E1 已废弃 TEST_RESULT 教学(不再让模型输出)
+    assert "不要输出 TEST_RESULT" in out
+    # 主动加载 skill 写进了驱动契约
+    assert "load_skill" in out
     # 各层都在
     assert "业务背景" in out
     assert "测试任务" in out
@@ -137,3 +141,8 @@ def test_builder_refreshes_task_each_build():
 def test_base_prompt_has_safety_and_react():
     assert "安全边界" in BASE_PROMPT
     assert "INTENT" in BASE_PROMPT
+    # E1: 步骤=目标 + 先验后进 + 主动加载 skill
+    assert "要达成的目标" in BASE_PROMPT
+    assert "load_skill" in BASE_PROMPT
+    # 不再教 TEST_RESULT 输出
+    assert "不要输出 TEST_RESULT" in BASE_PROMPT

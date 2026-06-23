@@ -182,6 +182,31 @@ def test_to_prompt_marks_and_pointer():
     assert f"{MARK_STEP_DONE_TOOL}(step_no=2)" in text
 
 
+def test_to_prompt_marks_current_phase_and_progress():
+    """E1:多阶段时标出当前所在阶段(N/M) + 本阶段剩余步数。"""
+    spec = TestSpec(
+        case_id="TC",
+        name="x",
+        base_url="http://x",
+        phases=[Phase(steps=["a", "b"]), Phase(steps=["c", "d"])],
+    )
+    plan = StepPlan.from_spec(spec)
+    text = plan.to_prompt()
+    # 总览
+    assert "2 个阶段" in text
+    # 当前在阶段 1
+    assert "— 阶段 1/2 (当前)—" in text
+    assert "— 阶段 2/2 —" in text
+    assert "你在阶段 1/2(本阶段剩 2 步)" in text
+    # expected 绝不进 prompt(FG01)
+    plan.mark_done(1)
+    plan.mark_done(2)
+    text2 = plan.to_prompt()
+    # 跨入阶段 2
+    assert "— 阶段 2/2 (当前)—" in text2
+    assert "你在阶段 2/2(本阶段剩 2 步)" in text2
+
+
 def test_describe_returns_text():
     st = PlanStep(step_no=1, text="在用户名框输入 admin", phase_index=0)
     assert st.describe() == "在用户名框输入 admin"

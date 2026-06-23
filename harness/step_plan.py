@@ -233,25 +233,35 @@ class StepPlan:
     # ── 序列化为 Prompt 片段 ─────────────────────────────────
 
     def to_prompt(self) -> str:
-        """TodoWrite 风格清单,按阶段分组注入 System Prompt(**不含阶段 expected**)。"""
+        """TodoWrite 风格清单,按阶段分组注入 System Prompt(**不含阶段 expected**)。
+
+        阶段化驱动(E1):标出**当前所在阶段**(N/M),给 agent「正在完成一个子目标组」
+        的意识——但仍只渲染步骤,**绝不渲染 phase.expected**(FG01:验证依据不进驱动)。
+        """
         if not self.steps:
             return "执行计划:无步骤。"
+        cur = self.current
+        cur_phase = cur.phase_index if cur is not None else -1
         lines = [f"## 执行计划(共 {len(self.steps)} 步,{self.phase_count} 个阶段)"]
         for pi in range(self.phase_count):
             steps = [s for s in self.steps if s.phase_index == pi]
             if not steps:
                 continue
-            lines.append(f"— 阶段 {pi + 1} —")
+            tag = "(当前)" if pi == cur_phase else ""
+            lines.append(f"— 阶段 {pi + 1}/{self.phase_count} {tag}—".rstrip())
             for st in steps:
                 line = f"{_MARK[st.status]} {st.step_no}. {st.describe()}"
                 if st.note:
                     line += f" — {st.note}"
                 lines.append(line)
-        cur = self.current
         if cur is not None:
+            remaining = [
+                s for s in self.steps if s.phase_index == cur_phase and s.status != StepStatus.DONE
+            ]
             lines.append("")
             lines.append(
-                f"当前应执行第 {cur.step_no} 步。完成后调用 "
-                f"{MARK_STEP_DONE_TOOL}(step_no={cur.step_no})。"
+                f"你在阶段 {cur_phase + 1}/{self.phase_count}(本阶段剩 {len(remaining)} 步),"
+                f"当前应执行第 {cur.step_no} 步。"
+                f"达成本步目标后调用 {MARK_STEP_DONE_TOOL}(step_no={cur.step_no})。"
             )
         return "\n".join(lines)
