@@ -576,9 +576,9 @@ class TestCaseAgent:
         recorder.set_token_usage(self._token_usage())
         recorder.set_stop_reason(f"{result.stop_reason.value}/iter={result.iterations}")
 
-        # —— 阶段裁决汇总(逐阶段 Validator 已在执行中、各阶段边界即时验过)——
-        await emit_phase("asserting", "阶段裁决汇总")
-        _mark_phase("asserting")
+        # —— 裁决汇总(逐阶段 Validator 已在执行中、各阶段边界即时验过;此处仅记账)——
+        # 阶段化重设计后无独立「asserting 阶段」:Validator 的 token/时长在 ③ executing
+        # 内分摊(每条 _check_llm_judge 调用即时计入);汇总/落库/verdict 计算属 ⑤ 闸门职责。
         all_results = [r for _, r in phase_results]
         # 落库:每条标 phase_index + expected,前端按阶段展示 Validator 裁决
         a_dicts: list[dict] = []

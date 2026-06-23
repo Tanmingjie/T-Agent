@@ -336,7 +336,8 @@ async def test_live_progress_streams_phases_and_steps_in_order():
     await agent.run(_case(), spec=_spec(), step_callback=cb)
 
     phases = [d["phase"] for e, d in events if e == "phase"]
-    assert phases == ["spec", "executing", "asserting", "codegen"]
+    # 阶段化重设计后撤掉 asserting 独立阶段(F1):Validator 在 ③ 内即时跑,无独立 SSE 阶段事件
+    assert phases == ["spec", "executing", "codegen"]
     exec_idx = next(
         i for i, (e, d) in enumerate(events) if e == "phase" and d["phase"] == "executing"
     )

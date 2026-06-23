@@ -960,7 +960,6 @@ function TimelineView({
 const PHASE_LABEL: Record<string, string> = {
   spec: "翻译",
   executing: "执行",
-  asserting: "断言",
   codegen: "代码",
   scanning: "扫描",
 };
