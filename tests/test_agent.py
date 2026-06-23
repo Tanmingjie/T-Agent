@@ -195,6 +195,49 @@ async def test_empty_expected_phase_fails():
     assert "翻译退化" in record.case_assertions[0]["reason"]
 
 
+async def test_absent_phases_get_fail_placeholder():
+    """G2:早停(第二/三阶段从不执行)→ 缺席阶段补 FAIL 占位,case_assertions 补齐 n_phases。"""
+    spec = TestSpec(
+        case_id="TC001",
+        name="三阶段",
+        base_url="https://intranet",
+        phases=[
+            Phase(steps=["点击提交按钮"], expected="进入下一页"),
+            Phase(steps=["点击确认按钮"], expected="完成"),
+            Phase(steps=["点击关闭按钮"], expected="关闭"),
+        ],
+    )
+    llm = _PhaseJudgeLLM(
+        [
+            _resp(content="点提交", calls=[("browser_click", {"ref": "e3"})]),
+            _resp(content="完成第一步", calls=[("mark_step_done", {"step_no": 1})]),
+            _resp(content="我觉得做完了 TEST_RESULT: PASS"),  # 第二、三阶段步骤永不执行
+        ],
+        ["PASS"],  # 只够裁决第一阶段
+    )
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=spec)
+    assert record.passed is False
+    # case_assertions 补齐到 3 条,按 phase_index 升序
+    assert [a["phase_index"] for a in record.case_assertions] == [0, 1, 2]
+    assert record.case_assertions[0]["status"] == "pass"  # 第一阶段真实裁决 PASS
+    assert record.case_assertions[1]["status"] == "fail"  # 缺席占位
+    assert record.case_assertions[2]["status"] == "fail"
+    assert "未触达" in record.case_assertions[2]["reason"]
+    # 失败归因走"执行未完成"(非"阶段预期未达成"——占位 FAIL 不污染 phase_fail)
+    assert "执行未完成" in record.final_result
+
+
+async def test_empty_phases_yields_translation_degradation_reason():
+    """G2:翻译退化为空 phases → FAIL 且归因明确(替代荒谬的"0/0 未全过")。"""
+    spec = TestSpec(case_id="TC001", name="空", base_url="https://intranet", phases=[])
+    llm = _ScriptedLLM([_resp(content="无步可做 TEST_RESULT: PASS")])
+    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK))
+    record = await agent.run(_case(), spec=spec)
+    assert record.passed is False
+    assert "翻译退化" in record.final_result
+
+
 async def test_verdict_not_taken_from_llm_self_report():
     """LLM 自报 PASS,但 Validator 判 FAIL → 用例 FAIL(不取自报)。"""
     llm = _PhaseJudgeLLM(_react_one_step(), ["FAIL"])

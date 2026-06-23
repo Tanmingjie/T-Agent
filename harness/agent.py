@@ -582,6 +582,28 @@ class TestCaseAgent:
         # —— 裁决汇总(逐阶段 Validator 已在执行中、各阶段边界即时验过;此处仅记账)——
         # 阶段化重设计后无独立「asserting 阶段」:Validator 的 token/时长在 ③ executing
         # 内分摊(每条 _check_llm_judge 调用即时计入);汇总/落库/verdict 计算属 ⑤ 闸门职责。
+        #
+        # G2 缺席阶段 FAIL 占位:早停(STEP_FAILED/max_steps/卡死)时 phase_results 短于
+        # n_phases,落库 case_assertions 长度不对齐 spec.phases,前端时间线断层("阶段 1 ✅/
+        # 阶段 2 ✅/阶段 3-5 不见/整体 ❌"用户困惑)。给未触达阶段补 FAIL 占位补齐长度。
+        # 占位**不进 validated_phases**(那只记真实裁决过的阶段,verdict 与归因据此区分)。
+        for pi in range(len(spec.phases)):
+            if pi not in validated_phases:
+                phase_results.append(
+                    (
+                        pi,
+                        AssertionResult(
+                            assertion=Assertion(
+                                type="llm_judge", target="", expected=spec.phases[pi].expected
+                            ),
+                            status=AssertionStatus.FAIL,
+                            reason="该阶段未触达,执行已早停",
+                            ai_judged=True,
+                            phase_index=pi,
+                        ),
+                    )
+                )
+        phase_results.sort(key=lambda x: x[0])  # 按 phase_index 升序,前端展示连续
         all_results = [r for _, r in phase_results]
         # 落库:AssertionResult.phase_index 一等字段(F2),to_dict 自然带出;expected 不再
         # 外塞覆盖(它本就来自 Assertion.expected = phase.expected,二者等价由 on_phase_end 保证)。
@@ -595,16 +617,25 @@ class TestCaseAgent:
         total_steps = len(plan.steps)
         execution_complete = plan.all_done()
         n_phases = len(spec.phases)
-        validated = len(validated_phases)  # 真实裁决过的阶段数(占位不计;为 G2 铺路)
-        phase_fail = any(r.status == AssertionStatus.FAIL for _, r in phase_results)
-        # 可信通过:执行完整 + 有阶段 + 无阶段 FAIL。G1:llm_judge 的 SKIPPED 三态已收成
+        validated = len(validated_phases)  # 真实裁决过的阶段数(G2 占位不计)
+        # phase_fail 只看**真实裁决过**的阶段(占位 FAIL 的 pi 不在 validated_phases),
+        # 否则早停(max_steps/卡死)的缺席占位会污染它 → 失败归因误报"阶段预期未达成"。
+        phase_fail = any(
+            r.status == AssertionStatus.FAIL for pi, r in phase_results if pi in validated_phases
+        )
+        # 可信通过:执行完整 + 有阶段 + 无真实阶段 FAIL。G1:llm_judge 的 SKIPPED 三态已收成
         # FAIL,阶段裁决只剩 PASS/FAIL → 不再需要 validated==n_phases 守门(执行完整即蕴含
         # 每阶段末步都触发过 on_phase_end,故全被裁决过)。
         passed = execution_complete and n_phases > 0 and not phase_fail
 
         incomplete_reason = ""
         if not passed:
-            if phase_fail:
+            if n_phases == 0:
+                # 翻译退化为空 phases(LLM 翻译失败或契约破坏)→ 无可执行内容,本就该 FAIL。
+                incomplete_reason = (
+                    "[FAIL] 翻译退化为空 phases,无可执行内容(LLM 翻译失败或契约破坏)。"
+                )
+            elif phase_fail:
                 fi = result.failed_phase_index
                 incomplete_reason = (
                     f"[FAIL] 阶段 {fi + 1 if fi >= 0 else '?'} 的预期未达成:"
