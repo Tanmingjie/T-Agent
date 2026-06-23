@@ -567,6 +567,7 @@ class TestCaseAgent:
             on_phase_end=on_phase_end,  # 阶段边界 Validator(偏-FAIL 证据接地;未达成→PHASE_FAILED)
             step_fail_budget=_STEP_FAIL_BUDGET,  # #1 单步定位失败预算 → 快速失败
             stuck_round_budget=_STUCK_ROUND_BUDGET,  # E2 步级卡住主动提醒
+            skill_manager=self.skills,  # E3 卡住兜底:甲(浮现催加载)/乙(自动注入)
         )
         await emit_phase("executing", "驱动浏览器逐步执行")
         result = await loop.run()

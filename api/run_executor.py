@@ -93,9 +93,11 @@ async def execute_run(
                 except Exception as e:  # noqa: BLE001
                     logger.warning("加载 Custom Tool 配置失败(%s):%s", tools_yaml, e)
 
-        # 项目级 Skill(M2):**暂用默认加载**(preload=True,正文常驻 prompt)。
-        # 渐进披露(preload=False + LLM 调 load_skill 展开)链路已实现,但弱模型常不主动
-        # load → skill 形同虚设;先默认加载保证生效,渐进式加载的调试列 TODO 后续打磨。
+        # 项目级 Skill:**渐进披露**(preload=False)——name+description 常驻名册,
+        # 由 LLM/ReAct 主动 load_skill 展开正文。E3(2026-06-23)解掉旧 force-preload TODO:
+        # 主路靠 prompt 让模型动手前主动加载(BASE_PROMPT 已写明);弱模型不主动 → ReAct
+        # 卡住时由 SkillManager.relevant 浮现催加载(甲)、再不加载则 auto_load 兜底注入(乙)。
+        # 这条三层路径在 ReActLoop 里实现,run_executor 只负责"按渐进披露注册"。
         extra_skills = []
         if suite.project_id:
             from harness.skills import Skill
@@ -107,7 +109,7 @@ async def execute_run(
                             name=sk.name,
                             content=sk.content.strip(),
                             description=(sk.description or "").strip(),
-                            preload=True,
+                            preload=False,
                         )
                     )
 

@@ -216,6 +216,7 @@ class ReActLoop:
         on_phase_end=None,
         step_fail_budget: int = 5,
         stuck_round_budget: int = 2,
+        skill_manager=None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -250,6 +251,11 @@ class ReActLoop:
         # 默认 2(给一次机会再提醒);env 可调。每步至多提醒一次,与「过早 mark 软护栏」
         # 同哲学:软、可恢复、不判失败。
         self.stuck_round_budget = stuck_round_budget
+        # E3 渐进披露 Skill 三层加载之**甲/乙**:卡住时按相关性给出 / 自动加载相关 skill。
+        # 主路是 prompt 引导模型主动 load_skill(BASE_PROMPT 已写明,无需此对象);此处只
+        # 在卡住兜底时用。skill_manager 暴露 `.relevant(step_text)`(甲:浮现催加载)和
+        # `.auto_load(step_text)`(乙:平台直接加载,返回已加载的 skill 名)。
+        self.skill_manager = skill_manager
         self.execute = execute
         self.step_plan = step_plan
         self.build_system = build_system
@@ -281,7 +287,8 @@ class ReActLoop:
         step_pre_op_fp: dict[int, str] = {}
         step_changed_fp: set[int] = set()
         step_stuck_rounds: dict[int, int] = {}  # step_no → 连续无进展轮数(round 末 fp 未变)
-        nudged_stuck: set[int] = set()  # 已就「步级卡住」提示过的 step_no(每步至多一次)
+        nudged_stuck: set[int] = set()  # 已对该步发**甲层**(浮现催加载)提醒过
+        auto_loaded_stuck: set[int] = set()  # 已对该步发**乙层**(自动注入 skill)过
         prev_round_fp: str = ""  # 上一轮结束时的页面指纹,供 stuck 检测做 round-to-round 对比
         prev_phase_index: int | None = None  # 跨 phase 重置护栏计数用
 
@@ -620,26 +627,54 @@ class ReActLoop:
                 else:
                     step_stuck_rounds[cur_end.step_no] = 0
             prev_round_fp = round_end_fp or prev_round_fp  # 保留最近的非空 fp 作下次基准
-            if (
-                cur_end is not None
-                and step_stuck_rounds.get(cur_end.step_no, 0) >= self.stuck_round_budget
-                and cur_end.step_no not in nudged_stuck
-            ):
-                nudged_stuck.add(cur_end.step_no)
-                messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            f"[卡住提醒] 第 {cur_end.step_no} 步「{cur_end.describe()}」"
-                            f"已连续 {step_stuck_rounds[cur_end.step_no]} 轮没让页面发生任何变化。"
-                            "停下机械重复,换个思路诊断为什么:"
-                            "目标元素是否在视野外(可能要滚动)?是否还在加载(等一下/重新 browser_snapshot)?"
-                            "元素名字是否不同(同义/英文/图标)?是否还缺前置动作?"
-                            "若是需要本系统的业务知识,看看 `load_skill` 名册里有没有相关 skill 可加载。"
-                            "下一轮请只调用一个工具并换一种方式尝试,不要重复同一个失败调用。"
-                        ),
-                    }
-                )
+            if cur_end is not None:
+                stuck_n = step_stuck_rounds.get(cur_end.step_no, 0)
+                # —— 甲层:首次达到 stuck 阈值 → 浮现催加载相关 skill + 一般诊断引导 ——
+                if stuck_n >= self.stuck_round_budget and cur_end.step_no not in nudged_stuck:
+                    nudged_stuck.add(cur_end.step_no)
+                    skill_hint = ""
+                    if self.skill_manager is not None:
+                        rel = self.skill_manager.relevant(cur_end.text)
+                        if rel:
+                            names = ", ".join(f"「{n}」" for n in rel)
+                            skill_hint = (
+                                f"特别提示:相关 skill 看起来命中本步——{names}。"
+                                f'若需要其完整说明请立即调用 load_skill(name="<名>") 展开,然后据其指引操作。'
+                            )
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": (
+                                f"[卡住提醒] 第 {cur_end.step_no} 步「{cur_end.describe()}」"
+                                f"已连续 {stuck_n} 轮没让页面发生任何变化。"
+                                "停下机械重复,换个思路诊断为什么:"
+                                "目标元素是否在视野外(可能要滚动)?是否还在加载(等一下/重新 browser_snapshot)?"
+                                "元素名字是否不同(同义/英文/图标)?是否还缺前置动作?"
+                                + ((" " + skill_hint) if skill_hint else "")
+                                + "下一轮请只调用一个工具并换一种方式尝试,不要重复同一个失败调用。"
+                            ),
+                        }
+                    )
+                # —— 乙层:甲层已发但模型仍没加载且仍卡住(累计达 budget*2)→ 平台自动 load top1 ——
+                elif (
+                    stuck_n >= self.stuck_round_budget * 2
+                    and cur_end.step_no in nudged_stuck
+                    and cur_end.step_no not in auto_loaded_stuck
+                    and self.skill_manager is not None
+                ):
+                    auto_loaded_stuck.add(cur_end.step_no)
+                    loaded_name = self.skill_manager.auto_load(cur_end.text)
+                    if loaded_name:
+                        messages.append(
+                            {
+                                "role": "user",
+                                "content": (
+                                    f"[平台自动加载技能] 你已多轮未推进且未主动 load_skill;"
+                                    f"系统已替你加载技能「{loaded_name}」,其完整内容已在系统提示的"
+                                    f"「已加载技能」区,请据此调整策略继续操作。"
+                                ),
+                            }
+                        )
         else:
             result.stop_reason = StopReason.MAX_STEPS
 
