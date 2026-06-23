@@ -7,10 +7,13 @@ Reason → Act → Observe 循环:
 - **Observe**:工具结果文本(playwright-mcp 的结果自带 A11y 快照)作为「观察」回灌。
 
 安全护栏:
-- 循环检测:连续 3 轮相同 tool_call 签名 → 终止(防本地 LLM 卡死)。
-- max_steps 上限。
-- 解析 LLM 输出的 ``TEST_RESULT: PASS/FAIL``,**但最终 PASS/FAIL 以断言结果为准**
-  (本循环只负责执行与记录,断言由 T-08 在循环外裁决)。
+- 循环检测:连续 ``loop_window`` 轮(默认 4)相同 tool_call 签名 → 终止(防本地 LLM 卡死)。
+- max_steps 上限 / 哑火续推 / 单步定位失败预算(STEP_FAILED 快速失败)。
+- **阶段边界 Validator**(2026-06-22 阶段化重设计):某阶段最后一步 mark_step_done 落定时,
+  在【当时所处页面】用偏-FAIL 证据接地裁判核验该阶段 expected,未达成 → PHASE_FAILED
+  阶段失败即失败。〔取代旧的「步骤门控 + 终态断言」三处验证。〕
+- 仍解析 LLM 自报的 ``TEST_RESULT: PASS/FAIL``,但**仅供参考**——最终 PASS/FAIL 完全由
+  阶段 Validator + 执行完整性闸门裁决,不取模型自报。
 
 消息流采用「观察作为 user 消息回灌」的文本式 ReAct,而非严格的 tool_call_id 配对——
 本地模型(Qwen3)对 id 配对支持不稳,文本式更鲁棒,且我方 LLM 封装已做 tool_call 容错。

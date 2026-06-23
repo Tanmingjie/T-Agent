@@ -103,10 +103,6 @@ _INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "0") != "0"
 # 快速判 STEP_FAILED 终止(疑似点错前序元素致后续找不到目标)。env STEP_FAIL_BUDGET 可调。
 _STEP_FAIL_BUDGET = int(os.getenv("STEP_FAIL_BUDGET", "3"))
 
-# 单步完成判据未达成预算(门控重试):某业务步 mark_step_done 后 LLM 看快照判「未达成」
-# 累计达此数 → 判该步未完成(EXPECT_UNMET)。默认 2(给两次重做机会);env EXPECT_RETRY_BUDGET 可调。
-_EXPECT_RETRY_BUDGET = int(os.getenv("EXPECT_RETRY_BUDGET", "2"))
-
 # 循环检测窗口:连续 N 轮**完全相同**的 tool_call 才判卡死终止(LOOP_DETECTED)。默认 4
 # (放宽,长流程如下单结算偶发重复一两次快照/点击属正常,3 太敏感会误杀);env LOOP_WINDOW 可调。
 _LOOP_WINDOW = int(os.getenv("LOOP_WINDOW", "4"))

@@ -139,7 +139,7 @@ _VERDICT_RE = re.compile(r"verdict\W{0,4}(PASS|FAIL)", re.IGNORECASE)
 def extract_verdict(content: str | None) -> str | None:
     """从可能不合法 JSON 的裁判输出里稳健提取 PASS/FAIL。
 
-    裁判(``_check_llm_judge`` / ``_gate_step_done``)只需要 verdict 字段;当模型在 reason
+    裁判(``_check_llm_judge``,阶段 Validator 的核心)只需要 verdict 字段;当模型在 reason
     里写了未转义引号导致整段 JSON 解析失败时〔2026-06-17 实测假绿根因:模型其实判 FAIL,
     但 JSON 炸了被 fail-open 当成放行〕,用正则直接捞出 verdict,避免丢掉模型判对的结论。
     匹配 ``"verdict":"FAIL"`` / ``verdict: PASS`` 等。无法判定返回 None。

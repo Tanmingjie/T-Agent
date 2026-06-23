@@ -1,8 +1,9 @@
-"""裁判 false-green / false-fail 评测台(执行剥离版)。
+"""阶段 Validator 裁判 false-green / false-fail 评测台(执行剥离版)。
 
-把两个裁判从执行里剥出来,直接用真实页面快照压测:
-- 断言通道 ``AssertionEngine._check_llm_judge``(_JUDGE_SYSTEM,**偏 FAIL**);
-- 步骤门控 ``_gate_step_done``(_GATE_SYSTEM,**偏 PASS/放行**)——AE03/FG01 实际裁决走的就是它。
+把**阶段 Validator 的裁判**从执行里剥出来,直接用真实页面快照压测。阶段化重设计
+(2026-06-22)后**只剩一个裁判**——``AssertionEngine._check_llm_judge``(_JUDGE_SYSTEM,
+**偏 FAIL** + 证据接地核验),逐阶段在该子页面核验 ``phase.expected``。〔旧的偏-PASS
+步骤门控 ``_gate_step_done`` 已随步骤门控一并删除,本评测台不再测它。〕
 
 eval 集:每条 (page, 预期, 真值)。真值=该预期在这页是否真成立(按裁判可见的前 6000 字定)。
 统计:
@@ -34,7 +35,6 @@ def _load_dotenv(path: Path) -> None:
 
 _load_dotenv(Path(".env"))
 
-from harness.agent import _gate_step_done  # noqa: E402
 from harness.assertion import AssertionEngine, AssertionStatus  # noqa: E402
 from harness.llm import LiteLLMClient  # noqa: E402
 from input.models import Assertion  # noqa: E402
@@ -112,28 +112,25 @@ async def main() -> None:
     llm = LiteLLMClient()
     print(f"模型={llm.model}\n")
 
-    # 计数:[gate, assertion] 各自的混淆
-    fg = {"gate": 0, "assert": 0}  # false-green
-    ff = {"gate": 0, "assert": 0}  # false-fail
-    # 证据核验(Fix 3 收尾)专项:把断言裁判的"原始模型判定"与"核验后判定"分开统计,
-    # 量化新加的核验对弱模型的**误伤**(真预期被核验推翻)与**额外拦截**(假预期被核验拦下)。
+    # 计数:阶段 Validator(``_check_llm_judge``)的混淆
+    fg = 0  # false-green:真值 False 却判 PASS(刷绿)
+    ff = 0  # false-fail:真值 True 却判 FAIL(误报失败)
+    # 证据核验(Fix 3 收尾)专项:把"原始模型判定"与"核验后判定"分开统计,量化新加的核验
+    # 对弱模型的**误伤**(真预期被核验推翻)与**额外拦截**(假预期被核验拦下)。
     override_total = 0  # 证据核验推翻 PASS→FAIL 的总次数
     override_ff = 0  # 其中误伤:真预期被推翻(本应 PASS)
     override_caught = 0  # 其中有益:假预期被推翻(原始模型想刷绿,被核验拦下)
     n_false = sum(1 for _, _, t in EVAL if not t)
     n_true = sum(1 for _, _, t in EVAL if t)
 
-    print(f"{'真值':<4}{'gate':<6}{'assert':<8}{'核验':<6}预期")
-    print("-" * 86)
+    print(f"{'真值':<4}{'Validator':<11}{'核验':<6}预期")
+    print("-" * 80)
     for page, exp, truth in EVAL:
         probe = FakeProbe(snaps[page], PAGE_URLS.get(page, ""))
-        # 门控(偏 PASS)
-        met, _ = await _gate_step_done(llm, probe, exp)
-        gate_pass = met
-        # 断言裁判(偏 FAIL + 证据确定性核验)
+        # 阶段 Validator 裁判(偏 FAIL + 证据确定性核验)——逐阶段裁决走的就是它
         engine = AssertionEngine(probe, llm=llm)
         r = await engine._check_llm_judge(Assertion(type="llm_judge", target=exp, expected=exp))
-        assert_pass = r.status == AssertionStatus.PASS
+        verdict_pass = r.status == AssertionStatus.PASS
         # 证据核验是否推翻了模型的 PASS(reason 含标记串 = 模型原判 PASS 但证据不在页 → 被推翻)
         overridden = (r.status == AssertionStatus.FAIL) and (_EVIDENCE_OVERRIDE_MARK in r.reason)
         if overridden:
@@ -151,30 +148,19 @@ async def main() -> None:
                 return "FG⚠"  # false-green
             return "ok"
 
-        g, a = mark(gate_pass), mark(assert_pass)
-        if g == "FG⚠":
-            fg["gate"] += 1
-        if g == "FF✗":
-            ff["gate"] += 1
-        if a == "FG⚠":
-            fg["assert"] += 1
-        if a == "FF✗":
-            ff["assert"] += 1
+        v = mark(verdict_pass)
+        if v == "FG⚠":
+            fg += 1
+        elif v == "FF✗":
+            ff += 1
         tval = "真" if truth else "假"
         ov = "推翻" if overridden else ""
-        print(f"{tval:<5}{g:<7}{a:<9}{ov:<7}[{page}] {exp[:38]}")
+        print(f"{tval:<5}{v:<12}{ov:<7}[{page}] {exp[:38]}")
 
-    print("-" * 86)
+    print("-" * 80)
     print(f"\n样本:假预期 {n_false} 条 / 真预期 {n_true} 条\n")
-    print(f"{'裁判':<10}{'false-green(刷绿)':<22}{'false-fail(误报失败)'}")
-    print(
-        f"{'门控(偏PASS)':<12}{fg['gate']}/{n_false} = {fg['gate']/n_false:.0%}"
-        f"{'':<10}{ff['gate']}/{n_true} = {ff['gate']/n_true:.0%}"
-    )
-    print(
-        f"{'断言(偏FAIL)':<12}{fg['assert']}/{n_false} = {fg['assert']/n_false:.0%}"
-        f"{'':<10}{ff['assert']}/{n_true} = {ff['assert']/n_true:.0%}"
-    )
+    print(f"{'阶段 Validator(偏FAIL)':<22}{'false-green(刷绿)':<22}{'false-fail(误报失败)'}")
+    print(f"{'':<22}{fg}/{n_false} = {fg/n_false:.0%}" f"{'':<10}{ff}/{n_true} = {ff/n_true:.0%}")
     # 证据核验专项报告(A-2 核心:量化对弱模型的误伤率)
     print(f"\n证据确定性核验(Fix 3 收尾)专项:")
     print(f"  推翻 PASS→FAIL 共 {override_total} 次")

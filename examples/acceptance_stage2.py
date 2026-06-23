@@ -2,7 +2,7 @@
 
 用法:
     python examples/acceptance_stage2.py suite      # 场景①:Suite 调度 + 用例间隔离
-    python examples/acceptance_stage2.py heal         # 场景③:断言自愈生效
+    python examples/acceptance_stage2.py heal         # 场景③:自愈生效(操作侧重定位)
     python examples/acceptance_stage2.py context      # 场景④:Context Compact token 对比
 
 注:原「场景②:Cookie 复用跳过登录」随会话/Cookie 复用退役(2026-06-18)已移除。
@@ -69,25 +69,31 @@ async def scenario_suite() -> None:
     print("（即使某条 FAIL,另一条仍独立执行并裁决,互不污染）")
 
 
-# ── 场景③:断言自愈生效 ────────────────────────────────────
+# ── 场景③:自愈生效(操作侧重定位) ──────────────────────────
 
-from input.models import Assertion, SpecStep, TestCase, TestSpec  # noqa: E402
+from input.models import Phase, TestCase, TestSpec  # noqa: E402
 
 
 async def scenario_heal() -> None:
-    print("\n############ 场景③:断言自愈生效 ############")
-    # 显式 TestSpec(跳过生成,省 token):登录 → 断言"加入购物车按钮"可见
-    # 该中文 target 不直接匹配英文页,触发 healable;自愈应把它映射到"Add to cart"
+    print("\n############ 场景③:自愈生效(操作侧重定位)############")
+    # 显式阶段化 TestSpec(跳过翻译,省 token):步骤里的中文 target(用户名输入框 Username 等)
+    # 不直接匹配英文页 → 触发**操作侧自愈**把它映射到真实英文元素;阶段 Validator 用偏-FAIL
+    # 证据接地裁判核验该阶段 expected「可见 Add to cart 加入购物车按钮」。
     spec = TestSpec(
         case_id="HEAL1",
         name="自愈演示",
         base_url=BASE_URL,
-        steps=[
-            SpecStep(action="fill", target="用户名输入框 Username", data="standard_user"),
-            SpecStep(action="fill", target="密码输入框 Password", data="secret_sauce"),
-            SpecStep(action="click", target="Login 登录按钮"),
+        intent="验证标准用户能登录 saucedemo 并进入商品列表页",
+        phases=[
+            Phase(
+                steps=[
+                    "在用户名输入框 Username 输入 standard_user",
+                    "在密码输入框 Password 输入 secret_sauce",
+                    "点击 Login 登录按钮",
+                ],
+                expected="登录成功,进入商品列表页,页面出现 Add to cart 加入购物车按钮",
+            )
         ],
-        assertions=[Assertion(type="element_visible", target="加入购物车按钮")],
     )
     case = TestCase(id="HEAL1", name="自愈演示", base_url=BASE_URL)
     async with _mcp() as mcp:
@@ -97,8 +103,9 @@ async def scenario_heal() -> None:
     print(f"\n最终判定 = {'PASS' if rec.passed else 'FAIL'}  自愈次数 heal_count={rec.heal_count}")
     for a in rec.case_assertions:
         print(
-            f"  [{a['status']}] {a['type']} target={a['target']!r} "
-            f"healed={a.get('healed')} heal_note={a.get('heal_note')!r}"
+            f"  [{a['status']}] 阶段{a.get('phase_index', '?')} "
+            f"expected={a.get('expected', '')!r} "
+            f"healed={a.get('healed')} reason={a.get('reason', '')!r}"
         )
 
 
