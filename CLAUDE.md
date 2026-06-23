@@ -103,15 +103,35 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | ① | before_case Hooks | ✅ 走查完(2026-06-18) | cookie/session 退役、Hook 回归通用扩展点 `3b49864` |
 | ② | spec 翻译 → TestSpec | ✅ 走查 + redesign(2026-06-22) | 阶段化 FP0-3 `a9df22e`→`38483fb`(翻译只产意图、不接地) |
 | ③ | executing — ReAct 主循环 | ✅ 走查 + redesign(2026-06-23) | 执行健壮化 E1-7 `a7c9ba3`→`1831508`(驱动/裁决两层分离) |
-| **④** | **asserting — 阶段裁决汇总** | **← 下一个** | (E5/E6 已加固 LLM judge;阶段④独立走查待启动) |
-| ⑤ | 合并裁决 + 执行完整性闸门 | 待走查 | (重设计已动过:`passed = 全阶段过 + 执行完整`) |
-| ⑥ | 收尾 Hooks(on_heal/on_failure/after_case) | 待走查 | (E1 阶段没碰过) |
+| ④ | ~~asserting — 阶段裁决汇总~~ | ✅ 走查结论=**取消**(2026-06-23) | F1+F2 `dccc95b`→`2e6c023`:阶段化后真正裁决全在③ on_phase_end,④ 只剩空 SSE 事件 + 隐式 schema → 撤独立阶段、职责并入 ③/⑤ |
+| **⑤** | **合并裁决 + 执行完整性闸门** | **← 下一个** | (重设计已动过:`passed = 全阶段过 + 执行完整`;④ 撤下后承接汇总/落库/verdict 计算) |
+| ⑥ | 收尾 Hooks(on_heal/on_failure/after_case) | 待走查 | (E1 阶段没碰过;④ 撤下后承接 on_heal/on_failure/after_case 触发) |
 | ⑦ | codegen → scanning(产物) | 待走查 | (FP1 做了 phases→steps 最小适配,可能仍有改进空间) |
 
 走查范式:**读真实代码 → 设计张力清单 → 用户拍设计方向 → 必要时 redesign(`F<n>` 命名,按
 功能点拆分单独 commit/push,每点单测 + saucedemo live 冒烟)**。
 
 ### 重大 redesign 实施记录
+
+- **阶段④ asserting 撤销(走查结论=取消,2026-06-23,已落地 F1+F2)** — 阶段化重设计
+  (FP0-3)后,真正的裁决全在 ③ ReAct 内 `on_phase_end` 即时完成,阶段④ 在 `agent.run`
+  里只剩**汇总记账 + verdict 计算**——`phase_tokens["asserting"]` 恒 0、SSE 推一个
+  空阶段让前端等。走查结论:**④ 不再作为独立阶段**,职责并入 ③(裁决)+ ⑤(汇总闸门)
+  + ⑥(Hooks)。
+  - **F1 撤 SSE 事件 + token mark**(`dccc95b`):删 `emit_phase("asserting")` +
+    `_mark_phase("asserting")`;前端 `PHASE_LABEL` 删 asserting;tests 同步。Validator
+    token 在 ③ 内自然计入 executing,真实反映消耗位置。
+  - **F2 case_assertions schema 对齐**(`2e6c023`):`AssertionResult` 加 `phase_index:
+    int = -1` 一等字段(默认 -1=非阶段裁决);`to_dict` 自然带出。agent.run 不再外塞
+    dict / 不再覆盖 expected(消除"双 expected 同名覆盖"风险——以前 to_dict 的
+    `Assertion.expected` 与外塞的 `spec.phases[pi].expected` 同名,改任一处就裂)。
+    `ExecutionRecord.case_assertions` 注释从"用例级最终断言"→"阶段化裁决证据"。
+  - 走查报告里其他张力(T3/T5/T7/T8 等)归位到 ⑤ 走查解决:T3 全 SKIPPED 算可信通过
+    护栏、T5 ai_judged 分级、T7 缺席阶段占位、T8 `validated_phases` 含 FAIL 命名;
+    T9 healed_assertions 死字段归 ⑥;T10 调内部方法风格归 ③。
+  - **验证**:pytest 489 passed(+1 = F2 新测;2 个预存在 Windows 失败不变);
+    前端 `npm run build` 绿。F1+F2 都是纯收尾清理(不动裁决路径、不动执行链路),
+    live 冒烟随 ⑤ 走查动到的代码一起做(本两条不单独冒烟)。
 
 - **执行健壮化(stage③ ReAct 主循环 redesign,2026-06-23,已落地 E1-7)** ★ — 在阶段化
   重设计(FP0-3)之上,把③ executing 阶段从「按步打勾」升级成「像 Claude 一样盯目标、
