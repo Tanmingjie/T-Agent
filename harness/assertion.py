@@ -260,6 +260,18 @@ class AssertionEngine:
                         f"判 PASS 但引证证据无一落在当前页(evidence={evidence!r})"
                         f"→ 疑似脑补,fail-closed 推翻为 FAIL;原说明:{reason or '(无)'}"
                     )
+                # E5 expected 自带锚点佐证:judge 引证有据后,再核验 expected 自身的强锚点
+                # (引号片段 / 实词 / 长中文短语)是否至少有一个落在页面/URL。一个都没有 →
+                # judge 与 expected 矛盾(判过了但 expected 的实质内容根本不在页上)→ 推翻。
+                # 仅当 expected 抽得到强锚点时启用,空 expected / 无强锚点不参与判断。
+                if ok and not _expected_grounded(expectation, haystack):
+                    ok = False
+                    verdict = "FAIL"
+                    exp_anchors = _expected_anchors(expectation)
+                    reason = (
+                        f"判 PASS 但期望中的关键锚点 {exp_anchors} 一个都未落在当前页 → "
+                        f"与 expected 矛盾,fail-closed 推翻为 FAIL"
+                    )
         return AssertionResult(
             assertion=a,
             status=_st(ok),
@@ -539,6 +551,55 @@ def _evidence_grounded(evidence: str, haystack_norm: str) -> bool:
     anchors = _evidence_anchors(evidence)
     if not anchors:
         return False
+    return any(a in haystack_norm for a in anchors)
+
+
+# E5 确定性锚点佐证(预期自带锚点核验):**只取强信号**——引号片段(作者显式引的字面值)
+# 和 URL-like 片段(.html/.htm/.aspx/.php 后缀或带 / 的路径)。一般中文短语/英文词不取
+# (常被 expected 与页面文案/同义表达不一致而误伤,不是 E5 该处理的边界)。
+# 判 PASS 通过后再核验:expected 抽出的强锚点**至少有一个**落在当前页/URL → 算自洽;
+# 一个都没有 → judge 与 expected 矛盾,fail-closed 推翻 FAIL。佐证非主裁决,守底线
+# 「宁可误报失败」。Eval_fg 验过:此严格版对真实公网用例(automationexercise 含 inventory.html
+# 等明确锚点)有效;对纯中文 expected(无引号、无 URL)不参与判断(不误伤)。
+_EXP_QUOTED_RE = _QUOTED_RE
+_EXP_URLISH_RE = re.compile(
+    r"""(?:
+        [A-Za-z0-9_/\-]*\.(?:html?|aspx?|php|jsp|cgi|action)\b   # 显式 web 后缀
+        |
+        /[A-Za-z0-9_\-]{2,}(?:/[A-Za-z0-9_\-]{2,})*              # 路径段(至少一段≥2)
+    )""",
+    re.VERBOSE,
+)
+
+
+def _expected_anchors(expected: str) -> list[str]:
+    """E5:从 expected 抽**强锚点**——只取引号字面值 + URL-like 片段。
+
+    刻意保守:不取一般 CJK/ASCII 词(常被 expected 文风与页面文案表达差异误伤,例如
+    expected 写「显示订单成功」而页面只显示英文版「Order completed」)。引号是作者**显式**
+    要求的字面值,URL 是天然原文。两者都强相关、不容易被同义化。
+    """
+    raw: list[str] = []
+    raw += _EXP_QUOTED_RE.findall(expected or "")
+    raw += _EXP_URLISH_RE.findall(expected or "")
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in raw:
+        n = _norm_evidence(a)
+        if len(n) >= 3 and n not in seen:
+            seen.add(n)
+            out.append(n)
+    return out
+
+
+def _expected_grounded(expected: str, haystack_norm: str) -> bool:
+    """E5 锚点佐证:expected 强锚点至少一个落在 haystack。无强锚点 → True(不参与判断)。
+
+    返回 False 仅当 expected 抽得到强锚点 且 全都不在 haystack → 视为矛盾(由调用方推翻 PASS)。
+    """
+    anchors = _expected_anchors(expected)
+    if not anchors:
+        return True  # expected 没有可核验的强锚点 → 不参与判断
     return any(a in haystack_norm for a in anchors)
 
 

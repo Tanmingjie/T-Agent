@@ -449,6 +449,78 @@ async def test_llm_judge_evidence_check_skipped_without_page_text():
     assert r.status == AssertionStatus.PASS
 
 
+# ── E5:expected 自带锚点佐证 ────────────────────────────────
+
+
+def test_expected_anchors_extraction():
+    """E5 _expected_anchors:**只取强信号**——引号字面值 + URL-like 片段。
+
+    刻意保守:一般 CJK/ASCII 词不取(常被 expected 文风与页面表达不一致误伤)。
+    """
+    from harness.assertion import _expected_anchors
+
+    # 引号片段(各种引号类型) + URL 文件后缀都被抽
+    anchors = _expected_anchors("显示「订单成功」提示,URL 含 inventory.html")
+    assert "订单成功" in anchors
+    assert "inventory.html" in anchors
+
+    # 路径段(带 /)被抽
+    anchors2 = _expected_anchors("跳转到 /order/done 页面")
+    assert any("/order/done" in a or "order/done" in a for a in anchors2)
+
+    # 一般中文短语 / 一般英文词**不抽**(避免文风误伤)
+    assert _expected_anchors("显示订单成功") == []
+    assert _expected_anchors("登录成功") == []
+    assert _expected_anchors("Display Welcome message") == []
+    # 纯数字、空文本不抽
+    assert _expected_anchors("1") == []
+    assert _expected_anchors("") == []
+
+
+async def test_llm_judge_expected_anchor_missing_overrides_pass_to_fail():
+    """E5:judge 判 PASS 且 evidence 接地能过,但 expected 的强锚点(URL / 引号)全不在页 → 推翻 FAIL。"""
+    # 页面 URL 是 /login,但 expected 要求跳到 /inventory.html → 强锚点矛盾
+    probe = SnapshotProbe(url="https://x/login", snapshot='- link "Products" [ref=e1]')
+    llm = _JudgeLLM(
+        '{"verdict":"PASS","evidence":"Products 链接显示,说明已经进入商品页","reason":"已登录"}'
+    )
+    eng = AssertionEngine(probe, llm=llm)
+    r = await eng.verify(
+        Assertion(
+            type="llm_judge",
+            target="登录后跳转",
+            expected="URL 含 inventory.html,已进入商品列表",
+        )
+    )
+    assert r.status == AssertionStatus.FAIL
+    assert "期望中的关键锚点" in r.reason
+    assert "inventory.html" in r.reason
+
+
+async def test_llm_judge_expected_anchor_present_keeps_pass():
+    """E5 反证:expected 的强锚点有一个落在页/URL 上 → 不推翻。"""
+    probe = SnapshotProbe(url="https://x/inventory.html", snapshot='- text "Products"')
+    llm = _JudgeLLM('{"verdict":"PASS","evidence":"Products","reason":"商品页"}')
+    eng = AssertionEngine(probe, llm=llm)
+    r = await eng.verify(
+        Assertion(
+            type="llm_judge",
+            target="进入商品页",
+            expected="URL 含 inventory.html,显示商品列表",
+        )
+    )
+    assert r.status == AssertionStatus.PASS  # inventory.html 命中 URL
+
+
+async def test_llm_judge_expected_without_strong_anchors_unchanged():
+    """E5:expected 抽不到强锚点(无引号无 URL)→ 不参与判断,evidence 接地通过即 PASS。"""
+    probe = SnapshotProbe(url="https://x/", snapshot='- text "Hello"')
+    llm = _JudgeLLM('{"verdict":"PASS","evidence":"Hello","reason":"显示了"}')
+    eng = AssertionEngine(probe, llm=llm)
+    r = await eng.verify(Assertion(type="llm_judge", target="x", expected="显示成功提示"))
+    assert r.status == AssertionStatus.PASS  # expected 无强锚点 → E5 跳过不参与
+
+
 # ── 裁决 / 聚合 ───────────────────────────────────────────────
 
 
