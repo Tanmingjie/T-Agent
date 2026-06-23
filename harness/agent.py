@@ -101,7 +101,12 @@ _INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "0") != "0"
 
 # 单步定位失败预算(#1 快速失败):同一业务步累计定位失败(自愈也没救回)达此数 →
 # 快速判 STEP_FAILED 终止(疑似点错前序元素致后续找不到目标)。env STEP_FAIL_BUDGET 可调。
-_STEP_FAIL_BUDGET = int(os.getenv("STEP_FAIL_BUDGET", "3"))
+# E2(2026-06-23):3→5,给「诊断换法」自适应留空间(像 Claude 一样多试几招),仍兜底真卡死。
+_STEP_FAIL_BUDGET = int(os.getenv("STEP_FAIL_BUDGET", "5"))
+
+# 步级卡住主动提醒预算(E2):同一业务步连续 N 轮**页面指纹未变化且未推进** → 主动注入
+# 诊断引导(滚动/换思路/查 skill 名册)。默认 2;env STUCK_ROUND_BUDGET 可调。
+_STUCK_ROUND_BUDGET = int(os.getenv("STUCK_ROUND_BUDGET", "2"))
 
 # 循环检测窗口:连续 N 轮**完全相同**的 tool_call 才判卡死终止(LOOP_DETECTED)。默认 4
 # (放宽,长流程如下单结算偶发重复一两次快照/点击属正常,3 太敏感会误杀);env LOOP_WINDOW 可调。
@@ -548,6 +553,7 @@ class TestCaseAgent:
             vocab_resolver=self.vocab_resolver,  # 操作侧自愈词汇表优先
             on_phase_end=on_phase_end,  # 阶段边界 Validator(偏-FAIL 证据接地;未达成→PHASE_FAILED)
             step_fail_budget=_STEP_FAIL_BUDGET,  # #1 单步定位失败预算 → 快速失败
+            stuck_round_budget=_STUCK_ROUND_BUDGET,  # E2 步级卡住主动提醒
         )
         await emit_phase("executing", "驱动浏览器逐步执行")
         result = await loop.run()

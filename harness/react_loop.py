@@ -45,6 +45,22 @@ _REF_RE = re.compile(r"^e\d+$")
 # 从 tool_result 的「Ran Playwright code」块抓**实际执行的定位表达式**(ground truth):
 # 形如 page.locator('[data-test="username"]') / page.getByRole('button', { name: 'Login' })。
 _EXEC_LOCATOR_RE = re.compile(r"page\.(?:locator|getBy[A-Za-z]+)\([^()]*\)")
+# E2 轻量页面指纹:从快照里抽所有 ref id 形成 ref 集,配合 URL 当指纹。
+_REF_ALL_RE = re.compile(r"\[ref=(e\d+)\]")
+
+
+def _fingerprint(snapshot_text: str) -> str:
+    """页面指纹(URL + ref 集)。无快照/无 ref 返回空串。
+
+    E2 用以判「操作有没有让页面变」——比单看 URL 准(URL 不变但 DOM 变了:打开弹窗、
+    加购角标);比看整段文本省(纯确定性、无 LLM)。同一页两次抓取应得相同指纹;
+    切页/弹窗/任何 ref 变化都会改指纹。
+    """
+    if not snapshot_text:
+        return ""
+    refs = frozenset(_REF_ALL_RE.findall(snapshot_text))
+    url = parse_snapshot(snapshot_text).url
+    return f"{url}|{len(refs)}|{hash(refs)}"
 
 
 def _ref_alias(arguments: dict) -> str | None:
@@ -198,7 +214,8 @@ class ReActLoop:
         on_llm_delta=None,
         vocab_resolver=None,
         on_phase_end=None,
-        step_fail_budget: int = 3,
+        step_fail_budget: int = 5,
+        stuck_round_budget: int = 2,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -225,7 +242,14 @@ class ReActLoop:
         self.on_phase_end = on_phase_end
         # 单步定位失败预算(#1 快速失败):同一业务步**累计**定位失败(自愈也没救回)达此数 →
         # 快速判 STEP_FAILED 终止(疑似点错前序元素致后续找不到目标),不再磨到 max_steps。
+        # E2(2026-06-23):默认 3→5,给「诊断换法」的自适应留出空间(像 Claude 一样多试几招),
+        # 但仍兜底真卡死;env STEP_FAIL_BUDGET 可调。
         self.step_fail_budget = step_fail_budget
+        # E2 步级卡住主动提醒:同一业务步连续 N 轮**页面指纹未变化且未推进**(没 mark)→
+        # 主动注入诊断引导(滚动/换思路/查 skill 名册),不再等模型自己想起来或撞预算。
+        # 默认 2(给一次机会再提醒);env 可调。每步至多提醒一次,与「过早 mark 软护栏」
+        # 同哲学:软、可恢复、不判失败。
+        self.stuck_round_budget = stuck_round_budget
         self.execute = execute
         self.step_plan = step_plan
         self.build_system = build_system
@@ -250,11 +274,30 @@ class ReActLoop:
         acted_steps: set[int] = set()  # 该 step_no 下执行过「操作类」工具(非 snapshot/非 mark)
         nudged_mark: set[int] = set()  # 已就「过早 mark_done」提示过的 step_no
         step_fail_count: dict[int, int] = {}  # 业务步 → 累计定位失败次数(#1 单步失败预算)
+        # E2 页面指纹:跟踪「该步的操作有没有让页面发生过任何变化」+「连续多轮没进展」。
+        # step_pre_op_fp:该步**第一个操作类工具执行前**的页面指纹(基线);
+        # step_changed_fp:该步的操作让 fp 发生过变化(任一操作即可)。
+        # mark 前的 guard B 用 `pre 已记录 且 未发生过变化` 判「操作没生效」。
+        step_pre_op_fp: dict[int, str] = {}
+        step_changed_fp: set[int] = set()
+        step_stuck_rounds: dict[int, int] = {}  # step_no → 连续无进展轮数(round 末 fp 未变)
+        nudged_stuck: set[int] = set()  # 已就「步级卡住」提示过的 step_no(每步至多一次)
+        prev_round_fp: str = ""  # 上一轮结束时的页面指纹,供 stuck 检测做 round-to-round 对比
+        prev_phase_index: int | None = None  # 跨 phase 重置护栏计数用
 
         for iteration in range(1, self.max_steps + 1):
             result.iterations = iteration
             # 每轮刷新 system,反映最新 StepPlan 进度
             messages[0]["content"] = self.build_system(self.step_plan)
+
+            # E2 跨 phase 重置:进入新 phase 时,旧 phase 累计的 idle/loop 计数与当前 step
+            # 无关(新子目标新起点),应清零;step_fail_count 是 per-step 的不需要重置。
+            cur_top = self.step_plan.current
+            cur_phase_index = cur_top.phase_index if cur_top is not None else -1
+            if prev_phase_index is not None and cur_phase_index != prev_phase_index:
+                idle_nudges = 0
+                recent_sigs.clear()
+            prev_phase_index = cur_phase_index
 
             # Context Compact:发 LLM 前压缩历史观察(按当前步骤关键词保相关度)
             if self.compactor is not None:
@@ -341,7 +384,7 @@ class ReActLoop:
                     f"若该步骤的页面操作其实已经完成,直接调用 mark_step_done(step_no={step_no_hint}) 推进;"
                     "否则用快照里对应元素的 ref 调用 browser_click / browser_type / "
                     "browser_select_option 等操作目标元素。"
-                    "所有步骤完成后才输出 TEST_RESULT。禁止只回复文字而不调用工具。"
+                    "所有步骤完成后停止调用工具(裁决由系统在阶段边界给出,你不需要输出 TEST_RESULT)。"
                 )
                 if fresh:
                     # 作为**普通** user 消息附快照(不加 [观察] 前缀 → 不被 Context Compact
@@ -363,10 +406,25 @@ class ReActLoop:
                 result.stop_reason = StopReason.LOOP_DETECTED
                 break
 
-            # B-软最小护栏:仅当本轮**只调用** mark_step_done、且该步从未做过任何操作类工具、
-            # 且尚未就此步提示过 → 软提示先实操,不采信本次标记(铁律2(a):软、可恢复、不判失败)。
-            # 限「只调 mark」+「每步至多一次」双重保守,避免误判把正常流程拖进空转。
-            guard_nudge = self._guard_premature_mark(resp.tool_calls, acted_steps, nudged_mark)
+            # 过早 mark_done 软护栏(E2 升级):两个分支
+            #   A. 该步**完全没做操作类工具** → 软提示先实操(原行为)
+            #   B. 该步**做了操作但页面指纹未变**(E2 新) → 软提示「操作似乎没生效」
+            # 都是软、可恢复、不判失败;每步至多拦一次(避免把「纯校验/状态已满足」拖进空转)。
+            # B 分支的「指纹未变」用 `_fingerprint(last_snapshot_text) == step_start_fp[step_no]`
+            # 判,不依赖 LLM。
+            mark_step_no = self._extract_single_mark_step_no(resp.tool_calls)
+            fp_unchanged_for_mark = False
+            if mark_step_no is not None:
+                # 本步**已记录基线** 且 **从未让 fp 变过** → 判「操作没生效」(每步至多拦一次)。
+                fp_unchanged_for_mark = (
+                    mark_step_no in step_pre_op_fp and mark_step_no not in step_changed_fp
+                )
+            guard_nudge = self._guard_premature_mark(
+                resp.tool_calls,
+                acted_steps,
+                nudged_mark,
+                fp_unchanged=fp_unchanged_for_mark,
+            )
             if guard_nudge is not None:
                 messages.append(
                     {"role": "assistant", "content": reasoning or _render_calls(resp.tool_calls)}
@@ -388,6 +446,17 @@ class ReActLoop:
             step_failed_stop = False  # 本轮内是否触发单步失败预算 / 阶段失败(均终止)
             for tc in resp.tool_calls:
                 step_no += 1
+                # E2 操作前记录页面指纹基线:本步**第一次**遇到操作类工具(非 mark/非 snapshot/
+                # 非 custom)且当前已有真快照时,记录 step_pre_op_fp[step] = 当时的 fp。空 last_snapshot
+                # → 不记录,等下次拿到真快照(避免空指纹长期占位令 guard B 失效)。
+                _is_op = cur_step is not None and tc.name not in (
+                    MARK_STEP_DONE_TOOL,
+                    "browser_snapshot",
+                )
+                if _is_op and cur_step.step_no not in step_pre_op_fp:
+                    _pre_fp = _fingerprint(last_snapshot_text)
+                    if _pre_fp:
+                        step_pre_op_fp[cur_step.step_no] = _pre_fp
                 started = time.monotonic()
                 outcome = await self._execute_one(tc)
                 duration_ms = int((time.monotonic() - started) * 1000)
@@ -473,6 +542,12 @@ class ReActLoop:
                 # mark_step_done 的非快照输出覆盖掉快照,令下一轮 ref 索引为空、捕获漏采。
                 if outcome.text and "[ref=" in outcome.text:
                     last_snapshot_text = outcome.text
+                # E2 操作后判 fp 是否被本次操作改变:若本步已有基线 且 新 fp 与基线不同 → 该步
+                # 已让页面变过 → 加入 step_changed_fp(后续 guard B 即不再认为「操作没生效」)。
+                if _is_op and not failed and cur_step.step_no in step_pre_op_fp:
+                    _new_fp = _fingerprint(last_snapshot_text)
+                    if _new_fp and _new_fp != step_pre_op_fp[cur_step.step_no]:
+                        step_changed_fp.add(cur_step.step_no)
 
                 # #1 快速失败:同一业务步累计定位失败达预算(自愈也没救回)→ 终止,
                 # 标明卡死步(疑似点错前序元素致后续找不到目标)。不再磨到 max_steps。
@@ -530,6 +605,41 @@ class ReActLoop:
             if self.step_plan.all_resolved():
                 result.stop_reason = StopReason.COMPLETED
                 break
+
+            # E2 步级卡住主动提醒:本轮跑了工具但当前步仍 active 且**当轮 fp 与上一轮 fp 相同**
+            #   → 累计 stuck 轮数;达 stuck_round_budget 且未提醒过 → 注入诊断引导。
+            # 用 round-to-round 比较而不是「与步起点比」,避免「点了但被同一份快照覆盖」的死循环
+            # 也算"卡住"——既然刚刚有过 fp 变化,就重置计数。软、可恢复、每步至多一次。
+            cur_end = self.step_plan.current
+            round_end_fp = _fingerprint(last_snapshot_text)
+            if cur_end is not None and round_end_fp and prev_round_fp:
+                if round_end_fp == prev_round_fp:
+                    step_stuck_rounds[cur_end.step_no] = (
+                        step_stuck_rounds.get(cur_end.step_no, 0) + 1
+                    )
+                else:
+                    step_stuck_rounds[cur_end.step_no] = 0
+            prev_round_fp = round_end_fp or prev_round_fp  # 保留最近的非空 fp 作下次基准
+            if (
+                cur_end is not None
+                and step_stuck_rounds.get(cur_end.step_no, 0) >= self.stuck_round_budget
+                and cur_end.step_no not in nudged_stuck
+            ):
+                nudged_stuck.add(cur_end.step_no)
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            f"[卡住提醒] 第 {cur_end.step_no} 步「{cur_end.describe()}」"
+                            f"已连续 {step_stuck_rounds[cur_end.step_no]} 轮没让页面发生任何变化。"
+                            "停下机械重复,换个思路诊断为什么:"
+                            "目标元素是否在视野外(可能要滚动)?是否还在加载(等一下/重新 browser_snapshot)?"
+                            "元素名字是否不同(同义/英文/图标)?是否还缺前置动作?"
+                            "若是需要本系统的业务知识,看看 `load_skill` 名册里有没有相关 skill 可加载。"
+                            "下一轮请只调用一个工具并换一种方式尝试,不要重复同一个失败调用。"
+                        ),
+                    }
+                )
         else:
             result.stop_reason = StopReason.MAX_STEPS
 
@@ -547,15 +657,10 @@ class ReActLoop:
         return f"### System Prompt\n{system}\n\n### 最近输入(本轮触发)\n{last_user}"
 
     @staticmethod
-    def _guard_premature_mark(
-        tool_calls: list[ToolCall], acted_steps: set[int], nudged_mark: set[int]
-    ) -> str | None:
-        """过早 mark_done 软护栏(B-软最小版,只接此一种)。
+    def _extract_single_mark_step_no(tool_calls: list[ToolCall]) -> int | None:
+        """若本轮**只调用** mark_step_done 且 step_no 合法,返回该 step_no;否则 None。
 
-        触发条件(三重保守,避免误判正常流程):本轮**仅**一个工具调用且为 mark_step_done、
-        其 step_no **从未执行过操作类工具**、且**尚未就此步提示过**。触发则返回软提示串
-        (调用方回灌并跳过本次标记);否则返回 None 放行。已提示过的步骤再次标记即放行
-        (覆盖「纯校验/状态已满足、确实无需操作」的合法步骤,代价至多一次多余往返)。
+        分离出来供过早 mark 软护栏判「指纹未变」预先取 step_no。
         """
         if len(tool_calls) != 1:
             return None
@@ -564,19 +669,55 @@ class ReActLoop:
             return None
         raw = tc.arguments.get("step_no") if isinstance(tc.arguments, dict) else None
         try:
-            step_no = int(raw)
+            return int(raw)
         except (TypeError, ValueError):
             return None
-        if step_no in acted_steps or step_no in nudged_mark:
+
+    @staticmethod
+    def _guard_premature_mark(
+        tool_calls: list[ToolCall],
+        acted_steps: set[int],
+        nudged_mark: set[int],
+        *,
+        fp_unchanged: bool = False,
+    ) -> str | None:
+        """过早 mark_done 软护栏(E2 升级两分支)。
+
+        触发前提:本轮**仅**一个工具调用且为 mark_step_done、且**尚未就此步提示过**。
+        命中其一即软提示(调用方回灌并跳过本次标记);两分支均「每步至多一次」,
+        覆盖「纯校验 / 状态已满足」的合法步骤——再次标记即放行(代价至多一次多余往返)。
+
+        - **分支 A**:该步从未执行过操作类工具 → 「先实操再 mark」。
+        - **分支 B(E2 新)**:该步执行过操作但 ``fp_unchanged=True`` → 「操作没让页面变」。
+          指纹判据由调用方算(``step_start_fp[step_no] == _fingerprint(last_snapshot_text)``),
+          纯确定性、无 LLM。
+        """
+        step_no = ReActLoop._extract_single_mark_step_no(tool_calls)
+        if step_no is None:
             return None
-        nudged_mark.add(step_no)
-        return (
-            f"你要把第 {step_no} 步标记完成,但本步还没执行任何页面操作(点击/输入/选择)。"
-            f"请先用快照里对应元素的 ref 实际执行该步骤的操作,确认页面已响应,再调用 "
-            f"mark_step_done(step_no={step_no})。"
-            f"若该步骤确实无需任何页面操作(纯校验 / 状态已满足),可直接再次调用 "
-            f"mark_step_done(step_no={step_no}) 推进。"
-        )
+        if step_no in nudged_mark:
+            return None
+        # 分支 A:从未操作
+        if step_no not in acted_steps:
+            nudged_mark.add(step_no)
+            return (
+                f"你要把第 {step_no} 步标记完成,但本步还没执行任何页面操作(点击/输入/选择)。"
+                f"请先用快照里对应元素的 ref 实际执行该步骤的操作,确认页面已响应,再调用 "
+                f"mark_step_done(step_no={step_no})。"
+                f"若该步骤确实无需任何页面操作(纯校验 / 状态已满足),可直接再次调用 "
+                f"mark_step_done(step_no={step_no}) 推进。"
+            )
+        # 分支 B:操作了但页面没变
+        if fp_unchanged:
+            nudged_mark.add(step_no)
+            return (
+                f"你要把第 {step_no} 步标记完成,但本步执行了操作后页面似乎没有任何变化"
+                f"(URL 与 a11y 节点都和操作前一致)——预期变化未出现,说明操作可能没生效。"
+                f"先诊断为什么:点击位置是否对、是否被遮挡、是否需要等加载/重新 browser_snapshot?"
+                f"换个定位或思路再试一次;若该步骤本就不应该有可见页面变化,可直接再次调用 "
+                f"mark_step_done(step_no={step_no}) 推进。"
+            )
+        return None
 
     def _current_keywords(self) -> list[str]:
         """当前步骤的关键词,供 L2 相关度截断。"""

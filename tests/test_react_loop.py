@@ -714,3 +714,215 @@ def test_extract_executed_locator():
     t2 = "await page.getByRole('button', { name: 'Login' }).click();"
     assert extract_executed_locator(t2) == "page.getByRole('button', { name: 'Login' })"
     assert extract_executed_locator("no code here") == ""
+
+
+# ── E2:页面指纹 + 软护栏升级 + 卡住提醒 + 跨 phase 重置 ──────
+
+
+def test_fingerprint_url_and_refs():
+    """页面指纹由 URL + ref 集组成;同页相同、改 URL 或 ref 集都会变。"""
+    from harness.react_loop import _fingerprint
+
+    snap_a = "Page URL: http://x/page1\n[ref=e1]\n[ref=e2]"
+    snap_b = "Page URL: http://x/page1\n[ref=e2]\n[ref=e1]"  # 顺序无关
+    snap_c = "Page URL: http://x/page2\n[ref=e1]\n[ref=e2]"  # 改 URL
+    snap_d = "Page URL: http://x/page1\n[ref=e1]\n[ref=e3]"  # 改 ref 集
+    assert _fingerprint(snap_a) == _fingerprint(snap_b)
+    assert _fingerprint(snap_a) != _fingerprint(snap_c)
+    assert _fingerprint(snap_a) != _fingerprint(snap_d)
+    assert _fingerprint("") == ""
+
+
+async def test_fp_guard_operation_with_no_effect_triggers_soft_nudge():
+    """E2 分支 B:做了操作但页面指纹未变 → 软拦,提示「操作似乎没生效」。"""
+    plan = _plan(1)
+    # 关键:click 后返回**同样**的快照文本(url+ref 不变)→ 指纹未变
+    same_snapshot = "Page URL: http://x/p\n- button [ref=e1]"
+
+    async def execute(name, arguments):
+        handled = plan.apply_tool_call(name, arguments)
+        if handled is not None:
+            return ToolOutcome(text=handled)
+        # 浏览器工具都返回同一份快照(模拟点了但没生效)
+        return ToolOutcome(text=same_snapshot)
+
+    async def get_snapshot():
+        return same_snapshot
+
+    llm = _ScriptedLLM(
+        [
+            # r1:先抓快照 → last_snapshot_text 有内容,step_start_fp 在 r2 顶端记录
+            _resp(calls=[("browser_snapshot", {})]),
+            # r2:点击(指纹不变)
+            _resp(calls=[("browser_click", {"ref": "e1"})]),
+            # r3:试图 mark done → fp_unchanged=True → 被软拦
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),
+            # r4:换思路再点一次,这次执行器仍返回同一快照(测试不在乎是否真生效,只看护栏)
+            #     由于该步已被提示过,r4 再 mark 即放行
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=execute,
+        step_plan=plan,
+        build_system=_build_system,
+        get_snapshot=get_snapshot,
+        max_steps=10,
+    )
+    result = await loop.run()
+    # 至少跑到 r4 即被放行完成
+    assert plan.all_done()
+    # 验证软拦发生过:某轮 user 消息包含「操作似乎没生效」措辞——通过日志/messages 较难直查,
+    # 间接看:r3 的 mark_step_done **没**被 StepPlan 处理(否则 r3 后 plan 已 all_done,
+    # 不会触发 r4)。检查 r4 那次 mark 才是真正落定的一次。
+    mark_steps = [s for s in result.action_steps if s.tool_name == "mark_step_done"]
+    # 第一次 mark_done(r3)被软拦不执行 → action_steps 里只有 r4 那次真正执行的 mark
+    assert len(mark_steps) == 1
+
+
+async def test_fp_changes_lets_mark_through():
+    """E2 分支 B 反证:操作让页面指纹变了 → 不触发 fp_unchanged 软拦,mark 放行。"""
+    plan = _plan(1)
+    seq_snaps = [
+        "Page URL: http://x/p1\n- button [ref=e1]",
+        "Page URL: http://x/p2\n- button [ref=e2]",  # click 后跳到 p2,指纹改变
+    ]
+    snap_i = [0]
+
+    async def execute(name, arguments):
+        handled = plan.apply_tool_call(name, arguments)
+        if handled is not None:
+            return ToolOutcome(text=handled)
+        out = seq_snaps[min(snap_i[0], len(seq_snaps) - 1)]
+        snap_i[0] += 1
+        return ToolOutcome(text=out)
+
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_snapshot", {})]),  # r1:得到 p1 快照
+            _resp(calls=[("browser_click", {"ref": "e1"})]),  # r2:点击 → 跳 p2
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # r3:fp 变了 → 放行
+            _resp(content="done"),
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=execute,
+        step_plan=plan,
+        build_system=_build_system,
+        max_steps=10,
+    )
+    result = await loop.run()
+    assert result.stop_reason == StopReason.COMPLETED
+    assert plan.all_done()
+    # mark_done 被采信(只发了一次,没被软拦回放)
+    mark_steps = [s for s in result.action_steps if s.tool_name == "mark_step_done"]
+    assert len(mark_steps) == 1
+
+
+async def test_stuck_reminder_injected_after_no_progress_rounds():
+    """E2 步级卡住主动提醒:连续 N 轮指纹未变且未推进 → 注入诊断引导(每步至多一次)。
+
+    用**不同**的浏览器工具调用避免触发循环检测(loop_window=3 会更早终止),
+    专门考验 stuck 检测路径。
+    """
+    plan = _plan(1)
+    fixed = "Page URL: http://x/p\n- button [ref=e1]"
+
+    async def execute(name, arguments):
+        handled = plan.apply_tool_call(name, arguments)
+        if handled is not None:
+            return ToolOutcome(text=handled)
+        return ToolOutcome(text=fixed)  # 同一份快照,永远不变
+
+    # 捕获 messages 流以检查注入
+    captured: list[list[dict]] = []
+
+    class _Capturing(_ScriptedLLM):
+        async def chat(self, messages, tools=None, **kwargs):
+            captured.append([dict(m) for m in messages])  # 拷贝当时 messages
+            return await super().chat(messages, tools=tools, **kwargs)
+
+    # 用每轮**不同 args** 的浏览器工具调用,跳过循环检测,只考验指纹未变 → stuck 提醒。
+    llm = _Capturing(
+        [
+            _resp(calls=[("browser_snapshot", {})]),  # r1:抓快照,r2 顶端记 step_start_fp
+            _resp(calls=[("browser_hover", {"ref": "e1"})]),  # r2:hover(fp 没变),stuck=1
+            _resp(calls=[("browser_hover", {"ref": "e2"})]),  # r3:hover 另一 ref,stuck=2 → 提醒
+            _resp(calls=[("browser_click", {"ref": "e1"})]),  # r4:看到提醒后真点击
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=execute,
+        step_plan=plan,
+        build_system=_build_system,
+        stuck_round_budget=2,
+        loop_window=5,  # 放宽避免循环检测干扰本测试
+        max_steps=10,
+    )
+    await loop.run()
+    # 第 4 轮 LLM 调用时,messages 里应已包含「卡住提醒」(r3 末尾注入)
+    assert len(captured) >= 4, f"only {len(captured)} rounds captured"
+    msg_texts = [m.get("content", "") for m in captured[3] if isinstance(m.get("content"), str)]
+    assert any("[卡住提醒]" in t for t in msg_texts), "stuck reminder 未注入"
+
+
+async def test_cross_phase_reset_smoke():
+    """E2 跨 phase 重置 smoke:多阶段 plan 跑通,确认顶部跨 phase 重置块未破坏控制流。
+
+    单测难以直接观察内部 idle_nudges/recent_sigs 重置(它们是局部变量),这里至少保证
+    跨 phase 路径在正常多阶段流程下不会引入 regression。
+    """
+    plan = _multi_phase_plan(1, 1)
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_click", {"ref": "e1"})]),  # phase 0
+            _resp(calls=[("mark_step_done", {"step_no": 1})]),  # phase 0 done
+            _resp(calls=[("browser_click", {"ref": "e2"})]),  # phase 1(顶端触发跨 phase 重置)
+            _resp(calls=[("mark_step_done", {"step_no": 2})]),
+            _resp(content="done"),
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+        max_steps=10,
+    )
+    result = await loop.run()
+    assert result.stop_reason == StopReason.COMPLETED
+    assert plan.all_done()
+
+
+def test_step_fail_budget_default_is_5():
+    """E2:默认单步定位失败预算从 3 放宽到 5(给诊断换法留空间)。"""
+    plan = _plan(1)
+    loop = ReActLoop(
+        _ScriptedLLM([_resp()]),
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+    )
+    assert loop.step_fail_budget == 5
+
+
+def test_stuck_round_budget_default_is_2():
+    """E2:默认卡住提醒预算 2(给一次机会再提醒)。"""
+    plan = _plan(1)
+    loop = ReActLoop(
+        _ScriptedLLM([_resp()]),
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+    )
+    assert loop.stuck_round_budget == 2
