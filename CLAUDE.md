@@ -104,14 +104,47 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | ② | spec 翻译 → TestSpec | ✅ 走查 + redesign(2026-06-22) | 阶段化 FP0-3 `a9df22e`→`38483fb`(翻译只产意图、不接地) |
 | ③ | executing — ReAct 主循环 | ✅ 走查 + redesign(2026-06-23) | 执行健壮化 E1-7 `a7c9ba3`→`1831508`(驱动/裁决两层分离) |
 | ④ | ~~asserting — 阶段裁决汇总~~ | ✅ 走查结论=**取消**(2026-06-23) | F1+F2 `dccc95b`→`2e6c023`:阶段化后真正裁决全在③ on_phase_end,④ 只剩空 SSE 事件 + 隐式 schema → 撤独立阶段、职责并入 ③/⑤ |
-| **⑤** | **合并裁决 + 执行完整性闸门** | **← 下一个** | (重设计已动过:`passed = 全阶段过 + 执行完整`;④ 撤下后承接汇总/落库/verdict 计算) |
-| ⑥ | 收尾 Hooks(on_heal/on_failure/after_case) | 待走查 | (E1 阶段没碰过;④ 撤下后承接 on_heal/on_failure/after_case 触发) |
+| ⑤ | 合并裁决 + 执行完整性闸门 | ✅ 走查 + redesign(2026-06-23) | G1+G2 `f0bc53c`→`9f7e450`:消灭 SKIPPED 计入 FAIL(LLM 是主裁决,缺失不默认绿)+ 缺席阶段 FAIL 占位 + 翻译退化归因 |
+| **⑥** | **收尾 Hooks(on_heal/on_failure/after_case)** | **← 下一个** | (E1 阶段没碰过;④ 撤下后承接触发;T9 healed_assertions 死字段待清) |
 | ⑦ | codegen → scanning(产物) | 待走查 | (FP1 做了 phases→steps 最小适配,可能仍有改进空间) |
 
 走查范式:**读真实代码 → 设计张力清单 → 用户拍设计方向 → 必要时 redesign(`F<n>` 命名,按
 功能点拆分单独 commit/push,每点单测 + saucedemo live 冒烟)**。
 
 ### 重大 redesign 实施记录
+
+- **阶段⑤ 合并裁决 + 执行完整性闸门 redesign(2026-06-23,已落地 G1+G2)** ★ — ⑤ 段把
+  「逐阶段 LLM 裁决」与「执行完整性」合成最终 `passed`。走查暴露:**SKIPPED 是旧设计化石**
+  ——服务于"LLM 不可信、需结构化兜底、skipped 等人工复核"的假设,但**阶段化下 LLM judge 是
+  主裁决,自动化平台无人工复核环节**,SKIPPED 实际 = 被忽略 = **false-green 漏洞**(LLM 罢工 →
+  整批集体绿,因为旧公式 `validated==n_phases and not phase_fail` 把全 SKIPPED 算可信通过)。
+  - **G1 消灭 SKIPPED 计入 FAIL**(`f0bc53c`):`_check_llm_judge` 主裁决缺失三态(未接 LLM /
+    调用失败 / 解析不出 verdict)一律 FAIL(保留 `ai_judged` 标记);`on_phase_end` 无 expected
+    分支 SKIPPED→FAIL + 返回原因触发 PHASE_FAILED(暴露翻译退化:本该产组级预期却空);
+    `AssertionEngine.verdict()` 加化石注释(阶段化下不再被 agent.run 调用);⑤ 闸门公式简化为
+    `passed = execution_complete and n_phases>0 and not phase_fail`(去掉 `validated==n_phases`
+    守门——执行完整即蕴含每阶段末步都触发过 on_phase_end,故全被裁决过)。**custom_tool/未知
+    类型未接入时仍 skipped**(非阶段化路径,不在收 FAIL 范围)。
+  - **G2 缺席阶段 FAIL 占位 + 翻译退化归因**(`9f7e450`):早停(STEP_FAILED/max_steps/卡死)时
+    `phase_results` 短于 `n_phases` → 落库 `case_assertions` 断层(前端时间线"阶段 1 ✅/阶段 2 ✅/
+    阶段 3-5 不见/整体 ❌"用户困惑)。给未触达阶段补 FAIL 占位(`reason="该阶段未触达,执行已
+    早停"`,phase_index 保留,按升序);**占位不进 `validated_phases`**,`phase_fail` 只看真实裁决过
+    的阶段(`pi in validated_phases`),否则占位会污染 phase_fail → 失败归因误报"阶段预期未达成";
+    失败归因加 `n_phases==0` 档"翻译退化为空 phases"(替代荒谬的"0/0 未全过")。
+  - **走查报告其他张力归位**:T5 ai_judged 置信分级 = 裁判侧(`_check_llm_judge` 透出 confidence),
+    独立专题留后;T9 healed_assertions 死字段归 ⑥;T14 执行未完成伪断言(G3)暂缓到前端走查统一处理。
+  - **验证**:pytest 491 passed(+2 = G2 新测,改 ~6 条 SKIPPED 测;2 个预存在 Windows 失败
+    不变)。**saucedemo TC101 live ✅ PASS**(2 阶段证据接地,15 步 0 自愈,裁决=阶段1 inventory.html
+    URL 锚点 + 阶段2 购物车角标=1)。**AE03 脏公网两次复跑 FAIL**——失败阶段/原因每次不同
+    (阶段3/阶段4),均为 LLM 裁判对**翻译产出的严格 expected**("按钮变 Remove / 角标=1")的
+    偏-FAIL(automationexercise 实际只弹 Added! 模态、不改按钮态/不显角标);裁判给**明确 FAIL
+    verdict**(非 SKIPPED → G1 路径未触发;步骤跑完 → G2 路径未触发),与 G1/G2 正交,属 AE03
+    既有脏站 flaky + 翻译质量问题(根因正交于 ⑤,记入下一步候选)。
+  - **重要**:**无 LLM 的开发环境下阶段裁决整批 FAIL**——这是正确的(LLM 是主裁决,没 LLM 用
+    什么判?);本地冒烟/单测用 fake/mock LLM,真实跑必须配 `.env`(LLM_MODEL/API_BASE/KEY)。
+  - **下一步候选(未做)**:① T5 ai_judged 置信分级(裁判侧专题);② AE03 翻译质量——脏站点
+    expected 严格度与真实站点行为对齐(翻译引导/锚点放宽,属 ② 翻译线,非 ⑤);③ G3 执行未完成
+    伪断言进 case_assertions(前端走查统一)。
 
 - **阶段④ asserting 撤销(走查结论=取消,2026-06-23,已落地 F1+F2)** — 阶段化重设计
   (FP0-3)后,真正的裁决全在 ③ ReAct 内 `on_phase_end` 即时完成,阶段④ 在 `agent.run`
