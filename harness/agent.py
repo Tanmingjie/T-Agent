@@ -523,6 +523,7 @@ class TestCaseAgent:
                             status=AssertionStatus.SKIPPED,
                             reason="该阶段无 expected,未核验",
                             ai_judged=True,
+                            phase_index=phase_index,
                         ),
                     )
                 )
@@ -541,6 +542,7 @@ class TestCaseAgent:
             r = await engine_p._check_llm_judge(
                 Assertion(type="llm_judge", target=expected, expected=expected, confidence="low")
             )
+            r.phase_index = phase_index  # F2:一等字段,前端按阶段分组
             phase_results.append((phase_index, r))
             validated_phases.add(phase_index)
             # PASS / SKIPPED(裁判调用失败等)→ 不阻断继续;FAIL → 返回原因 → 阶段失败即失败。
@@ -580,14 +582,9 @@ class TestCaseAgent:
         # 阶段化重设计后无独立「asserting 阶段」:Validator 的 token/时长在 ③ executing
         # 内分摊(每条 _check_llm_judge 调用即时计入);汇总/落库/verdict 计算属 ⑤ 闸门职责。
         all_results = [r for _, r in phase_results]
-        # 落库:每条标 phase_index + expected,前端按阶段展示 Validator 裁决
-        a_dicts: list[dict] = []
-        for pi, r in phase_results:
-            d = r.to_dict()
-            d["phase_index"] = pi
-            d["expected"] = spec.phases[pi].expected if pi < len(spec.phases) else ""
-            a_dicts.append(d)
-        recorder.set_case_assertions(a_dicts)
+        # 落库:AssertionResult.phase_index 一等字段(F2),to_dict 自然带出;expected 不再
+        # 外塞覆盖(它本就来自 Assertion.expected = phase.expected,二者等价由 on_phase_end 保证)。
+        recorder.set_case_assertions([r.to_dict() for r in all_results])
         recorder.record.heal_count += sum(1 for r in all_results if r.healed)
 
         # —— 裁决:全阶段通过 + 执行完整 ——

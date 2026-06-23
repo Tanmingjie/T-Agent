@@ -663,3 +663,21 @@ async def test_result_to_dict():
     assert d["type"] == "url_contains"
     assert d["status"] == "pass"
     assert d["healable"] is False
+    # F2:phase_index 是 schema 一等字段,默认 -1(非阶段裁决);裁决路径不显式设值时 to_dict 自带出
+    assert d["phase_index"] == -1
+
+
+def test_result_to_dict_carries_phase_index():
+    """F2:阶段裁决场景下,AssertionResult.phase_index 应一等字段直出 to_dict(不依赖外塞)。"""
+    from harness.assertion import AssertionResult, AssertionStatus
+
+    r = AssertionResult(
+        assertion=Assertion(type="llm_judge", target="出现待审批", expected="出现待审批"),
+        status=AssertionStatus.PASS,
+        ai_judged=True,
+        phase_index=2,
+    )
+    d = r.to_dict()
+    assert d["phase_index"] == 2
+    assert d["expected"] == "出现待审批"  # 来自 Assertion.expected,无外塞覆盖
+    assert d["ai_judged"] is True

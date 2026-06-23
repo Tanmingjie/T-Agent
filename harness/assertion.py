@@ -107,13 +107,16 @@ class AssertionResult:
     healed: bool = False  # 经自愈重定位后复验通过
     heal_note: str = ""  # 自愈摘要(重定位到哪个 target / 策略)
     ai_judged: bool = False  # 该结果由 llm_judge 兜底判定(低置信),报告需与结构化绿区分
+    # 阶段化重设计后(FP0-3)裁决以阶段 Validator 为单位:此字段标识该裁决归属哪个 phase
+    # (0-based);-1 = 非阶段裁决(历史/外部调用)。前端按此分组展示。
+    phase_index: int = -1
 
     @property
     def passed(self) -> bool:
         return self.status == AssertionStatus.PASS
 
     def to_dict(self) -> dict:
-        """录制进 ActionStep.assertion_results 用。"""
+        """录制进 ActionStep.assertion_results / ExecutionRecord.case_assertions 用。"""
         return {
             "type": self.assertion.type,
             "target": self.assertion.target,
@@ -125,6 +128,7 @@ class AssertionResult:
             "healed": self.healed,
             "heal_note": self.heal_note,
             "ai_judged": self.ai_judged,
+            "phase_index": self.phase_index,
         }
 
 

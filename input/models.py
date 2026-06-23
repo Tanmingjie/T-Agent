@@ -134,7 +134,8 @@ class ExecutionRecord(BaseModel):
     run_id: str | None = None  # 关联 RunRecord(Phase 4)
     steps: list[ActionStep] = []
     passed: bool = False
-    # 用例级最终断言裁决结果(AssertionResult.to_dict),可信 PASS/FAIL 的依据
+    # 阶段化裁决证据(AssertionResult.to_dict;阶段化重设计 FP0-3 后,逐阶段 Validator
+    # 各产一条,每条带 phase_index/expected;可信 PASS/FAIL 的依据)
     case_assertions: list[dict] = []
     # 本次执行使用的 TestSpec(LLM 翻译产物)。存档以便前端可视化 + 发现翻译偏差。
     spec: TestSpec | None = None
