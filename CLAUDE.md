@@ -30,11 +30,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `intelligence/pre_analysis.py` — TestCase → **阶段化 TestSpec**(纯 LLM 翻译,**只产意图不接地**,2026-06-22 重设计)。产出 `{intent, preconditions:[str], phases:[{steps:[str], expected}]}`:每阶段 = 一组自然语言步骤(驱动)+ 一条组级预期(验证依据)。不写 selector/不锁动作/不猜元素,接地全交运行时。坏输出降级为单阶段无损映射。契约见 `docs/test_spec_v2.md`。
 - `harness/step_plan.py` — 阶段化 TestSpec 的 `phases.steps` **摊平**成扁平步骤状态机(pending/active/done/...)+ 记每步所属阶段;暴露 `mark_step_done` 工具 + **阶段边界**查询(`is_phase_last_step`/`phase_last_step_no`)。
 - `harness/prompt.py` — System Prompt **分层**(Base+Context+Task+Tools),`PromptBuilder.build(step_plan)` 每轮重算反映进度。Task 层渲染 `intent`/`preconditions`/阶段化步骤清单,**不渲染 expected**(FG01:验证依据绝不进驱动)。
-- `harness/react_loop.py` — **ReAct 主循环**。Reason→Act→Observe;护栏:循环检测、max_steps、哑火续推(`max_idle_nudges`)、tool_call 容错、**过早 mark_done 软护栏 两分支**(E2:没操作 / 操作无效果——后者用页面指纹 URL+ref 集判,无 LLM)、**单步定位失败预算**(`STEP_FAIL_BUDGET` 默认 5 → `STEP_FAILED` 快速失败,E2 由 3→5)、**步级卡住主动提醒**(E2:同步连续 N 轮 fp 未变 → 注入诊断引导 + E3 浮现命中 skill 名催 `load_skill` 甲 / 持续仍卡 → 平台 `auto_load` top1 注入兜底 乙)、**跨 phase 重置**(E2:进新 phase 清零 idle/loop)。**观察以 user 消息文本回灌**(不依赖 tool_call_id 配对)。**阶段边界 Validator**(2026-06-22 取代步骤门控):`on_phase_end(phase_index) -> str|None` 在某阶段**最后一步** mark_step_done 落定时触发,核验该阶段 expected——返回非空原因 = 未达成 → `PHASE_FAILED` **阶段失败即失败**(不 replan/重试)。
-- `harness/llm.py` — LiteLLM 封装 + tool_call 容错 + token 统计。配置走 env(`LLM_MODEL`/`LLM_API_BASE`/`LLM_API_KEY`)。
+- `harness/react_loop.py` — **ReAct 主循环**。Reason→Act→Observe;护栏:循环检测、max_steps、哑火续推(`max_idle_nudges`)、tool_call 容错、**过早 mark_done 软护栏 两分支**(E2:没操作 / 操作无效果——后者用页面指纹 URL+ref 集判,无 LLM)、**单步定位失败预算**(`STEP_FAIL_BUDGET` 默认 5 → `STEP_FAILED` 快速失败,E2 由 3→5)、**步级卡住主动提醒**(E2:同步连续 N 轮 fp 未变 → 注入诊断引导 + E3 浮现命中 skill 名催 `load_skill` 甲 / 持续仍卡 → 平台 `auto_load` top1 注入兜底 乙)、**跨 phase 重置**(E2:进新 phase 清零 idle/loop)。**观察以 user 消息文本回灌**(不依赖 tool_call_id 配对)。**阶段边界 Validator**(2026-06-22 取代步骤门控):`on_phase_end(phase_index) -> str|None` 在某阶段**最后一步** mark_step_done 落定时触发,核验该阶段 expected——返回非空原因 = 未达成 → `PHASE_FAILED` **阶段失败即失败**(不 replan/重试)。**哑火可观测(2026-06-24)**:`ReActResult.idle_outputs` 记每个哑火轮 `{iteration,step_no,kind,rechecked,text}`——`kind` 三态 narration_only(纯叙述放弃)/ malformed_tool_call(调了但格式坏)/ premature_result;透到 `metrics.execution.idle_outputs` 落库 + CLI 打印,供"卡死类"失败事后定性(模型放弃 vs 流式丢采)。**参数归一(2026-06-24)**:`_normalize_ref_target` 在 dispatch 前给 browser_* 工具把 `ref`/`element_ref`/`ref_id` 补进 `target`(本版 playwright-mcp 用 `target` 装 ref,模型先验是 `ref`、会抖动),消白烧步骤。
+- `harness/llm.py` — LiteLLM 封装 + tool_call 容错 + token 统计。配置走 env(`LLM_MODEL`/`LLM_API_BASE`/`LLM_API_KEY`)。**tool_call 容错链**:①标准 `tool_calls` 字段 → ②宽松 JSON 修复 → ③从 content 提取(`<tool_call>` 标签 / ```围栏 / 裸 JSON / **`函数名({...})` 文本** ← 2026-06-24 治 deepseek-v4-flash 偶发把调用吐进 content 文本而非 tool_calls 通道,实测 TC201 哑火卡死根因)→ ④纠偏重试 1 次 → 仍失败抛 `LLMToolCallError`。`extract_verdict` 从坏 JSON 正则捞 PASS/FAIL(裁决解析卫生)。**未设 `max_tokens`**(judge 偶发因 provider 默认输出上限截断 → 层1 兜底捞回;已加 prompt 简短约束减少触发)。
 - `mcp_client/client.py` — MCP 官方 SDK(stdio)连 playwright-mcp;工具格式 MCP↔LiteLLM 转换。
 - `harness/page_probe.py` — 解析 playwright-mcp 的 `browser_snapshot`(YAML A11y 树)为节点,按语义 target 双向包含匹配(`MCPPageProbe` 实现断言引擎的 `PageProbe` 协议)。
-- `harness/assertion.py` ★ — **断言引擎 + 阶段 Validator**。`_check_llm_judge`(偏-FAIL + **强制逐字引证页面证据** + 平台**证据接地确定性核验**,脑补→fail-closed 推翻)是阶段 Validator 的核心;另留 DOM/文本/URL/custom_tool 确定性检查 + healer 重定位 + `verdict()`(任一 FAIL 不通过)。**2026-06-22 阶段化重设计**:`agent.run::on_phase_end` 在某阶段最后一步落定时,于**当时所处页面**对该阶段 `expected` 跑一次 `_check_llm_judge`(实时 URL 作免费锚点),逐阶段裁决;**取代**旧的「步骤门控 + 终态 verify_all」三处验证。结果按 `phase_index`+`expected` 落库,前端按阶段展示。〔删旧 `_gate_step_done` 偏-PASS 门控、`step.expect` 结构化锚点、终态用例级 assertions。〕
+- `harness/assertion.py` ★ — **断言引擎 + 阶段 Validator**。`_check_llm_judge`(**偏-FAIL** + 要求模型逐字引证页面 evidence,evidence 仅作**可审计依据**写入 reason)是阶段 Validator 的核心;另留 DOM/文本/URL/custom_tool 确定性检查 + healer 重定位 + `verdict()`(化石,阶段化下不再被 agent.run 调用)。裁决保留两道**与模型独立**的底线:**层(1)解析卫生**(`extract_verdict` 正则捞 verdict / 无 verdict→FAIL,fail-closed)+ **G1 主裁决缺失三态→FAIL**(未接 LLM / 调用失败 / 解析不出 verdict)。**〔2026-06-24 撤销「平台确定性证据接地推翻」(用户拍板①)〕**:eval_fg A/B 扩样(n=63,3 站点,6 轮)实测接地层有益拦截恒为 0、仅偶发误伤 → 净 ≤0,偏-FAIL prompt 自身已扛住全部 false-green;**裁决权交回模型,evidence 不再作推翻闸门**(删 `_norm_evidence`/`_evidence_*`/`_expected_*` + 锚点正则 + E5)。回归基准见 `eval_fg/`。**2026-06-22 阶段化重设计**:`agent.run::on_phase_end` 在某阶段最后一步落定时,于**当时所处页面**对该阶段 `expected` 跑一次 `_check_llm_judge`(实时 URL 作免费锚点喂模型),逐阶段裁决;**取代**旧的「步骤门控 + 终态 verify_all」三处验证。结果按 `phase_index`+`expected` 落库,前端按阶段展示。〔删旧 `_gate_step_done` 偏-PASS 门控、`step.expect` 结构化锚点、终态用例级 assertions。〕
 - `harness/healing.py` — **Healing Subagent**(独立 context)。断言侧:重定位断言目标;操作侧:工具报错时重定位并把建议回灌 ReAct。P1 角色→P5 视觉,防臆造(候选必须落在快照里)。
 - `harness/context.py` — **Context Compact**。发 LLM 前压缩:旧观察折叠成一行(L1)、近期快照按关键词相关度截断(L2),治 token 膨胀。
 - `harness/recorder.py` — 汇总 `ExecutionRecord`;`to_history()` 把 model_output / action_result 分离序列化。
@@ -130,8 +130,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     - **T2 多动作 phase 步骤只捕首个定位器**:`locators_from_steps` 同 target 取首个 + BDD 按
       phase 步骤去重渲染一个 When;"输入用户名+密码+点登录"合并步只留第一个动作。轨迹驱动应按
       **action 序列**展开,而非按 phase 步骤去重。
-    - **T3 Then 全 TODO**:NL expected 无法确定性断言;但 E5 `_expected_anchors` 已能抽 URL-like/
-      引号强锚点 → 这类 expected 可生成 `expect(page).to_have_url(...)` 真断言(部分缓解)。
+    - **T3 Then 全 TODO**:NL expected 无法确定性断言。〔**2026-06-24 更新**:此处原写"E5
+      `_expected_anchors` 已能抽强锚点 → 部分缓解",但 E5/`_expected_anchors` **已随证据接地层
+      撤销删除**;若要做这条 codegen 缓解(从 expected 抽 URL/引号强锚点 → 生成 `to_have_url`
+      等真断言),需**自行重写一个轻量锚点抽取**,别引用已删的 `_expected_anchors`。〕
     - **T7 词汇表来源定位器是孤儿**:`resolve_locators`/`locator_from_vocab` 在 agent.run codegen
       路径**从未被调用**(只 `locators_from_steps` 执行捕获);`locators.py` 注释自称三级优先
       "执行捕获>词汇表>文本兜底",实际只接第一级。接上词汇表层或改诚实注释,待办。
@@ -242,6 +244,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     价值。换言之这是拿 deepseek-v4-flash 这个水位**信模型**;部署更菜模型需重判。下一步候选:
     再扩样 + 第二模型(需另配凭据)进一步收紧。
 
+- **TC201 结算流哑火卡死调查 → 三连修(2026-06-24,已落地)** — 前端跑「完整下单结算流程」
+  (saucedemo TC201,11 步)**偶现** FAIL:停因 `llm_finished`、仅完成 2~4/11 步、哑火续推撞上限。
+  排查链(**观测先行**):
+  - **先补可观测(`367996b`)**:哑火轮的模型原文从不持久化(embedded SSE 走桥不落表、哑火轮
+    不产生 step 记录)→「模型放弃 vs 平台丢调用」只能猜。`ReActResult.idle_outputs` 记每轮
+    `{iteration,step_no,kind,rechecked,text}`,`kind` 三态分类,透 metrics 落库 + CLI 打印。
+  - **据 idle_outputs 定性**:复现 run 26/26 哑火轮 = `narration_only` + `rechecked=True`(非流式
+    复核也无 tool_call)→ **排除流式丢采**;根因 = **deepseek-v4-flash 偶发把工具调用吐进 content
+    文本而非 tool_calls 通道**(实测 iter=27:`browser_click({"ref":"e54",...})` 写成了文字)。
+  - **真修(`da9a58b`)**:`extract_tool_calls_from_content` 补 `_FUNC_CALL_RE`——标准/围栏/裸 JSON
+    都没捞到时,按 `函数名({...})` 形态提取并合成 tool_call(救回"写成文字的真调用",治这类哑火)。
+  - **顺带两修**:① `_normalize_ref_target`(`d27c94e`)——browser_* dispatch 前把 `ref`/
+    `element_ref` 补进 `target`(本版 playwright-mcp 用 `target` 装 ref,模型先验 `ref` 会抖动,
+    实测步14 白烧一步);② judge prompt 加简短输出约束(`2a45fac`)——judge 偶因 provider 默认
+    输出上限截断成坏 JSON(我们**未设 max_tokens**),压短 evidence/reason 减少触发层1 兜底。
+  - **未修(残余)**:`narration_only` 里还有**纯叙述**型(「第2步已达成,立即标记完成」反复说却不
+    发任何调用,无可解析调用)——funcname salvage 救不了;若仍频发,候选 = 调大 `max_idle_nudges`
+    让聒噪模型啰嗦着跑完 / 在 mark 类步骤加更强「现在就调用」约束 / 换更强模型。**结论:TC201
+    偶现卡死是弱模型 function-calling 不稳,非平台 bug;observability 已能事后定性,持续观察。**
+
 - **执行健壮化(stage③ ReAct 主循环 redesign,2026-06-23,已落地 E1-7)** ★ — 在阶段化
   重设计(FP0-3)之上,把③ executing 阶段从「按步打勾」升级成「像 Claude 一样盯目标、
   失败诊断换法」。两层分离更彻底:**驱动层(role a,鼓励·软·可恢复)** + **裁决层
@@ -282,7 +304,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **翻译/执行/裁决阶段化重设计(2026-06-22,已落地 FP0-3)** ★ — 推翻旧「盲接地翻译 + 步骤门控 + 终态裁决」,改为**阶段化(phase)**。根因:旧翻译在**翻译期接地**(盲猜 selector/动作/元素),复杂用例翻译时根本不知道页面长什么样 → 五大病(盲断言、步↔预期对齐脆、expect_text 盲编、降级断崖、词表空转)。新设计:**翻译只产意图,接地全交运行时**。
   - **数据契约**(`docs/test_spec_v2.md`,无兼容):`TestSpec = {intent, preconditions:[str], phases:[{steps:[str], expected}]}`。阶段 = 一组自然语言步骤(**驱动**)+ 一条组级预期(**验证依据**)。`steps` 数据内联、不写 selector;`expected` **只在阶段边界给 Validator 核验,绝不进 agent 驱动**(FG01:错预期不会把 agent 带去追错目标)。前置纯背景(不执行/不 guard,具体状态保证交未来「环境管理」)。
-  - **执行 + 裁决**(取代铁律 2(b) 的「终态裁判为主」结论):**逐阶段 Validator**——某阶段最后一步落定时,在**当时所处页面**用偏-FAIL + **证据接地**的 `_check_llm_judge` 核验该阶段 expected;PASS 进下一阶段,FAIL → **阶段失败即失败**(不 replan/重试)。**取消独立终态裁决**(最后阶段的核验即终态检查)。verdict = 全阶段通过 + 执行完整。守住「偏-FAIL + 证据接地 + fail-closed + 不可见刷绿」底线。
+  - **执行 + 裁决**(取代铁律 2(b) 的「终态裁判为主」结论):**逐阶段 Validator**——某阶段最后一步落定时,在**当时所处页面**用偏-FAIL 的 `_check_llm_judge` 核验该阶段 expected;PASS 进下一阶段,FAIL → **阶段失败即失败**(不 replan/重试)。**取消独立终态裁决**(最后阶段的核验即终态检查)。verdict = 全阶段通过 + 执行完整。〔**注:本条原文写「偏-FAIL + 证据接地」,其中"证据接地"层已于 2026-06-24 撤销(eval 实测净 ≤0,见上「撤销证据接地推翻」),现底线 = 偏-FAIL + 解析卫生 fail-closed + 不可见刷绿;evidence 仅作可审计依据。〕
   - **业界印证**(调研):Skyvern 2.0 Planner-Actor-**Validator**(逐子目标验证、replan,WebVoyager 45%→85.85%)+ 30 年手工 QA(分组步骤 + 组级预期结果)+ BDD,三者独立收敛到「验证粒度 = 子目标/阶段」。browser-use 对比评估见 `browser-use_对比评估.md`(结论:不替换执行层)。
   - **删除**(无兼容,净 −1900 行):`harness/precondition.py` 分类器、`SpecStep`、`_gate_step_done` 步骤门控、`step.expect`/`expect_text`、终态 `verify_all`、`enhance_targets`、`collect_assertions`/`ensure_navigation_step`、预置条件标黄确认端点。codegen 最小适配(phases→steps + 执行轨迹定位器)。
   - **验证**:pytest 462 passed(2 个预存在 Windows 失败不变);前端 `npm run build` 绿;**saucedemo TC101 + AE03(脏公网站点)live 双 PASS**——各阶段 Validator 在所属页面证据接地判通过(TC101:inventory URL/商品列表 + 购物车角标=1;AE03:All Products/Searched Products/购物车 qty=1)。提交 `04b412d`(后端)/ `f02cd0e`(前端)。
@@ -453,7 +475,20 @@ T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规
 - **量裁判可靠性要把裁判从执行【剥离】单独压测**(`eval_fg/`):全 agent 跑动会被门控耦合污染(假预期把 agent 带去追错目标、撞 max_steps),**不是干净测量仪器**。正确做法:抓真实页面快照 → 喂裁判一组**真/假混合**预期 → 直接统计 false-green/false-fail。实测(deepseek 26 条):偏-FAIL 裁判 false-green=0/15,**"本地模型脑补成功"的恐惧未被数据支持**。
 - **"假绿"多是工程缺陷,不是模型脑补**(2026-06-17 根因):唯一 1 例假绿 = 模型其实判了 FAIL,但 reason 含**未转义引号**炸了 JSON + 门控 **fail-open(解析失败放行)**。教训:**裁决路径必须 fail-closed**(解析失败 → FAIL/skipped,绝不默认绿),只有**驱动路径**可 fail-open;裁判只需 `verdict` 字段,**正则兜底捞 PASS/FAIL**(`extract_verdict`)比强解析整段 JSON 稳。
 - **别把断言/预期挂成执行的硬闸门**(铁律2a,FG01 实证):把"业务预期"当步骤完成判据,**不可达/写错的预期会变无限重试 + 驱使 agent 追错目标**(假预期"已登录张三" → agent 跑去注册账号、烧 42 万 token)。**裁决标准不能泄漏进执行驱动**:预期只在终态裁决阶段验,执行门控只判"这步操作做没做"。
-- **让 LLM 裁判判 PASS 时逐字引证、平台再确定性核验——但核验要"锚点接地"不是"整串匹配"**(Fix 3 收尾 + A-2 校准):光靠 prompt「偏-FAIL + 引证证据」治不住弱模型脑补——它会一边判 PASS 一边编造"用户名框=standard_user"(当前页根本没这字段)。robust 解=要求裁判把依据摘录进 `evidence` 字段,代码核验它**有据**(`_evidence_grounded`:从 evidence 抽实证锚点——引号片段/≥4 英文数字串/≥3 中文串——只要**任一锚点**逐字落在当前页快照/URL 里就算有据),不在 → fail-closed 推翻 FAIL。**关键教训(eval_fg 实测)**:最初用"整串子串匹配"对**复合预期**(如"导航含 A、B、C")误伤 18%——模型把证据写成概括句而非单一逐字串;改"任一锚点命中"后 deepseek 上**误伤→0、false-green 仍 0**。仍能拦整段脑补(无任何锚点落页)。把"信不信模型"变成"它说的话能不能在页面里找到一句",可审计、跨模型稳。核验只在确有页面文本时启用(无快照单测不误伤)。
+- **裁判判 PASS 时逐字引证 evidence(可审计),但平台「确定性证据接地推翻」已撤——别再加回**
+  〔**2026-06-24 用户拍板①撤销,本条结论已更新**〕:Fix 3 收尾曾让 `_check_llm_judge` 对模型
+  judge 的 PASS 做**确定性证据核验**(`_evidence_grounded` 锚点接地,不在→fail-closed 推翻),
+  治弱模型脑补刷绿。但 **eval_fg A/B 扩样(deepseek-v4-flash,n=63,3 站点,6 轮共 189 次裁决)
+  实测该层净 ≤0**:偏-FAIL 的 `_JUDGE_SYSTEM` **自身** false-green=0/34(0 漏绿)、接地层
+  **有益拦截恒为 0**(要防的脑补一次没发生、一次没拦)、唯一可测作用是**偶发误伤**(全落在
+  expected 无强锚点的「疑似脑补」分支,无 ground truth、纯跟模型对赌)。→ **整层删除,裁决权
+  交回模型**(删 `_evidence_*`/`_expected_*`/`_norm_evidence` + E5 锚点)。**留下的耐久教训**:
+  ① 仍**要求模型逐字引证 evidence**(偏-FAIL 纪律 + reason 可审计),只是 evidence 不再作
+  推翻闸门;② 真正不可替代的是**与模型独立**的两道底线——层(1)解析卫生(`extract_verdict`
+  正则捞 verdict / 无 verdict→fail-closed FAIL)+ G1 缺失三态→FAIL;③ **量化方法论**:用
+  `eval_fg/ab_grounding.py`(同一次调用无损还原开/关核验)让"该不该信模型"由数据回答,而非
+  拍脑袋。**残余风险(诚实)**:n=63 单模型,"接地层无用"是方向成立(置信上界 ~9%)非保证;
+  有益拦截=0 的前提是模型偏-FAIL 够好,换**更弱**模型可能需重判——回归基准在 `eval_fg/` 常备。
 - **url_equals 对整 URL 精确匹配很脆**:浏览器自动补结尾 `/`、查询参数/语言前缀差异都会让"打开首页"类 url_equals false-fail 拖垮整条用例(AE03 实测,LLM 变异产 url_equals 时才暴露)。解:`_check_url_equals` 归一结尾斜杠 + 翻译引导导航锚点优先 `url_contains` 写**稳定 URL 片段**而非精确整串。**导航断言默认用 url_contains,别用 url_equals。**
 - **"用例级断言"列里混着不计入裁决的驱动门控观测**:Fix 3 后 `case_assertions` 同时含裁决证据(phase=step/final)和**仅观测**的步骤驱动门控(phase=gate)。读 CLI/前端断言列别把 gate 项当裁决依据——它标了「驱动门控·不计入裁决」;真正决定 PASS/FAIL 的只有 step(确定性锚点)+ final(终态裁判)。`verdict()` 只吃后两者。
 

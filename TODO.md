@@ -32,6 +32,13 @@
   业界(Skyvern Planner-Actor-Validator)在子目标失败时 replan 重试,WebVoyager 45%→85%。
   本项目刻意先做最简"失败即失败",replan 留作健壮性提升。
 
+- [ ] **纯叙述型哑火残余**(③,弱模型 function-calling)— 2026-06-24 已修"模型把调用写成
+  `函数名({...})` 文本"那类(funcname salvage,`da9a58b`)。**残余**:模型反复**纯叙述**意图
+  (「第2步已达成,立即标记完成」却不发任何调用),无可解析调用,salvage 救不了;TC201 偶现
+  卡死即此。候选:① 调大 `max_idle_nudges`(加 env)让聒噪模型啰嗦着跑完;② 在 mark/确认类
+  步骤注入更强「现在就调用、不要只说」约束;③ 换更强模型。先靠 `idle_outputs` 持续观察占比。
+  〔判定:弱模型 function-calling 不稳,非平台 bug。〕
+
 - [ ] **运行时锚点自动捕获(URL/数据)** — 翻译期只产意图不接地(FG01),运行时可自动捕获
   稳定锚点(到达页 URL、关键数据)回填裁决/codegen,减少对 LLM judge 自然语言核验的依赖。
 
@@ -57,17 +64,20 @@
 ## 二、裁判 / 翻译质量
 
 - [ ] **T5 `ai_judged` 置信分级**(裁判侧专题)— 当前所有阶段裁决一刀切贴"AI 判定·低置信"。
-  E5(锚点佐证)+ E6(多模态)+ 证据接地后实际可信度已分层。建议 `_check_llm_judge` 透出
-  `confidence`(高=evidence_grounded ✅ + expected_grounded ✅;中=evidence_grounded ✅;
-  低=无可核验来源),`AssertionResult` 加 confidence 字段,前端徽标分级。
+  〔**2026-06-24 更新**:原方案依赖的 E5 锚点佐证 + 证据接地层**已撤销**(eval 实测净 ≤0,
+  裁决权交回模型),故"按 evidence_grounded/expected_grounded 分层"的旧设计作废。〕新思路:
+  让裁判**自报 confidence**(`_check_llm_judge` 在 prompt 里要模型给 high/medium/low),或据
+  锚点类型(URL/数据真值 = 高;纯 UI 态 = 低)分级;`AssertionResult` 加 confidence 字段,前端
+  徽标分级。E6(多模态)开启时另算一档。
 
 - [ ] **脏站翻译质量对齐**(②翻译线)— AE03(automationexercise)实测:翻译产出的严格
   expected("按钮变 Remove / 角标=1")与真实站点行为(只弹"Added!"模态)不符 → 偏-FAIL 裁判
   正确地判 FAIL,但用例 flaky。需翻译引导 expected 严格度/锚点与真实站点行为对齐。
 
-- [ ] **`eval_fg/` 扩样 + 第二模型评测**(可选,可信区间收紧)— A-2 已在 deepseek×26 条上
-  测得 false-green/false-fail = 0/0,但样本偏小、单模型。换 Cisco/ThingsBoard + 第二模型
-  (需另配 LLM 凭据)做更紧的可信区间。
+- [ ] **`eval_fg/` 第二模型评测**(可选,可信区间收紧)— **2026-06-24 已扩样到 n=63 / 3 站点**
+  (automationexercise + the-internet + demoblaze),deepseek-v4-flash 上 false-green=0/34、接地层
+  净 ≤0(置信上界从 ~20% 收到 ~9%)。**剩第二模型未做**:换一个(尤其**更弱**的)模型重跑
+  `ab_grounding.py`,验证"接地层无用 / 模型偏-FAIL 够好"在跨模型下是否仍成立(需另配 LLM 凭据)。
 
 - [ ] **E6 多模态裁判真实模型 live A/B**(默认关 `JUDGE_VISUAL=0`)— 治 a11y 看不全的角标/
   图标/canvas;本地弱模型多模态不稳故默认关,有多模态模型时做 A/B 验证再决定是否默认开。
