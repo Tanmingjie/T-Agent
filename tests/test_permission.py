@@ -141,4 +141,5 @@ async def test_agent_trust_mode_executes():
     )
     agent = TestCaseAgent(llm, mcp, permission=chk)
     await agent.run(_case(), spec=_spec())
-    assert ("browser_click", {"element": "删除按钮", "ref": "e3"}) in mcp.tool_calls
+    # trust_mode 放行 → browser_click 真正执行;dispatch 前 _normalize_ref_target 把 ref 同步进 target
+    assert ("browser_click", {"element": "删除按钮", "ref": "e3", "target": "e3"}) in mcp.tool_calls

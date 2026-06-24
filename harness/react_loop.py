@@ -75,6 +75,25 @@ def _ref_alias(arguments: dict) -> str | None:
     return None
 
 
+def _normalize_ref_target(tc: ToolCall) -> None:
+    """归一 browser_* 工具的元素 ref 参数名(就地改 tc.arguments)。
+
+    这版 playwright-mcp 的 click/type/select 用 ``target`` 装元素 ref,但模型的训练先验是
+    ``ref``(标准 playwright-mcp 命名),会偶发回弹写成 ``ref``/``element_ref``/``ref_id``
+    → 工具校验 ``target`` 为 undefined 报错、白烧一步(实测 TC201 步14)。dispatch 前:
+    若缺 ``target`` 但有这些别名,补进 ``target``,让两种写法都能落地(模型不必每次蒙对)。
+    仅对 browser_* 工具、且确有 ref-like 别名时生效;不动其它参数。
+    """
+    args = tc.arguments
+    if not isinstance(args, dict) or not tc.name.startswith("browser_") or args.get("target"):
+        return
+    for k in ("ref", "element_ref", "ref_id"):
+        v = args.get(k)
+        if v and _REF_RE.match(str(v).strip()):
+            args["target"] = str(v).strip()
+            return
+
+
 def _safe_int(v) -> int:
     """宽松取整(mark_step_done 的 step_no 可能是 str/float),失败返回 0。"""
     try:
@@ -872,6 +891,7 @@ class ReActLoop:
         return [attempt], suffix
 
     async def _execute_one(self, tc: ToolCall) -> ToolOutcome:
+        _normalize_ref_target(tc)  # 兼容模型在 ref/target 间抖动:browser_* 统一把 ref 落到 target
         try:
             raw = await self.execute(tc.name, tc.arguments)
         except Exception as e:  # noqa: BLE001 — 单个工具失败不应炸掉循环

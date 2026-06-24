@@ -549,6 +549,33 @@ _HEAL_SNAPSHOT = (
 )
 
 
+def test_normalize_ref_target_fills_target_from_ref():
+    from harness.react_loop import ToolCall, _normalize_ref_target
+
+    # 模型把 ref 写进 `ref`(训练先验),而本 playwright-mcp 要 `target` → 补进 target
+    tc = ToolCall(id="1", name="browser_click", arguments={"ref": "e54", "element": "加购按钮"})
+    _normalize_ref_target(tc)
+    assert tc.arguments["target"] == "e54"
+
+    # element_ref / ref_id 同样兜
+    tc2 = ToolCall(id="2", name="browser_type", arguments={"element_ref": "e7", "text": "x"})
+    _normalize_ref_target(tc2)
+    assert tc2.arguments["target"] == "e7"
+
+    # 已有 target → 不覆盖
+    tc3 = ToolCall(id="3", name="browser_click", arguments={"target": "e1", "ref": "e9"})
+    _normalize_ref_target(tc3)
+    assert tc3.arguments["target"] == "e1"
+
+    # 非 browser_* / 无 ref 别名 / 别名不像 ref → 不动
+    tc4 = ToolCall(id="4", name="mark_step_done", arguments={"ref": "e1"})
+    _normalize_ref_target(tc4)
+    assert "target" not in tc4.arguments
+    tc5 = ToolCall(id="5", name="browser_navigate", arguments={"url": "http://x"})
+    _normalize_ref_target(tc5)
+    assert "target" not in tc5.arguments
+
+
 def test_is_tool_failure_markers():
     assert _is_tool_failure('### Error Error: Unknown engine "ref"')
     assert _is_tool_failure("[工具执行异常] boom")
