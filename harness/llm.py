@@ -84,6 +84,11 @@ class LLMToolCallError(Exception):
 # Qwen / 一些本地模型把工具调用塞进 content 的常见包裹
 _TOOL_CALL_TAG_RE = re.compile(r"<tool_call>\s*(.*?)\s*</tool_call>", re.DOTALL)
 _JSON_FENCE_RE = re.compile(r"```(?:json|tool_code)?\s*(.*?)\s*```", re.DOTALL)
+# 模型把调用写成 `函数名({...})` 文本(deepseek-v4-flash 偶发把 call 吐进 content 而非
+# tool_calls 通道,实测 TC201:browser_click({"ref":"e54",...}))。函数名在括号外、JSON 内
+# 无 name 字段,标准 JSON 兜底捞不到 → 单列此形态。参数取非贪婪到首个 `}`(覆盖 browser_*
+# 扁平参数;深层嵌套不强求)。
+_FUNC_CALL_RE = re.compile(r"([A-Za-z_][A-Za-z0-9_]{2,})\s*\(\s*(\{.*?\})\s*\)", re.DOTALL)
 
 
 def loads_lenient(text: str) -> dict[str, Any]:
@@ -177,6 +182,17 @@ def extract_tool_calls_from_content(content: str | None) -> list[dict[str, Any]]
         norm = _normalize_call_dict(obj)
         if norm is not None:
             calls.append(norm)
+    if not calls:
+        # 模型把调用写成 `函数名({...})` 文本(未走 tool_calls,也无 <tool_call>/``` 围栏)→ 合成。
+        # 仅在标准/围栏/裸 JSON 都没捞到时作最后兜底;名不像工具/参数非法则跳过,坏名由上层
+        # 工具路由报错回灌自纠(优于让真调用被当哑火丢弃)。
+        for name, args_json in _FUNC_CALL_RE.findall(content):
+            try:
+                args = loads_lenient(args_json)
+            except ValueError:
+                continue
+            if isinstance(args, dict):
+                calls.append({"name": str(name), "arguments": args})
     return calls
 
 

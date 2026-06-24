@@ -108,9 +108,38 @@ def test_extract_args_as_string():
     ]
 
 
+def test_extract_func_call_syntax_written_as_text():
+    # deepseek-v4-flash 偶发把调用写成 `函数名({...})` 文本(实测 TC201 卡死根因)。
+    content = 'browser_click({"ref": "e54", "element": "第一个商品 Add to cart 按钮"})'
+    assert extract_tool_calls_from_content(content) == [
+        {
+            "name": "browser_click",
+            "arguments": {"ref": "e54", "element": "第一个商品 Add to cart 按钮"},
+        }
+    ]
+
+
+def test_extract_func_call_syntax_amid_narration():
+    # 夹在叙述里也要捞出来
+    content = '现在执行第4步,点击加购按钮。\nmark_step_done({"step_no": 4})'
+    assert extract_tool_calls_from_content(content) == [
+        {"name": "mark_step_done", "arguments": {"step_no": 4}}
+    ]
+
+
+def test_extract_func_call_not_triggered_when_standard_json_present():
+    # 标准 JSON(带 name)已能捞 → 不走 funcname 兜底,不重复
+    content = '{"name": "wait", "arguments": {"seconds": 2}}'
+    assert extract_tool_calls_from_content(content) == [
+        {"name": "wait", "arguments": {"seconds": 2}}
+    ]
+
+
 def test_extract_none_and_plain():
     assert extract_tool_calls_from_content(None) == []
     assert extract_tool_calls_from_content("纯文本没有调用") == []
+    # 纯叙述、无 `名({...})` 形态 → 不误抽
+    assert extract_tool_calls_from_content("让我重新获取快照确认一下输入是否生效了") == []
 
 
 # ── 构造 litellm 假响应 ───────────────────────────────────────
