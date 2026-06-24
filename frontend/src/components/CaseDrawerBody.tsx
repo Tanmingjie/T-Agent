@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { apiGet, apiPut } from "../api/client";
+import { apiGet } from "../api/client";
 import {
   CheckCircle,
   XCircle,
@@ -26,21 +26,12 @@ import {
 } from "lucide-react";
 import type { CaseRunState, CaseRunStatus } from "../hooks/useSuiteRun";
 
-interface PreconditionItem {
-  text: string;
-  type: string; // state_hook | action_step | ambiguous | ignore
-  hook_ref?: string | null;
-  confidence?: number;
-  confirmed_by_user?: boolean;
-}
-
 interface CaseInfo {
   id: string;
   name: string;
   steps: string[];
   preconditions: string[];
   expected: string[];
-  precondition_items?: PreconditionItem[];
 }
 
 interface AssertionResult {
@@ -174,11 +165,6 @@ const STATUS_PILL: Record<
     cls: "text-brand-700",
   },
   failed: { label: "失败", icon: <XCircle size={15} />, cls: "text-red-600" },
-  healing: {
-    label: "自愈中",
-    icon: <Wrench size={15} />,
-    cls: "text-amber-600",
-  },
 };
 
 function AssertIcon({ status }: { status: string }) {
@@ -188,8 +174,11 @@ function AssertIcon({ status }: { status: string }) {
   return <MinusCircle size={15} className="text-gray-300" />;
 }
 
-/** 单条断言行(不显示 ai_judged 标记:每步完成判据本就走 LLM 门控,标了等于满屏噪声;
- *  其低置信占比仍在「执行指标」面板统计,保留可审计)。 */
+/** 单条断言行。不显示 ai_judged 徽标:阶段化后**所有阶段裁决都走 LLM judge**(G1),
+ *  逐条标"AI判定"= 满屏噪声且无信息量;其占比仍在「执行指标」面板统计,保留可审计。
+ *  〔置信分级显示(只标低置信)待后端 _check_llm_judge 透出 confidence,见 TODO T5。
+ *   healed 徽标也已移除:阶段 Validator 走 _check_llm_judge 直连、不过 healable 装饰,
+ *   断言侧自愈不存在(H1),a.healed 恒 false。〕 */
 function AssertionRow({ a }: { a: AssertionResult }) {
   return (
     <li className="flex items-start gap-2 text-sm">
@@ -198,22 +187,6 @@ function AssertionRow({ a }: { a: AssertionResult }) {
       </span>
       <span className="text-gray-700">
         <span className="text-gray-400">预期:</span> {a.expected || a.target}
-        {a.ai_judged && (
-          <span
-            className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-violet-50 text-violet-700 border border-violet-200 align-middle"
-            title="阶段 Validator 由 LLM 看真实页面、强制引证证据后判定(偏-FAIL、fail-closed)"
-          >
-            AI判定
-          </span>
-        )}
-        {a.healed && (
-          <span
-            className="ml-1.5 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-medium bg-blue-50 text-blue-700 border border-blue-200 align-middle"
-            title={a.heal_note ? `经自愈重定位后通过:${a.heal_note}` : "经自愈重定位后通过"}
-          >
-            已自愈
-          </span>
-        )}
         {(a.actual || a.reason) && (
           <span
             className={`block text-xs mt-0.5 ${a.status === "fail" ? "text-red-600" : "text-gray-400"}`}
@@ -348,105 +321,6 @@ function SpecPhasesBlock({ phases }: { phases: Phase[] }) {
         </div>
       ))}
     </div>
-  );
-}
-
-const PRECOND_TYPE_META: Record<
-  string,
-  { label: string; cls: string }
-> = {
-  state_hook: { label: "状态声明 → Hook", cls: "bg-emerald-50 text-emerald-700 border-emerald-200" },
-  action_step: { label: "操作步骤 → Given", cls: "bg-blue-50 text-blue-700 border-blue-200" },
-  ambiguous: { label: "模糊 · 待确认", cls: "bg-amber-50 text-amber-700 border-amber-300" },
-  ignore: { label: "忽略", cls: "bg-gray-100 text-gray-500 border-gray-200" },
-};
-
-/** 预置条件三分类:展示分类结果,模糊项标黄,用户可选 Hook/Given/忽略(规格 §3.2)。 */
-function PreconditionBlock({
-  suiteId,
-  caseId,
-  items,
-}: {
-  suiteId: string;
-  caseId: string;
-  items: PreconditionItem[];
-}) {
-  const [rows, setRows] = useState<PreconditionItem[]>(items);
-  const [saving, setSaving] = useState<number | null>(null);
-  useEffect(() => setRows(items), [items]);
-
-  const setType = useCallback(
-    async (index: number, type: string) => {
-      setSaving(index);
-      const hook_ref =
-        type === "state_hook" ? rows[index].hook_ref ?? "LoginHook" : null;
-      try {
-        await apiPut(
-          `/suites/${suiteId}/cases/${caseId}/precondition-item`,
-          { index, type, hook_ref },
-        );
-        setRows((prev) =>
-          prev.map((r, i) =>
-            i === index ? { ...r, type, hook_ref, confirmed_by_user: true } : r,
-          ),
-        );
-      } finally {
-        setSaving(null);
-      }
-    },
-    [suiteId, caseId, rows],
-  );
-
-  return (
-    <section>
-      <h3 className="text-sm font-semibold text-surface-900 mb-1">预置条件分类</h3>
-      <p className="text-xs text-gray-400 mb-3">
-        AI 三分类:状态声明→Hook / 操作步骤→Given / 模糊项标黄待你确认。可随时改,确认后下次跳过重判。
-      </p>
-      <ul className="space-y-2">
-        {rows.map((it, i) => {
-          const meta = PRECOND_TYPE_META[it.type] ?? PRECOND_TYPE_META.ambiguous;
-          const pending = it.type === "ambiguous" && !it.confirmed_by_user;
-          return (
-            <li
-              key={i}
-              className={`rounded-md border px-3 py-2 ${
-                pending ? "border-amber-300 bg-amber-50/60" : "border-gray-200 bg-white"
-              }`}
-            >
-              <div className="flex items-start justify-between gap-3">
-                <span className="text-sm text-surface-900">{it.text}</span>
-                <span
-                  className={`shrink-0 rounded border px-1.5 py-0.5 text-[11px] ${meta.cls}`}
-                >
-                  {meta.label}
-                  {it.confirmed_by_user ? " ✓" : ""}
-                </span>
-              </div>
-              <div className="mt-2 flex items-center gap-2">
-                <select
-                  className="rounded border border-gray-300 bg-white px-2 py-1 text-xs text-surface-800"
-                  value={["state_hook", "action_step", "ignore"].includes(it.type) ? it.type : ""}
-                  disabled={saving === i}
-                  onChange={(e) => e.target.value && setType(i, e.target.value)}
-                >
-                  <option value="" disabled>
-                    选择处理方式…
-                  </option>
-                  <option value="state_hook">状态声明 → Hook</option>
-                  <option value="action_step">操作步骤 → Given</option>
-                  <option value="ignore">忽略</option>
-                </select>
-                {it.type === "state_hook" && it.hook_ref && (
-                  <span className="text-xs text-gray-500">Hook: {it.hook_ref}</span>
-                )}
-                {saving === i && <Loader2 size={13} className="animate-spin text-gray-400" />}
-              </div>
-            </li>
-          );
-        })}
-      </ul>
-    </section>
   );
 }
 
@@ -1100,7 +974,7 @@ export default function CaseDrawerBody({
   const [code, setCode] = useState<string | null>(null);
   const [sel, setSel] = useState<Selection>({ kind: "info" });
 
-  const isRunning = status === "running" || status === "healing";
+  const isRunning = status === "running";
   // 进行中的结果请求:重新加载时先 abort 上一次,避免 /result+/code 在 HTTP/1.1
   // 连接池上堆积 pending(SSE 长连接已占 1 个槽,反复点开会很快耗尽 6 连接上限)。
   const reqRef = useRef<AbortController | null>(null);

@@ -5,8 +5,7 @@ export type CaseRunStatus =
   | "pending"
   | "running"
   | "passed"
-  | "failed"
-  | "healing";
+  | "failed";
 
 export interface StepStatus {
   index: number;
@@ -235,17 +234,6 @@ export function useSuiteRun(suiteId: string | undefined) {
               ],
             };
           });
-        });
-
-        es.addEventListener("step_done", (e) => {
-          const d = safeParse((e as MessageEvent).data);
-          if (!d) return;
-          upd(d.case_id as string, (c) => ({
-            ...c,
-            steps: c.steps.map((s) =>
-              s.index === d.step_index ? { ...s, status: "done" } : s,
-            ),
-          }));
         });
 
         es.addEventListener("case_result", (e) => {

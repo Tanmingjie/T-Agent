@@ -11,20 +11,11 @@ import {
   CheckCircle,
   XCircle,
   Clock,
-  Wrench,
 } from "lucide-react";
 import Drawer from "../components/Drawer";
 import CaseDrawerBody from "../components/CaseDrawerBody";
 import PermissionDialog from "../components/PermissionDialog";
 import { CaseRunStatus } from "../hooks/useSuiteRun";
-
-interface PreconditionItem {
-  text: string;
-  type: string;
-  hook_ref?: string | null;
-  confidence?: number;
-  confirmed_by_user?: boolean;
-}
 
 interface Case {
   id: string;
@@ -32,7 +23,6 @@ interface Case {
   steps: string[];
   preconditions: string[];
   expected: string[];
-  precondition_items?: PreconditionItem[];
 }
 
 interface RunLite {
@@ -69,7 +59,6 @@ const STATUS_META: Record<
   },
   passed: { label: "通过", icon: <CheckCircle size={14} />, cls: "text-brand-700" },
   failed: { label: "失败", icon: <XCircle size={14} />, cls: "text-red-600" },
-  healing: { label: "自愈中", icon: <Wrench size={14} />, cls: "text-amber-600" },
 };
 
 function StatusCell({ status }: { status: CaseRunStatus }) {
