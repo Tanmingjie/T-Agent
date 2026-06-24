@@ -105,13 +105,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | ③ | executing — ReAct 主循环 | ✅ 走查 + redesign(2026-06-23) | 执行健壮化 E1-7 `a7c9ba3`→`1831508`(驱动/裁决两层分离) |
 | ④ | ~~asserting — 阶段裁决汇总~~ | ✅ 走查结论=**取消**(2026-06-23) | F1+F2 `dccc95b`→`2e6c023`:阶段化后真正裁决全在③ on_phase_end,④ 只剩空 SSE 事件 + 隐式 schema → 撤独立阶段、职责并入 ③/⑤ |
 | ⑤ | 合并裁决 + 执行完整性闸门 | ✅ 走查 + redesign(2026-06-23) | G1+G2 `f0bc53c`→`9f7e450`:消灭 SKIPPED 计入 FAIL(LLM 是主裁决,缺失不默认绿)+ 缺席阶段 FAIL 占位 + 翻译退化归因 |
-| **⑥** | **收尾 Hooks(on_heal/on_failure/after_case)** | **← 下一个** | (E1 阶段没碰过;④ 撤下后承接触发;T9 healed_assertions 死字段待清) |
-| ⑦ | codegen → scanning(产物) | 待走查 | (FP1 做了 phases→steps 最小适配,可能仍有改进空间) |
+| ⑥ | 收尾 Hooks(on_heal/on_failure/after_case) | ✅ 走查 + 清理(2026-06-24) | H1+H2+H3 `3d03099`:清 T9 healed_assertions 死字段 + 统一 heal_count 口径 + 诚实标注"休眠的通用扩展点"(生产 hooks=None,默认不触发) |
+| **⑦** | **codegen → scanning(产物)** | **← 下一个** | (FP1 做了 phases→steps 最小适配,可能仍有改进空间) |
 
 走查范式:**读真实代码 → 设计张力清单 → 用户拍设计方向 → 必要时 redesign(`F<n>` 命名,按
 功能点拆分单独 commit/push,每点单测 + saucedemo live 冒烟)**。
 
 ### 重大 redesign 实施记录
+
+- **阶段⑥ 收尾 Hooks 走查 + 清理(2026-06-24,已落地 H1+H2+H3)** — ⑥ 段 = 用例收尾
+  三事件(on_heal/on_failure/after_case)。走查发现**整块在生产路径休眠**:
+  `run_executor` 传 `hooks=None`、CLI 亦不预填(2026-06-18 Cookie/Session 退役后 Hook
+  回归纯通用扩展点),真实执行中本段从不触发,只有测试构造 HookManager 才跑。结论=**不
+  投机加料(不丰富 ctx/不调时序——无消费方),只清死代码 + 诚实标注**。
+  - **H1 清 T9 healed_assertions 死字段**(`3d03099`):阶段裁决走 `_check_llm_judge` 直连、
+    **不过 `verify()` 的 healable 装饰** → `AssertionResult.healed` 恒 False → `healed_assertions`
+    恒空。删 ⑤ 段恒 +0 的 `record.heal_count += sum(if r.healed)`、删 ⑥ `healed_assertions`
+    聚合 + `ctx.set("healed_assertions")`、`_build_metrics` 去掉恒 0 的 `assertion_heals`
+    (healing 只剩 `{action}`)、前端 metrics.healing 去 assertion 字段(展示改"自愈 N 次")。
+    `on_heal` 明确=**操作侧自愈**触发;测试从 monkeypatch `_check_llm_judge`(造不可能发生的
+    断言侧自愈)改为 wrap `ReActLoop.run` 注入真实操作侧 heal_attempt。
+  - **H2 统一 heal_count 口径**:`record.heal_count` 单一来源(操作侧,`recorder.add_step`
+    每步累加);⑥ ctx 不再重算,直接读 `recorder.record.heal_count`(此前三处口径:add_step
+    累加 / ⑤ 恒 +0 / ⑥ 重算 len+len,有重复累加风险)。
+  - **H3 文档诚实化**:⑥ 收尾段 + `hooks.py` docstring 标注"休眠的通用扩展点,默认无 hook,
+    需调用方装配";去掉"规格 §7.7 自愈可观测"等像已接功能的措辞。
+  - 走查报告里 T19(ctx 信息贫乏)/ T20(时序在 finalize/codegen 之前)= **暂缓**:在没有
+    真实 hook 消费方之前丰富 ctx / 调时序是投机未来设计(违反"不过度设计未来阶段"),待真有
+    "失败发通知 / 产物上传"类消费场景再动。
+  - **验证**:pytest 491 passed(2 个预存在 Windows 失败不变);前端 build 绿。纯清理(不碰
+    驱动/裁决路径,hooks 生产中休眠,verdict 路径与 G2 冒烟字节一致)→ 按 F1/F2 先例不单独冒烟。
 
 - **阶段⑤ 合并裁决 + 执行完整性闸门 redesign(2026-06-23,已落地 G1+G2)** ★ — ⑤ 段把
   「逐阶段 LLM 裁决」与「执行完整性」合成最终 `passed`。走查暴露:**SKIPPED 是旧设计化石**
