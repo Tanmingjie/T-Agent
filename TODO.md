@@ -35,6 +35,12 @@
 - [ ] **运行时锚点自动捕获(URL/数据)** — 翻译期只产意图不接地(FG01),运行时可自动捕获
   稳定锚点(到达页 URL、关键数据)回填裁决/codegen,减少对 LLM judge 自然语言核验的依赖。
 
+- [ ] **每阶段 system prompt 优化**(FP0-3 候选,源 `CLAUDE.md` 阶段化重设计条目)— 当前
+  `PromptBuilder.build(step_plan)` 每轮重算反映进度,Task 层渲染 intent/preconditions/阶段化
+  步骤清单(不渲染 expected,FG01)。可进一步**按当前所处 phase 定制驱动 prompt**:高亮本阶段
+  子目标、注入阶段相关上下文/skill 提示,让模型更聚焦当前子目标而非整条用例。属驱动层(role a)
+  质量打磨,与 ③ 执行健壮化同源。
+
 - [ ] **T7 词汇表来源定位器接进 codegen**(⑦)— `resolve_locators`/`locator_from_vocab` 在
   codegen 路径从未被调用(只接了执行捕获一级);`locators.py` 注释自称三级优先"执行捕获>
   词汇表>文本兜底",实际只接第一级。**要么接上词汇表层兜底**(执行没捕获到的 target,如纯
