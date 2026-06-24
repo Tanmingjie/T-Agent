@@ -460,8 +460,13 @@ class LiteLLMClient(LLMClient):
             resp_stream = await litellm.acompletion(**call_kwargs)
             async for chunk in resp_stream:
                 chunks.append(chunk)
+                # 同时抓 reasoning_content(思维链)+ content(最终答案):DeepSeek/o1 等
+                # 推理模型把**思考过程放在 reasoning_content**、答案放在 content。只抓 content
+                # 会丢掉整段思考 → 流式期间一片空白、末尾 content 一次性蹦出(看着像卡死再跳)。
+                # 两者拼接逐 token 推送,思考过程才平滑可见。
                 try:
-                    delta = chunk.choices[0].delta.content or ""
+                    d = chunk.choices[0].delta
+                    delta = (getattr(d, "reasoning_content", "") or "") + (d.content or "")
                 except (AttributeError, IndexError, TypeError):
                     delta = ""
                 if delta and on_delta is not None:

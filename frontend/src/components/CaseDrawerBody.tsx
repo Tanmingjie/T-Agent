@@ -692,7 +692,10 @@ function TimelineView({
   // 只展示真实执行步骤(done/running),不展示翻译前的占位步骤(spec)——翻译后步骤会变,
   // 初始不该先摆一份会被替换的「测试步骤」。
   const realSteps = useMemo(() => steps.filter((s) => s.state !== "spec"), [steps]);
-  const executing = isRunning && phase === "executing";
+  // 实时「下一步执行中」指示:**只要在跑、过了翻译、还没出最终结果**就一直显示
+  // (不再死绑 phase==="executing")——治步骤间 / 阶段 Validator / codegen 间隙指示器消失,
+  // 让用户在两步之间也看到"还在跑"。phase 未到(刚开跑)时 spec 段自己转圈,这里不显。
+  const executing = isRunning && phase != null && phase !== "spec" && !result;
 
   // 执行中自动滚到底:**仅在新步骤落定时**触发(不随思考流逐 token 触发,否则
   // smooth 滚动风暴会让界面卡顿、点击无响应)。
@@ -726,8 +729,8 @@ function TimelineView({
         <TimelineHeader
           label="驱动浏览器逐步执行"
           done={!!result}
-          // 仅在确实进入「执行」阶段才转圈(开跑时 phase 未到 executing,不该先显执行中)
-          active={isRunning && phase === "executing"}
+          // 在跑、过了翻译、未出结果即视为执行进行中(与下方实时指示器同口径)
+          active={executing}
         />
         <ol className="ml-1 mt-2 border-l border-gray-200 space-y-3">
           {realSteps.length === 0 && !executing && (
