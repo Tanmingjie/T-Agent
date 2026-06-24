@@ -171,6 +171,8 @@ def _build_metrics(
             "iterations": result.iterations,
             "max_steps": max_steps,
             "idle_nudges": getattr(result, "idle_nudges", 0),
+            # #2 哑火可观测:哑火轮模型原文 + 性质分类,落库供"卡死"事后定性(放弃/坏调用/提前收尾)。
+            "idle_outputs": getattr(result, "idle_outputs", []),
             "complete": bool(execution_complete),
             "done_steps": done_steps,
             "total_steps": total_steps,

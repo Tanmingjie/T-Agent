@@ -421,6 +421,25 @@ async def test_idle_nudge_cap_terminates():
     assert not plan.all_done()
 
 
+async def test_idle_outputs_capture_model_text_and_kind():
+    # #2 哑火可观测:每个哑火轮记一条模型原文 + 性质(narration_only),供"卡死"事后定性。
+    plan = _plan(2)
+    llm = _ScriptedLLM([_resp(content="我先停下来想想,不确定点哪里")])  # 永远叙述、不调工具
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+        max_idle_nudges=2,
+    )
+    result = await loop.run()
+    assert result.idle_outputs, "哑火轮应被记录"
+    assert all(o["kind"] == "narration_only" for o in result.idle_outputs)
+    assert "我先停下来想想" in result.idle_outputs[0]["text"]
+    assert result.idle_outputs[0]["rechecked"] is False  # 非流式(on_llm_delta=None)不复核
+
+
 # ── 护栏 ──────────────────────────────────────────────────────
 
 

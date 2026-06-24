@@ -105,6 +105,21 @@ def _print_record(record) -> None:
     print(f"\n最终判定(断言驱动): {verdict}")
     print(record.final_result)
     print(f"\n步数={len(record.steps)}  自愈={record.heal_count}  token={record.token_usage}")
+    # #2 哑火可观测:卡死类失败时,打印哑火轮模型原文 + 性质,定性"模型放弃 vs 平台丢调用"
+    metrics = getattr(record, "metrics", None) or {}
+    idle = (metrics.get("execution") or {}).get("idle_outputs") or []
+    if idle:
+        from collections import Counter
+
+        kinds = dict(Counter(o.get("kind") for o in idle))
+        print(f"\n哑火轮 {len(idle)} 次,性质={kinds}")
+        for o in idle:
+            txt = (o.get("text") or "").replace("\n", " ")[:160]
+            print(
+                f"  iter={o.get('iteration')} 步={o.get('step_no')} "
+                f"kind={o.get('kind')} rechecked={o.get('rechecked')}"
+            )
+            print(f"     原文: {txt}")
     print("─" * 60 + "\n")
 
 

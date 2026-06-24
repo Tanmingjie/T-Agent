@@ -125,6 +125,11 @@ class ReActResult:
     stop_reason: StopReason = StopReason.LLM_FINISHED
     iterations: int = 0
     idle_nudges: int = 0  # 模型"哑火"(只回文字不调工具)被续推的累计次数(健康度指标)
+    # 哑火轮的模型原始输出 + 性质分类(#2 可观测):供"卡死类"失败事后定性——
+    # kind=narration_only(纯叙述、放弃)/ malformed_tool_call(调了但格式坏)/
+    # premature_result(提前吐 TEST_RESULT)。rechecked=流式丢调用的非流式复核是否已跑过
+    # (narration_only 且 rechecked=True → 非流式也无调用,更像模型真放弃而非流式丢采)。
+    idle_outputs: list[dict] = field(default_factory=list)
     failed_step_no: int = 0  # STEP_FAILED 时:卡死的业务步编号(0=无)
     failed_step_target: str = ""  # STEP_FAILED 时:该步的目标语义(诊断"点错哪个")
     failed_phase_index: int = -1  # PHASE_FAILED 时:未达成的阶段(0-based;-1=无)
@@ -321,6 +326,16 @@ class ReActLoop:
                 # 不直接终止,而是哑火续推(纠偏后让模型重出正确调用),仅在预算耗尽/
                 # 步骤已全部落定时才真正终止 → 治"输入密码后模型吐了个坏调用就停在中途"。
                 logger.warning("tool_call 容错后仍失败:%s", e)
+                _cur_err = self.step_plan.current
+                result.idle_outputs.append(
+                    {
+                        "iteration": iteration,
+                        "step_no": _cur_err.step_no if _cur_err else 0,
+                        "kind": "malformed_tool_call",
+                        "rechecked": False,
+                        "text": str(e)[:1000],
+                    }
+                )
                 idle_nudges += 1
                 if self.step_plan.all_resolved() or idle_nudges > self.max_idle_nudges:
                     result.stop_reason = StopReason.TOOL_CALL_ERROR
@@ -341,11 +356,13 @@ class ReActLoop:
             # 流式偶发丢 tool_call(stream_chunk_builder 重建有概率漏采)→ 无调用且仍有
             # 未完成步骤时,**非流式复核一次**把漏采的调用捞回来,避免把「其实模型调了工具」
             # 误判为哑火空转(治流式下 ReAct 期偶发的「连续未推进→终止」)。
+            rechecked = False  # 本轮是否跑过非流式复核(供哑火可观测定性)
             if (
                 self.on_llm_delta is not None
                 and not resp.tool_calls
                 and not self.step_plan.all_resolved()
             ):
+                rechecked = True
                 try:
                     resp = await self.llm.chat(messages, tools=self.tools)
                 except LLMToolCallError:
@@ -366,6 +383,26 @@ class ReActLoop:
                     result.stop_reason = StopReason.LLM_FINISHED
                     break
                 # 模型"哑火"或提前收尾,但还有步骤没做 → 推它继续(防呆上限内)
+                # #2 哑火可观测:落库本轮模型原始输出 + 性质,供"卡死"事后定性(放弃 vs 流式丢采)。
+                _cur_idle = self.step_plan.current
+                _kind = "premature_result" if maybe_result is not None else "narration_only"
+                result.idle_outputs.append(
+                    {
+                        "iteration": iteration,
+                        "step_no": _cur_idle.step_no if _cur_idle else 0,
+                        "kind": _kind,
+                        "rechecked": rechecked,
+                        "text": reasoning[:1000],
+                    }
+                )
+                logger.info(
+                    "哑火轮 iter=%d 步=%s kind=%s rechecked=%s 模型原文=%r",
+                    iteration,
+                    _cur_idle.step_no if _cur_idle else 0,
+                    _kind,
+                    rechecked,
+                    reasoning[:300],
+                )
                 idle_nudges += 1
                 if idle_nudges > self.max_idle_nudges:
                     logger.warning("模型连续 %d 次未推进(步骤未完成),终止", idle_nudges)
