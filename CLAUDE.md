@@ -106,12 +106,37 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | ④ | ~~asserting — 阶段裁决汇总~~ | ✅ 走查结论=**取消**(2026-06-23) | F1+F2 `dccc95b`→`2e6c023`:阶段化后真正裁决全在③ on_phase_end,④ 只剩空 SSE 事件 + 隐式 schema → 撤独立阶段、职责并入 ③/⑤ |
 | ⑤ | 合并裁决 + 执行完整性闸门 | ✅ 走查 + redesign(2026-06-23) | G1+G2 `f0bc53c`→`9f7e450`:消灭 SKIPPED 计入 FAIL(LLM 是主裁决,缺失不默认绿)+ 缺席阶段 FAIL 占位 + 翻译退化归因 |
 | ⑥ | 收尾 Hooks(on_heal/on_failure/after_case) | ✅ 走查 + 清理(2026-06-24) | H1+H2+H3 `3d03099`:清 T9 healed_assertions 死字段 + 统一 heal_count 口径 + 诚实标注"休眠的通用扩展点"(生产 hooks=None,默认不触发) |
-| **⑦** | **codegen → scanning(产物)** | **← 下一个** | (FP1 做了 phases→steps 最小适配,可能仍有改进空间) |
+| ⑦ | codegen → scanning(产物) | ✅ 走查结论=**设计健全、不 redesign**(2026-06-24) | 框架无关 Locator 层 + 稳健度分档 + 执行捕获优先,设计无问题;产物当前=可读骨架 + 定位器提示,"轨迹驱动 codegen"(渲染真实动作动词)作为**已知完成度缺口**留独立功能任务(非设计修复) |
+
+**✅ 执行线 7 阶段走查收官(2026-06-24)**:①②③⑤⑥ 已 redesign/清理落地,④ 走查结论=取消、
+⑦ 走查结论=设计健全不动。走查使命(逐阶段暴露设计问题→必要时 redesign)已完成。后续转入
+**功能补全 / 真实环境验证**主线(轨迹驱动 codegen、阶段失败 replan、内网 live 等,见各阶段"下一步候选")。
 
 走查范式:**读真实代码 → 设计张力清单 → 用户拍设计方向 → 必要时 redesign(`F<n>` 命名,按
 功能点拆分单独 commit/push,每点单测 + saucedemo live 冒烟)**。
 
 ### 重大 redesign 实施记录
+
+- **阶段⑦ codegen → scanning 走查(走查结论=设计健全、不 redesign,2026-06-24)** — ⑦ =
+  执行链末端产物(passed 时 BDDGenerator 生成 pytest-bdd 三件套 + 默认关的执行后增量扫描)。
+  走查结论:**codegen 设计健全**(框架无关 `Locator` 层 + 稳健度分档 ROLE>TEST_ID>...>CSS +
+  执行捕获优先于词汇表),**无需 redesign**;缺的是**完成度**——产物当前 = 可读骨架 + 定位器提示,
+  离"可回放"差一层动作渲染。澄清:`step_target = cur_step.text`(StepPlan 摊平的 phase 步骤句)
+  与 `_flatten_steps(spec)` 同源,BDD 的 `locators.get(s)` key **对得上**(非漏接)。
+  - **暴露的张力(均记为独立功能任务,非设计修复,本轮不做)**:
+    - **T1 轨迹驱动 codegen(核心缺口)**:When 步骤体只渲染定位器表达式 + "请人工补 .click()/
+      .fill()"注释,**不含真实动作动词**。执行轨迹完整有 `tool_name`(browser_click/type)+ value,
+      可精确渲染成 `.fill("standard_user")` / `.click()`。这是注释里"轨迹驱动 codegen 列后续"的核心。
+    - **T2 多动作 phase 步骤只捕首个定位器**:`locators_from_steps` 同 target 取首个 + BDD 按
+      phase 步骤去重渲染一个 When;"输入用户名+密码+点登录"合并步只留第一个动作。轨迹驱动应按
+      **action 序列**展开,而非按 phase 步骤去重。
+    - **T3 Then 全 TODO**:NL expected 无法确定性断言;但 E5 `_expected_anchors` 已能抽 URL-like/
+      引号强锚点 → 这类 expected 可生成 `expect(page).to_have_url(...)` 真断言(部分缓解)。
+    - **T7 词汇表来源定位器是孤儿**:`resolve_locators`/`locator_from_vocab` 在 agent.run codegen
+      路径**从未被调用**(只 `locators_from_steps` 执行捕获);`locators.py` 注释自称三级优先
+      "执行捕获>词汇表>文本兜底",实际只接第一级。接上词汇表层或改诚实注释,待办。
+  - **不动代码**(用户选"接受骨架,关闭走查"):走查使命=暴露设计问题,codegen 不是设计有问题、
+    是没做完。T1+T2(轨迹驱动)是有实质价值的功能补全,留作独立任务专门做。
 
 - **阶段⑥ 收尾 Hooks 走查 + 清理(2026-06-24,已落地 H1+H2+H3)** — ⑥ 段 = 用例收尾
   三事件(on_heal/on_failure/after_case)。走查发现**整块在生产路径休眠**:
