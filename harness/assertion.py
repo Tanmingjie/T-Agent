@@ -321,26 +321,37 @@ class AssertionEngine:
         if ok:
             haystack = _norm_evidence(f"{snapshot_text}\n{cur_url}")
             if haystack:  # 有可核验的页面文本
+                exp_anchors = _expected_anchors(expectation)
+                exp_grounded = _expected_grounded(expectation, haystack)
                 if _evidence_grounded(evidence, haystack):
                     verified = evidence
+                    # E5 expected 自带锚点佐证:judge 引证有据后,再核验 expected 自身的强锚点
+                    # (引号片段 / URL)是否至少有一个落在页面/URL。一个都没有 → judge 与
+                    # expected 矛盾(判过了但 expected 的实质内容根本不在页上)→ 推翻。
+                    if exp_anchors and not exp_grounded:
+                        ok = False
+                        verdict = "FAIL"
+                        reason = (
+                            f"判 PASS 但期望中的关键锚点 {exp_anchors} 一个都未落在当前页 → "
+                            f"与 expected 矛盾,fail-closed 推翻为 FAIL"
+                        )
+                elif exp_anchors and exp_grounded:
+                    # LLM 的 evidence 无法接地(空 / JSON 炸解析不出 / 或脑补),但 **expected
+                    # 自带的强锚点(URL/引号字面值)确定性落在页面/URL** → 平台据此**独立佐证**
+                    # 该 PASS(不依赖 LLM 的 evidence 字段,纯确定性核验)。治"裁判 JSON 不规整
+                    # 致 evidence 丢失 → 真 PASS 被误判脑补"的 false-FAIL(用户实证:登录已成功、
+                    # URL 含 inventory.html,却因 evidence='' 被推翻)。强锚点本身是页面真值,
+                    # 故不放绿脑补——只放绿"预期的可核验部分确实在页上"的情形。
+                    verified = (
+                        f"(LLM evidence 缺失/不可解析,平台据期望强锚点 {exp_anchors} 独立核验通过)"
+                    )
                 else:
+                    # evidence 不接地 且 无可独立核验的强锚点 → 真·无据,fail-closed 推翻
                     ok = False
                     verdict = "FAIL"
                     reason = (
                         f"判 PASS 但引证证据无一落在当前页(evidence={evidence!r})"
                         f"→ 疑似脑补,fail-closed 推翻为 FAIL;原说明:{reason or '(无)'}"
-                    )
-                # E5 expected 自带锚点佐证:judge 引证有据后,再核验 expected 自身的强锚点
-                # (引号片段 / 实词 / 长中文短语)是否至少有一个落在页面/URL。一个都没有 →
-                # judge 与 expected 矛盾(判过了但 expected 的实质内容根本不在页上)→ 推翻。
-                # 仅当 expected 抽得到强锚点时启用,空 expected / 无强锚点不参与判断。
-                if ok and not _expected_grounded(expectation, haystack):
-                    ok = False
-                    verdict = "FAIL"
-                    exp_anchors = _expected_anchors(expectation)
-                    reason = (
-                        f"判 PASS 但期望中的关键锚点 {exp_anchors} 一个都未落在当前页 → "
-                        f"与 expected 矛盾,fail-closed 推翻为 FAIL"
                     )
         return AssertionResult(
             assertion=a,

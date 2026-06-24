@@ -524,6 +524,37 @@ async def test_llm_judge_expected_without_strong_anchors_unchanged():
     assert r.status == AssertionStatus.PASS  # expected 无强锚点 → E5 跳过不参与
 
 
+async def test_llm_judge_broken_json_pass_rescued_by_expected_anchor():
+    """裁判 JSON 炸(evidence 解析不出=空),但 expected 强锚点(inventory.html)确定性落在 URL
+    → 平台独立佐证,保留 PASS(治用户实证 false-FAIL:登录已成功却因 evidence='' 被推翻)。"""
+    probe = SnapshotProbe(
+        url="https://www.saucedemo.com/inventory.html", snapshot='- text "Products"'
+    )
+    # JSON 含未转义引号炸解析 → 正则只捞回 PASS,evidence 丢失为空
+    broken = '{"verdict":"PASS","reason":"页面已跳转到"inventory"页,登录成功","evidence":""}'
+    llm = _JudgeLLM(broken)
+    eng = AssertionEngine(probe, llm=llm)
+    r = await eng.verify(
+        Assertion(
+            type="llm_judge",
+            target="登录成功",
+            expected="登录成功,跳转到商品列表页,URL 包含 inventory.html,页面出现商品列表",
+        )
+    )
+    assert r.status == AssertionStatus.PASS  # 不再被误判脑补
+    assert "独立核验" in r.reason
+
+
+async def test_llm_judge_empty_evidence_no_anchor_still_overturned():
+    """反证:evidence 空 且 expected 无强锚点(无 URL/引号)→ 无可独立核验 → 仍 fail-closed 推翻。"""
+    probe = SnapshotProbe(url="https://x/somepage", snapshot='- text "随便什么"')
+    llm = _JudgeLLM('{"verdict":"PASS","evidence":"","reason":"我觉得成功了"}')
+    eng = AssertionEngine(probe, llm=llm)
+    r = await eng.verify(Assertion(type="llm_judge", target="x", expected="操作成功完成"))
+    assert r.status == AssertionStatus.FAIL  # 无据 + 无可独立核验锚点 → 推翻
+    assert "疑似脑补" in r.reason
+
+
 # ── E6:多模态裁判通道(开关默认关) ─────────────────────────
 
 
