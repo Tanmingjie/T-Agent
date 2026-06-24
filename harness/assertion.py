@@ -10,8 +10,10 @@
 
 ``custom_tool`` —— 数据断言:接入 ``ToolRegistry`` 后经 Custom Tool 取业务真值并确定性
 比较(未接入则 skipped)。``llm_judge`` —— **默认主裁决**(2026-06-17 Fix 3,据真实公网评测从
-"最末档兜底"升格):接入 LLM 后偏-FAIL 判 PASS/FAIL 并计入裁决,**判 PASS 必须逐字引证页面
-实证、平台确定性核验该证据确在当前页**(脑补证据 → fail-closed 推翻为 FAIL);结果打
+"最末档兜底"升格):接入 LLM 后偏-FAIL 判 PASS/FAIL 并计入裁决,**判 PASS 须逐字引证页面实证**
+(evidence 字段,作可审计依据)。〔2026-06-24 撤销「平台确定性证据接地推翻」:eval_fg A/B 扩样
+实测(n=63,3 站点,6 轮)接地层有益拦截恒为 0、仅偶发误伤 → 净 ≤0,偏-FAIL prompt 自身已扛
+住全部 false-green;裁决权交回模型,evidence 仅作依据不再作推翻闸门。〕结果打
 ``ai_judged`` 标记(低置信、可审计),报告区分「结构化绿」与「AI 判绿」使 false green 可见可
 回溯;**能用 URL/数据真值确定性验的预期仍优先用 URL/custom_tool**(高置信锚点)。**llm_judge
 的主裁决缺失三态(未接 LLM / 调用失败 / 解析不出 verdict)一律 FAIL**(2026-06-23 G1:阶段化下
@@ -31,7 +33,6 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
@@ -49,16 +50,17 @@ logger = logging.getLogger(__name__)
 
 # llm_judge 裁判的 system prompt。偏向 FAIL + **强制逐字引证证据**(2026-06-17 Fix 3):据真实
 # 公网评测,偏-FAIL、引证页面证据的 LLM 裁判 false-green=0/15(≈96% 正确),已是默认主裁决
-# (非"降级兜底")。**判 PASS 必须在 evidence 字段里逐字摘录页面/URL 实证**——平台据此**确定性
-# 核验该证据是否真的出现在当前页面**(见 `_check_llm_judge`:不在 → fail-closed 推翻为 FAIL),
-# 治弱模型"脑补证据"刷绿(尤其把中间页/别的页面的预期在终态页上判过)。
+# (非"降级兜底")。**判 PASS 必须在 evidence 字段里逐字摘录页面/URL 实证**——作可审计依据写入
+# reason。〔2026-06-24 撤销平台对该证据的确定性接地推翻:eval_fg A/B 扩样实测接地层净 ≤0、偏-FAIL
+# 自身已扛住全部 false-green;裁决权交回模型,evidence 不再作推翻闸门。〕偏-FAIL 的引证纪律仍保留
+# (逼模型严格、reason 可审计)。
 _JUDGE_SYSTEM = """你是测试断言裁判。根据下面提供的【当前页面 URL】+【页面无障碍(A11y)快照】,\
 判断给定「期望」是否在当前页面**真实成立**。
 要求:
 - 严格按提供的事实判断,**绝不臆测、绝不凭记忆**;只有当快照/URL 里能找到支持该期望的【具体证据】时才判 PASS。
 - 判 PASS 时**必须在 "evidence" 字段里逐字复制**你所依据的页面证据(从快照或 URL 里**原样摘录**
   一小段文本,如某行文案 / 标题 / URL 片段);**拿不出能逐字复制的证据,或证据不足/拿不准,一律判 FAIL**
-  (测试平台宁可误报失败,不可误报通过)。平台会确定性核验该证据确在当前页面,脑补的证据会被推翻。
+  (测试平台宁可误报失败,不可误报通过)。
 - 若期望描述的是**更早步骤/别的页面**才有的状态,而**当前页面**快照里找不到对应证据,判 FAIL——
   不要因为"流程里它应该发生过"就判通过。
 只输出 JSON:{"verdict":"PASS"|"FAIL","evidence":"从当前页面逐字摘录的证据(PASS 必填)","reason":"结论说明"}"""
@@ -181,15 +183,17 @@ class AssertionEngine:
         )
 
     async def _check_llm_judge(self, a: Assertion) -> AssertionResult:
-        """LLM 语义断言(Fix 3:默认主裁决,偏-FAIL + 逐字证据确定性核验)。
+        """LLM 语义断言(默认主裁决,偏-FAIL)。
 
-        偏-FAIL 判 PASS/FAIL 并计入裁决;**判 PASS 必须逐字引证页面实证**,本方法再**确定性核验**
-        该 evidence 真出现在当前页(快照/URL,空白归一后子串匹配),不在 → fail-closed 推翻为
-        FAIL(治弱模型"脑补证据"刷绿,尤其把中间页/别页预期在终态页判过)。结果打 ``ai_judged``
-        标记,报告区分「结构化绿」与「AI 判绿」使 false green 可见可回溯;能用 URL/数据真值确定性
-        验的预期仍应优先用 URL/custom_tool。**主裁决缺失三态(未接 LLM / 调用失败 / 解析不出
-        verdict)一律 FAIL**(2026-06-23 G1:阶段化下 LLM 是主裁决,缺失不能默认绿,且自动化
-        平台无"skipped 等人工复核"环节——SKIPPED 在此路径退役)。
+        偏-FAIL 判 PASS/FAIL 并计入裁决;**判 PASS 须逐字引证页面实证**(evidence 字段,仅作
+        可审计依据写入 reason)。〔2026-06-24 撤销「平台对 evidence 的确定性接地推翻」(用户拍板①):
+        eval_fg A/B 扩样实测(deepseek-v4-flash,n=63,3 站点,6 轮)——接地层「有益拦截」恒为 0、
+        仅偶发误伤(全落在 expected 无强锚点的脑补疑似分支)→ 净 ≤0;偏-FAIL 的 _JUDGE_SYSTEM 自身
+        已扛住全部 false-green(0/34)。故裁决权交回模型,evidence 不再作推翻闸门。回归基准见
+        `eval_fg/ab_grounding.py`。〕结果打 ``ai_judged`` 标记,报告区分「结构化绿」与「AI 判绿」使
+        false green 可见可回溯;能用 URL/数据真值确定性验的预期仍应优先用 URL/custom_tool。
+        **主裁决缺失三态(未接 LLM / 调用失败 / 解析不出 verdict)一律 FAIL**(2026-06-23 G1:
+        阶段化下 LLM 是主裁决,缺失不能默认绿,且自动化平台无"skipped 等人工复核"环节)。
         """
         if self.llm is None:
             # 阶段化重设计后 LLM judge 是主裁决:没有 LLM = 主裁决缺失 = 信号缺失,
@@ -309,56 +313,23 @@ class AssertionEngine:
                 reason=f"llm_judge 未给出明确裁决,无法裁决 → FAIL:{reason or '(无)'}",
             )
         ok = verdict == "PASS"
-        # —— 证据接地核验(Fix 3 收尾,治"脑补证据"刷绿)——
-        # 判 PASS 时,裁判引证的 evidence 必须**有据**:其中至少一个"实证锚点"(引号内片段 / 较长
-        # 英文/数字串 / 较长中文串)逐字出现在当前页面(快照 / URL,空白归一)。全不在 = 脑补 →
-        # fail-closed 推翻为 FAIL(贴铁律2「宁可误报失败」)。
-        # 〔2026-06-18 据 eval_fg 实测改"整串子串匹配"为"锚点接地":整串匹配对**复合预期**
-        #   (如"导航含 A、B、C")误伤 18%——模型把证据写成概括句、非单一逐字串;改为"任一锚点命中"
-        #   后误伤→0、false-green 仍 0。仍能拦住整段脑补(无任何锚点落在页上,如"用户名框=standard_user"
-        #   在无该字段的页)。〕仅当确有可核验来源时启用(无快照单测跳过,不误伤)。
-        verified = ""
-        if ok:
-            haystack = _norm_evidence(f"{snapshot_text}\n{cur_url}")
-            if haystack:  # 有可核验的页面文本
-                exp_anchors = _expected_anchors(expectation)
-                exp_grounded = _expected_grounded(expectation, haystack)
-                if _evidence_grounded(evidence, haystack):
-                    verified = evidence
-                    # E5 expected 自带锚点佐证:judge 引证有据后,再核验 expected 自身的强锚点
-                    # (引号片段 / URL)是否至少有一个落在页面/URL。一个都没有 → judge 与
-                    # expected 矛盾(判过了但 expected 的实质内容根本不在页上)→ 推翻。
-                    if exp_anchors and not exp_grounded:
-                        ok = False
-                        verdict = "FAIL"
-                        reason = (
-                            f"判 PASS 但期望中的关键锚点 {exp_anchors} 一个都未落在当前页 → "
-                            f"与 expected 矛盾,fail-closed 推翻为 FAIL"
-                        )
-                elif exp_anchors and exp_grounded:
-                    # LLM 的 evidence 无法接地(空 / JSON 炸解析不出 / 或脑补),但 **expected
-                    # 自带的强锚点(URL/引号字面值)确定性落在页面/URL** → 平台据此**独立佐证**
-                    # 该 PASS(不依赖 LLM 的 evidence 字段,纯确定性核验)。治"裁判 JSON 不规整
-                    # 致 evidence 丢失 → 真 PASS 被误判脑补"的 false-FAIL(用户实证:登录已成功、
-                    # URL 含 inventory.html,却因 evidence='' 被推翻)。强锚点本身是页面真值,
-                    # 故不放绿脑补——只放绿"预期的可核验部分确实在页上"的情形。
-                    verified = (
-                        f"(LLM evidence 缺失/不可解析,平台据期望强锚点 {exp_anchors} 独立核验通过)"
-                    )
-                else:
-                    # evidence 不接地 且 无可独立核验的强锚点 → 真·无据,fail-closed 推翻
-                    ok = False
-                    verdict = "FAIL"
-                    reason = (
-                        f"判 PASS 但引证证据无一落在当前页(evidence={evidence!r})"
-                        f"→ 疑似脑补,fail-closed 推翻为 FAIL;原说明:{reason or '(无)'}"
-                    )
+        # 〔2026-06-24 撤销「证据接地推翻」(用户拍板①)〕——只信模型裁决 + 层(1)解析卫生
+        # (上面 extract_verdict / 无 verdict→FAIL),**不再做平台确定性证据核验**。
+        # 依据:`eval_fg` A/B 扩样实测(deepseek-v4-flash,n=63,3 站点,6 轮共 189 次裁决):
+        #   · 偏-FAIL 的 _JUDGE_SYSTEM **自身**已扛住全部 false-green(0/34,跨 3 站点 0 漏绿);
+        #   · 证据接地层「有益拦截」**恒为 0**(它要防的脑补刷绿一次都没发生、它一次都没拦);
+        #   · 其唯一可测作用是**偶发误伤**(把真 PASS 推成 FAIL),且误伤全落在「expected 无强锚点」
+        #     的"疑似脑补"分支(无 ground truth、纯跟模型对赌)→ 净贡献 ≤0。
+        # 故撤掉该层,把裁决权交回模型;evidence 仍要求模型逐字引证(_JUDGE_SYSTEM),仅作
+        # **可审计依据**写入 reason,不再作为推翻闸门。回归基准见 `eval_fg/ab_grounding.py`。
         return AssertionResult(
             assertion=a,
             status=_st(ok),
             actual=f"AI判定={verdict}",
             reason=(
-                f"AI 判定通过(低置信,建议复核);实证:{verified}" if ok else f"AI 判定失败:{reason}"
+                f"AI 判定通过(低置信,建议复核);依据:{evidence or reason or '(无)'}"
+                if ok
+                else f"AI 判定失败:{reason}"
             ),
             ai_judged=True,
         )
@@ -585,104 +556,6 @@ class AssertionEngine:
                 reason=f"元素「{a.target}」未定位,全页文本兜底命中 {expected!r}",
             )
         return None
-
-
-def _norm_evidence(text: str) -> str:
-    """归一化用于「裁判证据确定性核验」的文本:折叠所有空白为单空格 + casefold。
-
-    快照(YAML)里换行/缩进多变,逐字引证常有空白差异;折叠空白后做子串匹配更稳。
-    casefold 让大小写不敏感(英文页面文案常见),对中文无副作用。
-    """
-    return " ".join((text or "").split()).casefold()
-
-
-# 从裁判 evidence 里抽"实证锚点":引号内片段 / 较长英文数字串 / 较长中文串。用于"接地核验"——
-# 只要有一个锚点逐字出现在当前页就认为有据,治复合证据(概括句)被整串匹配误伤(eval_fg 实测)。
-_QUOTED_RE = re.compile(r"""["'“”「」『』]([^"'“”「」『』]{2,}?)["'“”「」『』]""")
-_ASCII_RUN_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9 ._/\-]{3,}")
-_CJK_RUN_RE = re.compile(r"[一-鿿]{3,}")
-
-
-def _evidence_anchors(evidence: str) -> list[str]:
-    """抽取并归一化 evidence 里的实证锚点(去重,norm 后长度≥3 才算"够独特")。
-
-    长度阈值 3:英文/数字锚点经 `_ASCII_RUN_RE` 已强制≥4(避开 the/page 等泛词),中文锚点
-    经 `_CJK_RUN_RE` 取≥3(3 字中文短语如"待审批""购物车"已足够特异)。统一 ≥3 过滤即可。
-    """
-    raw: list[str] = []
-    raw += _QUOTED_RE.findall(evidence or "")
-    raw += _ASCII_RUN_RE.findall(evidence or "")
-    raw += _CJK_RUN_RE.findall(evidence or "")
-    seen: set[str] = set()
-    out: list[str] = []
-    for a in raw:
-        n = _norm_evidence(a)
-        if len(n) >= 3 and n not in seen:
-            seen.add(n)
-            out.append(n)
-    return out
-
-
-def _evidence_grounded(evidence: str, haystack_norm: str) -> bool:
-    """证据是否"有据":至少一个实证锚点逐字出现在(已归一的)当前页文本里。
-
-    比"整串子串匹配"宽:模型把复合证据写成概括句(非单一逐字串)时,只要其中一个具体锚点
-    (引号片段 / 页面英文文案 / URL 片段 / 中文短语)命中页面即算有据,大幅降误伤;但整段脑补
-    (无任何锚点落在页上,如"用户名框=standard_user"在无该字段的页)仍判无据 → fail-closed。
-    """
-    anchors = _evidence_anchors(evidence)
-    if not anchors:
-        return False
-    return any(a in haystack_norm for a in anchors)
-
-
-# E5 确定性锚点佐证(预期自带锚点核验):**只取强信号**——引号片段(作者显式引的字面值)
-# 和 URL-like 片段(.html/.htm/.aspx/.php 后缀或带 / 的路径)。一般中文短语/英文词不取
-# (常被 expected 与页面文案/同义表达不一致而误伤,不是 E5 该处理的边界)。
-# 判 PASS 通过后再核验:expected 抽出的强锚点**至少有一个**落在当前页/URL → 算自洽;
-# 一个都没有 → judge 与 expected 矛盾,fail-closed 推翻 FAIL。佐证非主裁决,守底线
-# 「宁可误报失败」。Eval_fg 验过:此严格版对真实公网用例(automationexercise 含 inventory.html
-# 等明确锚点)有效;对纯中文 expected(无引号、无 URL)不参与判断(不误伤)。
-_EXP_QUOTED_RE = _QUOTED_RE
-_EXP_URLISH_RE = re.compile(
-    r"""(?:
-        [A-Za-z0-9_/\-]*\.(?:html?|aspx?|php|jsp|cgi|action)\b   # 显式 web 后缀
-        |
-        /[A-Za-z0-9_\-]{2,}(?:/[A-Za-z0-9_\-]{2,})*              # 路径段(至少一段≥2)
-    )""",
-    re.VERBOSE,
-)
-
-
-def _expected_anchors(expected: str) -> list[str]:
-    """E5:从 expected 抽**强锚点**——只取引号字面值 + URL-like 片段。
-
-    刻意保守:不取一般 CJK/ASCII 词(常被 expected 文风与页面文案表达差异误伤,例如
-    expected 写「显示订单成功」而页面只显示英文版「Order completed」)。引号是作者**显式**
-    要求的字面值,URL 是天然原文。两者都强相关、不容易被同义化。
-    """
-    raw: list[str] = []
-    raw += _EXP_QUOTED_RE.findall(expected or "")
-    raw += _EXP_URLISH_RE.findall(expected or "")
-    seen: set[str] = set()
-    out: list[str] = []
-    for a in raw:
-        n = _norm_evidence(a)
-        if len(n) >= 3 and n not in seen:
-            seen.add(n)
-            out.append(n)
-    return out
-
-
-def _expected_grounded(expected: str, haystack_norm: str) -> bool:
-    """E5 锚点佐证:expected 强锚点至少一个落在 haystack。无强锚点 → True(不参与判断)。
-
-    返回 False 仅当 expected 抽得到强锚点 且 全都不在 haystack → 视为矛盾(由调用方推翻 PASS)。
-    """
-    anchors = _expected_anchors(expected)
-    if not anchors:
-        return True  # expected 没有可核验的强锚点 → 不参与判断
-    return any(a in haystack_norm for a in anchors)
 
 
 def _st(ok: bool) -> AssertionStatus:

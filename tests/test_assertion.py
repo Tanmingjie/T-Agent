@@ -382,8 +382,8 @@ class _CapturingJudgeLLM:
 
 
 async def test_llm_judge_feeds_url_anchor_and_expectation():
-    # Fix 3 ①:终态裁判显式收到「免费 URL 锚点」(实时 URL)+ 期望原文作引证证据。
-    # evidence 逐字摘自 URL → 通过确定性核验,判 PASS。
+    # 裁判显式收到「免费 URL 锚点」(实时 URL)+ 期望原文,喂进 prompt(撤接地层后 URL 仍喂入,
+    # 作模型判断的事实依据,不再用于平台核验)。
     llm = _CapturingJudgeLLM('{"verdict":"PASS","evidence":"/order/done","reason":"URL 命中"}')
     eng = AssertionEngine(DictProbe(url="https://intranet/order/done"), llm=llm)
     r = await eng.verify(
@@ -396,41 +396,26 @@ async def test_llm_judge_feeds_url_anchor_and_expectation():
     assert r.status == AssertionStatus.PASS  # evidence 在 URL 里 → 核验通过
 
 
-async def test_llm_judge_pass_with_fabricated_evidence_overridden_to_fail():
-    # Fix 3 收尾:判 PASS 但引证的证据不在当前页(脑补) → 确定性核验失败 → fail-closed 推翻为 FAIL。
-    # 直击弱模型把"中间页/别页预期"在终态页脑补判过(如 inventory 页判"用户名框=standard_user")。
+# ── 撤销证据接地推翻(2026-06-24,用户拍板①):裁决权交回模型 ─────────
+# eval_fg A/B 扩样(deepseek-v4-flash,n=63,3 站点,6 轮)实测:接地层「有益拦截」恒为 0、
+# 仅偶发误伤 → 净 ≤0;偏-FAIL 的 _JUDGE_SYSTEM 自身已扛住全部 false-green。回归基准见
+# eval_fg/ab_grounding.py。下列测试锁定「模型判 PASS 即 PASS、不再被平台证据核验推翻」。
+
+
+async def test_llm_judge_pass_with_unverifiable_evidence_now_trusted():
+    # 模型判 PASS、引证的证据即便不逐字落在快照里,也**不再被平台推翻**(撤接地层,信模型)。
     probe = SnapshotProbe(url="https://x/inventory", snapshot='- button "Remove" [ref=e1]')
     llm = _JudgeLLM(
         '{"verdict":"PASS","evidence":"用户名输入框值为 standard_user","reason":"应已登录"}'
     )
     eng = AssertionEngine(probe, llm=llm)
     r = await eng.verify(Assertion(type="llm_judge", target="用户名显示 standard_user"))
-    assert r.status == AssertionStatus.FAIL
-    assert r.ai_judged is True
-    assert "疑似脑补" in r.reason
-
-
-async def test_llm_judge_pass_with_compound_summarized_evidence_stays_pass():
-    # 误伤修复(eval_fg 实测):复合预期(导航含多项)模型把证据写成概括句、非单一逐字串;
-    # 只要其中一个具体锚点(如 "Products"/"API Testing")逐字落在页上就算有据 → 不误伤推翻。
-    probe = SnapshotProbe(
-        url="https://x/",
-        snapshot='- link "Products" [ref=e1]\n- link "Cart" [ref=e2]\n- link "API Testing" [ref=e3]',
-    )
-    llm = _JudgeLLM(
-        '{"verdict":"PASS","evidence":"快照顶部导航栏含链接:Home, Products, Cart, API Testing 等入口",'
-        '"reason":"导航齐全"}'
-    )
-    eng = AssertionEngine(probe, llm=llm)
-    r = await eng.verify(
-        Assertion(type="llm_judge", target="顶部导航含 Products、Cart、API Testing")
-    )
-    assert r.status == AssertionStatus.PASS  # 锚点 Products/Cart/API Testing 命中 → 有据,不推翻
+    assert r.status == AssertionStatus.PASS  # 不再脑补推翻
     assert r.ai_judged is True
 
 
-async def test_llm_judge_pass_with_verifiable_evidence_stays_pass():
-    # 判 PASS 且 evidence 逐字出现在快照里 → 核验通过,实证回写 reason(可审计)。
+async def test_llm_judge_pass_writes_evidence_into_reason_for_audit():
+    # evidence 不再作推翻闸门,但仍作**可审计依据**回写 reason。
     probe = SnapshotProbe(
         url="https://x/done", snapshot='- heading "Thank you for your order!" [ref=e9]'
     )
@@ -441,92 +426,14 @@ async def test_llm_judge_pass_with_verifiable_evidence_stays_pass():
     r = await eng.verify(Assertion(type="llm_judge", target="显示下单成功"))
     assert r.status == AssertionStatus.PASS
     assert r.ai_judged is True
-    assert "Thank you for your order!" in r.reason  # 实证回写,可审计
+    assert "Thank you for your order!" in r.reason  # evidence 回写,可审计
 
 
-async def test_llm_judge_evidence_check_skipped_without_page_text():
-    # 无可核验来源(快照/URL 均空,如纯内存单测探针)→ 不做证据核验,不误伤(行为同旧)。
-    llm = _JudgeLLM('{"verdict":"PASS","reason":"无快照场景"}')
-    eng = AssertionEngine(DictProbe(), llm=llm)  # url="" 且无 raw_snapshot
-    r = await eng.verify(Assertion(type="llm_judge", target="x"))
-    assert r.status == AssertionStatus.PASS
+async def test_llm_judge_broken_json_recovered_pass_stays_pass():
+    """层(1)解析卫生保留:JSON 含未转义引号炸 → extract_verdict 正则捞回 PASS → 直接 PASS。
 
-
-# ── E5:expected 自带锚点佐证 ────────────────────────────────
-
-
-def test_expected_anchors_extraction():
-    """E5 _expected_anchors:**只取强信号**——引号字面值 + URL-like 片段。
-
-    刻意保守:一般 CJK/ASCII 词不取(常被 expected 文风与页面表达不一致误伤)。
+    撤接地层后不再因 evidence 丢失被误判脑补(治用户实证 false-FAIL:登录已成功却被推翻)。
     """
-    from harness.assertion import _expected_anchors
-
-    # 引号片段(各种引号类型) + URL 文件后缀都被抽
-    anchors = _expected_anchors("显示「订单成功」提示,URL 含 inventory.html")
-    assert "订单成功" in anchors
-    assert "inventory.html" in anchors
-
-    # 路径段(带 /)被抽
-    anchors2 = _expected_anchors("跳转到 /order/done 页面")
-    assert any("/order/done" in a or "order/done" in a for a in anchors2)
-
-    # 一般中文短语 / 一般英文词**不抽**(避免文风误伤)
-    assert _expected_anchors("显示订单成功") == []
-    assert _expected_anchors("登录成功") == []
-    assert _expected_anchors("Display Welcome message") == []
-    # 纯数字、空文本不抽
-    assert _expected_anchors("1") == []
-    assert _expected_anchors("") == []
-
-
-async def test_llm_judge_expected_anchor_missing_overrides_pass_to_fail():
-    """E5:judge 判 PASS 且 evidence 接地能过,但 expected 的强锚点(URL / 引号)全不在页 → 推翻 FAIL。"""
-    # 页面 URL 是 /login,但 expected 要求跳到 /inventory.html → 强锚点矛盾
-    probe = SnapshotProbe(url="https://x/login", snapshot='- link "Products" [ref=e1]')
-    llm = _JudgeLLM(
-        '{"verdict":"PASS","evidence":"Products 链接显示,说明已经进入商品页","reason":"已登录"}'
-    )
-    eng = AssertionEngine(probe, llm=llm)
-    r = await eng.verify(
-        Assertion(
-            type="llm_judge",
-            target="登录后跳转",
-            expected="URL 含 inventory.html,已进入商品列表",
-        )
-    )
-    assert r.status == AssertionStatus.FAIL
-    assert "期望中的关键锚点" in r.reason
-    assert "inventory.html" in r.reason
-
-
-async def test_llm_judge_expected_anchor_present_keeps_pass():
-    """E5 反证:expected 的强锚点有一个落在页/URL 上 → 不推翻。"""
-    probe = SnapshotProbe(url="https://x/inventory.html", snapshot='- text "Products"')
-    llm = _JudgeLLM('{"verdict":"PASS","evidence":"Products","reason":"商品页"}')
-    eng = AssertionEngine(probe, llm=llm)
-    r = await eng.verify(
-        Assertion(
-            type="llm_judge",
-            target="进入商品页",
-            expected="URL 含 inventory.html,显示商品列表",
-        )
-    )
-    assert r.status == AssertionStatus.PASS  # inventory.html 命中 URL
-
-
-async def test_llm_judge_expected_without_strong_anchors_unchanged():
-    """E5:expected 抽不到强锚点(无引号无 URL)→ 不参与判断,evidence 接地通过即 PASS。"""
-    probe = SnapshotProbe(url="https://x/", snapshot='- text "Hello"')
-    llm = _JudgeLLM('{"verdict":"PASS","evidence":"Hello","reason":"显示了"}')
-    eng = AssertionEngine(probe, llm=llm)
-    r = await eng.verify(Assertion(type="llm_judge", target="x", expected="显示成功提示"))
-    assert r.status == AssertionStatus.PASS  # expected 无强锚点 → E5 跳过不参与
-
-
-async def test_llm_judge_broken_json_pass_rescued_by_expected_anchor():
-    """裁判 JSON 炸(evidence 解析不出=空),但 expected 强锚点(inventory.html)确定性落在 URL
-    → 平台独立佐证,保留 PASS(治用户实证 false-FAIL:登录已成功却因 evidence='' 被推翻)。"""
     probe = SnapshotProbe(
         url="https://www.saucedemo.com/inventory.html", snapshot='- text "Products"'
     )
@@ -538,21 +445,10 @@ async def test_llm_judge_broken_json_pass_rescued_by_expected_anchor():
         Assertion(
             type="llm_judge",
             target="登录成功",
-            expected="登录成功,跳转到商品列表页,URL 包含 inventory.html,页面出现商品列表",
+            expected="登录成功,跳转到商品列表页,URL 包含 inventory.html",
         )
     )
-    assert r.status == AssertionStatus.PASS  # 不再被误判脑补
-    assert "独立核验" in r.reason
-
-
-async def test_llm_judge_empty_evidence_no_anchor_still_overturned():
-    """反证:evidence 空 且 expected 无强锚点(无 URL/引号)→ 无可独立核验 → 仍 fail-closed 推翻。"""
-    probe = SnapshotProbe(url="https://x/somepage", snapshot='- text "随便什么"')
-    llm = _JudgeLLM('{"verdict":"PASS","evidence":"","reason":"我觉得成功了"}')
-    eng = AssertionEngine(probe, llm=llm)
-    r = await eng.verify(Assertion(type="llm_judge", target="x", expected="操作成功完成"))
-    assert r.status == AssertionStatus.FAIL  # 无据 + 无可独立核验锚点 → 推翻
-    assert "疑似脑补" in r.reason
+    assert r.status == AssertionStatus.PASS  # 正则捞回 PASS,无接地推翻
 
 
 # ── E6:多模态裁判通道(开关默认关) ─────────────────────────

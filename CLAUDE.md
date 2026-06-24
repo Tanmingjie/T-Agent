@@ -214,6 +214,34 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     前端 `npm run build` 绿。F1+F2 都是纯收尾清理(不动裁决路径、不动执行链路),
     live 冒烟随 ⑤ 走查动到的代码一起做(本两条不单独冒烟)。
 
+- **撤销「证据接地推翻」+ eval 扩样回归基准(2026-06-24,用户拍板①,已落地)** ★ — 据 A/B
+  扩样实测,把 `_check_llm_judge` 的**确定性证据接地推翻层**整层删除,**裁决权交回模型**
+  (用户核心诉求:把权力交给模型)。结论由数据驱动,非拍脑袋:
+  - **方法**:新增 `eval_fg/ab_grounding.py`——同一次 LLM 调用**无损还原**「开核验 vs 关核验」
+    两配置(接地推翻是确定性的、只把 PASS→FAIL,故模型原判可由 reason 标记反推);
+    `eval_fg/capture_more.py` 增量抓 the-internet + demoblaze 公开页**合并**进 snapshots.json
+    (不动已标注的 automationexercise 快照),`judge_eval.EVAL` 从 26 扩到 **63 条 / 3 站点**。
+  - **数据**(deepseek-v4-flash ≈ 内网模型,n=63,6 轮共 189 次裁决):**偏-FAIL 的
+    `_JUDGE_SYSTEM` 自身 false-green=0/34**(跨 3 站点 0 漏绿);接地层**「有益拦截」恒为 0**
+    (它要防的脑补刷绿一次都没发生、它一次都没拦);唯一可测作用是**偶发误伤**(把真 PASS
+    推成 FAIL),且误伤**全落在 expected 无强锚点的「疑似脑补」分支**(无 ground truth、纯跟
+    模型对赌)→ **净贡献 ≤0**。用户实证的 false-FAIL(登录已成功却因 evidence='' 被推翻)正是
+    此分支。置信上界从 ~20%(n=15)收紧到 ~9%(n=34)。
+  - **落地**:删 `_check_llm_judge` 的证据接地块 + 全部 helper(`_norm_evidence`/`_evidence_*`/
+    `_expected_*` + 锚点正则 + `import re`);`_JUDGE_SYSTEM` 仍**要求模型逐字引证 evidence**
+    (偏-FAIL 纪律 + reason 可审计),但**evidence 仅作依据写入 reason、不再作推翻闸门**;
+    去掉 prompt 里「平台会确定性核验」的承诺。**保留层(1)解析卫生**(`extract_verdict` 正则
+    捞 verdict / 无 verdict→FAIL,fail-closed)+ G1 主裁决缺失三态→FAIL。tests 删 9 条接地/E5
+    锚点测试、改 broken-json 测试为「正则捞回 PASS 即 PASS」。
+  - **验证**:pytest 486 passed(2 预存在 Windows 失败不变);**saucedemo TC101 live ✅ PASS**
+    (两阶段裁决均来自模型 `AI 判定通过`,evidence 作 `依据:` 回写,无推翻)。`eval_fg/` 留作
+    **回归基准**:`judge_eval.py` 测纯模型裁判 false-green/false-fail,`ab_grounding.py` 锁
+    「若有人重新引入接地层,其净效果应 ≤0」。
+  - **残余风险(诚实)**:n=63 单模型,「接地层无用」是**方向成立**(置信上界 ~9%)、非保证;
+    有益拦截=0 的前提是该模型偏-FAIL 够好——换**更弱**模型(真会脑补 green)时接地层可能挣到
+    价值。换言之这是拿 deepseek-v4-flash 这个水位**信模型**;部署更菜模型需重判。下一步候选:
+    再扩样 + 第二模型(需另配凭据)进一步收紧。
+
 - **执行健壮化(stage③ ReAct 主循环 redesign,2026-06-23,已落地 E1-7)** ★ — 在阶段化
   重设计(FP0-3)之上,把③ executing 阶段从「按步打勾」升级成「像 Claude 一样盯目标、
   失败诊断换法」。两层分离更彻底:**驱动层(role a,鼓励·软·可恢复)** + **裁决层
