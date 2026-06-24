@@ -1,69 +1,116 @@
-# TODO — 设计差距与待办
+# TODO — 待办与设计差距
 
-> 来源:对照 `产品设计文档`(v2.1)+`实现规格说明书.md` 与实际代码的全量回顾(2026-06-09)。
-> 分三类:**真正缺口**(设计有描述、代码缺失或与描述不符)/ **暂不做**(设计已声明)/ **弱项**(已实现但不完整)。
-> 勾选规则:完成后打 `[x]` 并注明 commit/日期。
+> **重写于 2026-06-24**(执行线 7 阶段走查收官后)。旧版(2026-06-09)早于阶段化重设计
+> (FP0-3)+ 会话复用退役 + 7 阶段走查,大面积过时(引用已删的步骤级 `expect_text`/门控、
+> Session/Cookie 复用、llm_judge 作"最末档兜底"等),已整体替换。
+>
+> 进度跟踪以本文件 + `CLAUDE.md`「实施进度」为准。完成后打 `[x]` 并注明 commit/日期。
+> 当前真相源:`产品设计文档_v2.0.md` + `CLAUDE.md`(蓝图/铁律待定/索引)。
 
-## 一、真正的缺口(应处理)
+---
 
-- [x] **#1 视觉自愈 / 截图双通道**(§7.3、§9.1#1)— 2026-06-10
-  - `HealingSubagent.relocate(screenshot=)`:有截图时发**多模态**消息(文本 A11y 清单 + 图),
-    模型不支持图像/`HEAL_VISUAL=0` 时自动退回纯文本通道(向后兼容,不传图时行为不变)。
-  - 防臆造升级:A11y 清单带 `[ref=eXX]`,视觉候选用 **ref 锚定**真实可操作节点;ref 命中但
-    target 对不上时用该 ref 节点真实可及名复写 target(供按名复验)。治"元素在 a11y 里但可及名
-    缺失/与业务词不一致"(图标按钮 / 角标)的高频误判。
-  - 两侧接通:断言侧(`MCPPageProbe.raw_screenshot` → `AssertionEngine._try_heal`)+ 操作侧
-    (`ReActLoop.get_screenshot` → `_heal_action`)。单测 +5(ref 校验 / 带图 / 退回 / env 关 / 纯文本兼容)。
-  - **遗留**:需多模态模型才真正生效;纯 a11y 缺失(canvas)仍无可操作 ref(设计内边界)。
-    未真机 live 验证(待你内网多模态模型)。
+## 现状一句话
 
-- [x] **#4 预置条件分类结果落库 + 前端确认闭环**(§3.2)— 2026-06-10
-  - 后端:`TestCase.precondition_items`(+`TestCaseRow` JSON 列)落库分类;`agent._classify_preconditions`
-    从用例已确认项灌 classifier memory(命中跳过 LLM、用户选择优先)并回写分类到 case;
-    执行链 `_save_record` 用例跑完即落库;`PreconditionClassifier.IGNORE` + `USER_SETTABLE_TYPES`;
-    Repository/路由 `PUT .../cases/{id}/precondition-item`(type=Hook/Given/忽略,标 confirmed)。
-  - 前端:`CaseDrawerBody` 新增 `PreconditionBlock`,模糊项标黄、下拉选 Hook/Given/忽略即时落库。
-  - 测试:repo/agent/classifier/API 四处单测(共 +4);前端 tsc 通过。
-  - 遗留:执行前「先分类后审查」仍需先跑一次(分类在执行链内);纯 classify-only 端点未做(非必需)。
+执行线 7 阶段走查(①→⑦)已收官:翻译只产意图不接地(②)→ 像 Claude 一样盯目标诊断
+换法(③)→ 逐阶段 LLM judge 主裁决、缺失不默认绿(⑤)。驱动层(软/可恢复)与裁决层
+(硬/fail-closed)两层分离落定。**后续转入功能补全 / 真实环境验证主线。**
 
-- [x] **#2 `on_heal` Hook 接通**(§7.7)— 2026-06-10
-  - `agent.run` 收尾聚合断言侧(`a_results` 中 `healed`)+ 操作侧(`action_steps[].heal_attempts`)
-    两路自愈,任一发生即触发 `ON_HEAL`,详情(heal_count / healed_assertions / action_heals)入
-    `ctx` 供 hook 消费;无自愈不触发(避免噪声)。单测 `test_hooks.py` 两例覆盖。
+---
 
-- [x] **#3 文档口径修正:操作图谱标"预留"**(§6.2)— 2026-06-10
-  - 产品设计文档 §6.2 表格「操作图谱」标 ⚠️预留(未实现)+ 补一段说明,与 §1.3 口径一致。
+## 一、功能补全(执行链产物 / 健壮性的实质缺口)
 
-- [x] **#5 文档口径修正:生成器只有 BDD**(§8.1)— 2026-06-10
-  - §8.1 已写「BDDGenerator(默认)/ PlainGenerator / PageObjectGenerator(预留)」,口径正确,无需改。
+- [ ] **轨迹驱动 codegen**(⑦ T1+T2,**产物核心缺口**)— 产物从"可读骨架"→"可回放"。
+  - T1:When 步骤体当前只渲染定位器表达式 + "请人工补 .click()/.fill()"注释,**不含真实
+    动作动词**。执行轨迹完整有 `tool_name`(browser_click/type)+ value,可精确渲染成
+    `.fill("standard_user")` / `.click()`。
+  - T2:多动作 phase 步骤(如"输入用户名+密码+点登录")当前只捕首个定位器
+    (`locators_from_steps` 同 target 取首个 + BDD 按 phase 步骤去重)→ 应按 **action 序列**展开。
+  - 影响面:`codegen/bdd.py`(改 `_step_defs` 按 record.steps 的 action 序列渲染)+ 可能调
+    `locators_from_steps` 数据结构(从 `{target: Locator}` 改为按步序列)。
 
-- [x] **#6 文档口径修正:输入仅 Excel**(顶部表/§3/§10)— 2026-06-10
-  - 顶部能力表、产品一句话、架构流程图三处把「测试管理平台 API」标注为「阶段五预留,当前仅 Excel」。
+- [ ] **阶段失败的 replan**(③/⑤)— 当前"阶段失败即失败"(PHASE_FAILED 直接终止)。
+  业界(Skyvern Planner-Actor-Validator)在子目标失败时 replan 重试,WebVoyager 45%→85%。
+  本项目刻意先做最简"失败即失败",replan 留作健壮性提升。
 
-## 二、设计已声明"暂不做"(确认即可,非遗漏)
+- [ ] **运行时锚点自动捕获(URL/数据)** — 翻译期只产意图不接地(FG01),运行时可自动捕获
+  稳定锚点(到达页 URL、关键数据)回填裁决/codegen,减少对 LLM judge 自然语言核验的依赖。
 
-- [ ] 报告导出 — 阶段五
-- [ ] 失败断点续跑 — 阶段五
-- [ ] Page Object 模式 — 阶段五
-- [ ] 测试管理平台 API 对接(含 `external_id` 同步)— 阶段五
-- [x] `llm_judge` 执行 — **方案A(2026-06-10)**:作降级链最末档兜底,接 LLM 真判 PASS/FAIL 计入裁决,标 `ai_judged` 低置信、报告区分、偏向 FAIL(原"恒 skipped"已由用户拍板推翻)
-- [x] `/vocabulary/scan` — **有意 no-op**(真扫描在执行期增量做)
+- [ ] **T7 词汇表来源定位器接进 codegen**(⑦)— `resolve_locators`/`locator_from_vocab` 在
+  codegen 路径从未被调用(只接了执行捕获一级);`locators.py` 注释自称三级优先"执行捕获>
+  词汇表>文本兜底",实际只接第一级。**要么接上词汇表层兜底**(执行没捕获到的 target,如纯
+  断言目标),**要么把注释改诚实**(执行捕获单源)。
 
-## 三、已实现但不完整 / 弱项
+- [ ] **T3 Then 对强锚点 expected 生成真断言**(⑦)— NL expected 一律 TODO;但 E5
+  `_expected_anchors` 已能抽 URL-like/引号强锚点 → 这类可生成 `expect(page).to_have_url(...)`
+  真断言而非 TODO。部分缓解 Then 空洞。
 
-- [ ] **断言目标定位器对齐**:action 定位器已对齐执行捕获;断言目标(如购物车角标)走 probe 不产出可复用选择器,无 vocab 时仍文本兜底 → 需在 vocab/selector 层对齐。**(是下条「步骤级软校验/B-软」的前置:定位不稳时步骤级硬信号会误判空转,反噬健壮性。)**
-- [x] **步骤级完成门控 + 即时验证(B-软主体)**(2026-06-15,内网"按步预期"用例驱动；**门控化重订**)：翻译产出**每步 `expect_text`**(自然语言完成判据)。`agent.run::verify_step`(经 `react_loop.on_step_done`)在该步落定时于**当前子页面**:**(1) LLM 看快照判 `expect_text` 达成**(经 `llm_judge`,偏向 FAIL、标 `ai_judged` 低置信可见、计入裁决)= 驱动门控(role a,**不依赖定位器对齐**),FAIL → react_loop `reactivate` 退回该步重做 + 计 `EXPECT_RETRY_BUDGET`(默认 2),耗尽 `EXPECT_UNMET`(软、可恢复,铁律2(a));**(2) 可选结构化 `step.expect`** 门控通过后再确定性验,作高置信证据。用例级 `assertions` 仍终态验;重做按 `step_no` 去重(后验覆盖)。**贯彻铁律4 到步骤粒度**:每步完成不取 LLM 自报 mark_done,而是看快照确认真完成(`ai_judged` 可见 = false-green 可回溯)。单测 +5(react_loop 门控退回/重做/预算 ×2、agent LLM 门控 ×2);saucedemo TC101 live PASS(每步 LLM 门控 + 结构化高置信双绿、停因 completed)。**遗留**:① 真实内网"按步预期"用例 live 验(saucedemo 已有 expect_text 但门控均一次通过,未 live 触发退回);② 结构化 `step.expect` 仍受「断言目标定位器对齐」影响(故弱模型场景以 LLM 门控为主);③ `_guard_premature_mark`(纯"没实操就 mark")与门控("实操了但没达成")互补,均保留。
-- [ ] **定时扫描触发**(§6.4 "手动/stale/定时"):**手动主动扫描已做**(2026-06-10,`/vocabulary/scan` 会导航的探索式扫描,清单为主+可选浅爬)+ stale + 执行期增量(默认关);唯"**定时**"调度仍无实现。
-- [ ] **Session 过期自动重登**(§7.1):`valid_until` 有效期检查已做;自动重登需接真实 `login_aw`(未接时 optional 放行让 Agent 自登)。
-- [ ] **prompt 优化 C/D**:每步约 3 次 LLM 往返(snapshot→action→mark_done)、system 每轮重列全部工具,可省 token;有正确性风险,待 live A/B。
-- [ ] **真实内网用例 live 验证**(主线,环境阻塞):saucedemo 全链路已 live 绿(基础/结算/会话复用/custom_tool/codegen 回放),真实内网业务系统待跑。
-- [ ] **Skill 渐进式加载调试**(2026-06-15):项目 Skill 现**暂用默认加载**(`run_executor` 构造时 `preload=True`,正文常驻 prompt,保证生效)。渐进披露链路(`preload=False` + LLM 调 `load_skill` 展开正文)**已实现且单测覆盖**,但实测弱模型(DeepSeek/Qwen)常**不主动 load** → skill 形同虚设,故先回退默认加载。**待做**:调试/打磨渐进式加载使其在弱模型下可靠触发——候选:① 启发式辅助加载(步骤业务词命中 skill description 关键词时确定性帮 load);② 在 BASE prompt 里强化「相关时必须先 load_skill」的指令;③ 区分 skill 大小(短的 preload、长的渐进)。目标:大词表/多 skill 场景下省 context 又不漏加载。改回只需 `run_executor` 去掉 `preload=True`。
-- [ ] **指标 run/套件级聚合看板**(2026-06-15,#6 收口时记):单用例 metrics 已埋点 + 抽屉「执行指标」面板已做(commit 53ec851),`metrics` 已随 record 落库、run 概览接口每用例透出。**待做**:执行历史/报告页加 run 级汇总(总 token / 各阶段占比 / 哑火率 / 完整性闸门拦截率 / **llm_judge 兜底占比 = false-green 风险面**)+ 套件级趋势。数据已就位(`ExecutionRecord.metrics` + `results.py::get_run_overview` 的 `cases[].metrics`),纯前端聚合 + 一个汇总组件即可,无需后端改动。
-- [ ] **执行后增量补充的逐步 url 归属精度**(2026-06-15,重写策略C 时 live 发现):`_incremental_scan` 按步 `s.url` 分组,部分步(如 `browser_type`)`outcome.url` 为空靠「继承最近非空 url」兜底——偶尔把跨页元素(如 inventory 页的「加入购物车」)归到前一页 url 组(saucedemo TC101 实证:Add to cart 落到登录页 `/` 组)。**不影响 selector 正确性**(词条仍带真实 `[data-test=...]`),但页面归属不精确会影响按 url 解析命中。根因在 `react_loop` 逐步 url 捕获精度(click 后 `outcome.url` 不总回填新页 url)。修法候选:react_loop 每步落定后补一次 url 探查,或 `_incremental_scan` 用步后快照 url 校正。
+- [ ] **断言目标定位器对齐**(长期弱项)— action 定位器已对齐执行捕获;断言目标(如购物车
+  角标)走 probe 不产出可复用 selector,无 vocab 时文本兜底 → 需在 vocab/selector 层对齐。
+  〔阶段化后断言主走 llm_judge,此项紧迫度下降,但 codegen 的断言渲染仍受影响。〕
+
+## 二、裁判 / 翻译质量
+
+- [ ] **T5 `ai_judged` 置信分级**(裁判侧专题)— 当前所有阶段裁决一刀切贴"AI 判定·低置信"。
+  E5(锚点佐证)+ E6(多模态)+ 证据接地后实际可信度已分层。建议 `_check_llm_judge` 透出
+  `confidence`(高=evidence_grounded ✅ + expected_grounded ✅;中=evidence_grounded ✅;
+  低=无可核验来源),`AssertionResult` 加 confidence 字段,前端徽标分级。
+
+- [ ] **脏站翻译质量对齐**(②翻译线)— AE03(automationexercise)实测:翻译产出的严格
+  expected("按钮变 Remove / 角标=1")与真实站点行为(只弹"Added!"模态)不符 → 偏-FAIL 裁判
+  正确地判 FAIL,但用例 flaky。需翻译引导 expected 严格度/锚点与真实站点行为对齐。
+
+- [ ] **`eval_fg/` 扩样 + 第二模型评测**(可选,可信区间收紧)— A-2 已在 deepseek×26 条上
+  测得 false-green/false-fail = 0/0,但样本偏小、单模型。换 Cisco/ThingsBoard + 第二模型
+  (需另配 LLM 凭据)做更紧的可信区间。
+
+- [ ] **E6 多模态裁判真实模型 live A/B**(默认关 `JUDGE_VISUAL=0`)— 治 a11y 看不全的角标/
+  图标/canvas;本地弱模型多模态不稳故默认关,有多模态模型时做 A/B 验证再决定是否默认开。
+
+## 三、主线:真实环境验证(环境阻塞中)
+
+- [ ] **真实内网用例 live 验证** — saucedemo 全链路已 live 绿(基础/结算/custom_tool/codegen
+  回放);AE03 脏公网 flaky(翻译质量问题,见上)。真实内网业务系统待跑,环境解阻塞即可跑,
+  CLI/API 两条路径都就绪。**⚠️ 注意 G1 后无可用 LLM 时阶段裁决整批 FAIL**(LLM 是主裁决),
+  真实跑必须配好 `.env`(LLM_MODEL/API_BASE/KEY)。
+
+## 四、弱项 / 工程整洁(低紧迫)
+
+- [ ] **Skill 渐进式加载打磨**(E3 已部分解决)— E3(2026-06-23)已加**甲/乙兜底层**(卡住时
+  按 token 重叠浮现命中 skill 名催加载 / 仍卡则平台 auto_load top1 注入),`run_executor` 已停
+  force-preload、项目 skill 走真渐进。**剩余**:主路仍依赖弱模型主动 `load_skill`,可继续打磨
+  BASE prompt 引导强度 / 区分 skill 大小(短的 preload、长的渐进)。
+
+- [ ] **指标 run/套件级聚合看板** — 单用例 metrics 已埋点 + 抽屉「执行指标」面板已做,数据
+  已随 record 落库、run 概览接口透出。**待做**:执行历史/报告页加 run 级汇总(总 token/各阶段
+  占比/哑火率/完整性闸门拦截率/**llm_judge 占比=false-green 风险面**)+ 套件级趋势。纯前端
+  聚合 + 汇总组件,无需后端改动。
+
+- [ ] **`_incremental_scan` 逐步 url 归属精度** — 按步 `s.url` 分组,部分步(browser_type)
+  `outcome.url` 空靠"继承最近非空 url"兜底,偶尔把跨页元素归到前一页 url 组。不影响 selector
+  正确性,但页面归属不精确影响按 url 解析命中。根因在 react_loop 逐步 url 捕获精度。
+  〔注:`VOCAB_SCAN` 默认关,影响面小。〕
+
+- [ ] **定时扫描触发**(§6.4)— 手动主动扫描 + stale + 执行期增量(默认关)已做;唯"**定时**"
+  调度无实现。
+
+- [ ] **prompt 优化 C/D**(省 token,有正确性风险)— 每步约 3 次 LLM 往返
+  (snapshot→action→mark_done)、system 每轮重列全部工具文本(已另经 `tools=` 传,冗余)。
+  可探索合并往返 / 按相关度截断工具列表;有正确性/收益权衡,待 live A/B。
+
+## 五、设计已声明"暂不做"(阶段五,确认即可)
+
+- [ ] 报告导出
+- [ ] 失败断点续跑
+- [ ] Page Object 模式(`PageObjectGenerator` 预留)
+- [ ] 测试管理平台 API 对接(含 `external_id` 同步)
+- [ ] `storage/db.py` `action_map`(Phase 5 预留字段)
+
+---
 
 ## 建议优先级
 
-1. 文档口径修正 #3 / #5 / #6 — 低成本,先做免误导。
-2. #4 分类落库 + 前端确认 — 设计核心交互,断了。
-3. #1 视觉自愈 — 弱模型价值高。
-4. #2 `on_heal` 接通 — 几行代码。
+1. **真实内网 live 验证**(主线,解阻塞后第一优先 —— 验证整条链路在真实业务系统不退化)。
+2. **轨迹驱动 codegen**(T1+T2 —— 产品价值链末端,产物从骨架→可回放,有实质交付价值)。
+3. **T5 ai_judged 置信分级**(裁判可信度可见性,改善前端展示语义)。
+4. **脏站翻译质量对齐**(②,提升真实公网用例稳定性)。
+5. 其余弱项按需穿插(指标看板/Skill 打磨/定时扫描等纯增量,不阻塞主线)。
