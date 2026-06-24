@@ -65,6 +65,15 @@ PAGE_URLS = {
     "search_dress": "https://automationexercise.com/products?search=dress",
     "login": "https://automationexercise.com/login",
     "cart_empty": "https://automationexercise.com/view_cart",
+    # 扩样(2026-06-24):the-internet(QA 靶场)+ demoblaze(电商 demo),脱离单站点
+    "ti_login": "https://the-internet.herokuapp.com/login",
+    "ti_dropdown": "https://the-internet.herokuapp.com/dropdown",
+    "ti_checkboxes": "https://the-internet.herokuapp.com/checkboxes",
+    "ti_tables": "https://the-internet.herokuapp.com/tables",
+    "ti_add_remove": "https://the-internet.herokuapp.com/add_remove_elements/",
+    "ti_status": "https://the-internet.herokuapp.com/status_codes",
+    "db_home": "https://www.demoblaze.com/",
+    "db_cart": "https://www.demoblaze.com/cart.html",
 }
 
 # 证据核验推翻的标记串(与 harness/assertion.py::_check_llm_judge 一致):裁判判 PASS 但
@@ -104,6 +113,53 @@ EVAL = [
     ("home", "页面顶部出现 Logout 链接", False),
     ("products", "顶部导航含 Products 和 Cart 入口", True),
     ("products", "购物车角标显示已有 5 件商品", False),
+    # ====== 扩样(2026-06-24):the-internet QA 靶场 ======
+    # —— ti_login(登录页,未登录态) ——
+    ("ti_login", "页面有 Login Page 标题，提供 Username 和 Password 输入框", True),
+    ("ti_login", "页面有一个 Login 登录按钮", True),
+    ("ti_login", "页面说明用 tomsmith 作为用户名登录", True),
+    ("ti_login", "页面顶部显示 Welcome tomsmith 表示已登录成功", False),
+    ("ti_login", "页面出现 You logged into a secure area! 登录成功提示", False),
+    ("ti_login", "页面提供 Forgot Password 忘记密码链接", False),
+    # —— ti_dropdown ——
+    ("ti_dropdown", "页面有一个下拉框，默认显示 Please select an option", True),
+    ("ti_dropdown", "下拉框提供 Option 1 和 Option 2 两个可选项", True),
+    ("ti_dropdown", "下拉框当前已选中 Option 2", False),
+    ("ti_dropdown", "页面有三个下拉选项 Option 1、Option 2、Option 3", False),
+    # —— ti_checkboxes ——
+    ("ti_checkboxes", "页面有两个复选框 checkbox 1 和 checkbox 2", True),
+    ("ti_checkboxes", "checkbox 2 当前处于勾选 checked 状态", True),
+    ("ti_checkboxes", "checkbox 1 当前已被勾选", False),
+    ("ti_checkboxes", "页面共有三个复选框", False),
+    # —— ti_add_remove ——
+    ("ti_add_remove", "页面有一个 Add Element 按钮", True),
+    ("ti_add_remove", "页面已存在多个 Delete 删除按钮", False),
+    ("ti_add_remove", "页面顶部显示已添加 5 个元素", False),
+    # —— ti_tables(Example 1 数据表) ——
+    ("ti_tables", "表格表头含 Last Name、First Name、Email、Due 等列", True),
+    ("ti_tables", "表格中有一行 John Smith，邮箱 jsmith@gmail.com", True),
+    ("ti_tables", "表格里 Jason Doe 的金额 Due 为 $100.00", True),
+    ("ti_tables", "表格里 John Smith 的金额为 $500.00", False),
+    ("ti_tables", "表格中包含用户 Alice Wong", False),
+    ("ti_tables", "表格只有表头、没有任何数据行", False),
+    # —— ti_status ——
+    ("ti_status", "页面列出 200、301、404、500 等 HTTP 状态码链接", True),
+    ("ti_status", "页面有指向状态码 404 的链接", True),
+    ("ti_status", "页面包含状态码 503 的链接", False),
+    ("ti_status", "页面显示当前请求已返回 200 OK 响应结果", False),
+    # ====== 扩样:demoblaze 电商 demo ======
+    # —— db_home ——
+    ("db_home", "顶部导航有 Home、Cart、Log in、Sign up 等入口", True),
+    ("db_home", "左侧分类含 Phones、Laptops、Monitors", True),
+    ("db_home", "商品列表含 Samsung galaxy s6，价格 $360", True),
+    ("db_home", "商品 Nokia lumia 1520 标价 $360", False),
+    ("db_home", "页面顶部显示 Welcome Admin 表示已登录", False),
+    ("db_home", "商品列表含 iPhone 15 Pro", False),
+    # —— db_cart(空购物车) ——
+    ("db_cart", "购物车页面有 Products 标题和 Place Order 下单按钮", True),
+    ("db_cart", "购物车表格表头含 Title、Price 列", True),
+    ("db_cart", "购物车中已有商品 Samsung galaxy s6", False),
+    ("db_cart", "购物车合计 Total 显示金额 $360", False),
 ]
 
 
