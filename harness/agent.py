@@ -151,13 +151,13 @@ def _build_metrics(
 ) -> dict:
     """汇总分阶段成本/质量指标(#6),供运营观测。结构稳定,字段可增不减。
 
-    - tokens:各阶段 token 成本(自愈落入 executing、llm_judge 落入 asserting)+ 总计。
+    - tokens:各阶段 token 成本(自愈落入 executing、llm_judge 落入 executing)+ 总计。
     - execution:ReAct 健康度——停因 / 轮数 / 哑火续推次数 / 完整性闸门(是否全步 DONE)。
-    - healing:操作侧(工具报错重定位)与断言侧(目标重定位复验)自愈分路计数。
-    - assertions:裁决分布 + ``ai_judged``(llm_judge 兜底占比 = false-green 风险面)。
+    - healing:操作侧自愈(工具报错重定位重试)计数。〔阶段化下阶段裁决走 _check_llm_judge
+      直连、不过 healable 装饰 → 断言侧自愈不存在,故只计操作侧。〕
+    - assertions:裁决分布 + ``ai_judged``(llm_judge 占比 = false-green 风险面)。
     """
     action_heals = sum(len(s.heal_attempts) for s in result.action_steps)
-    assertion_heals = sum(1 for r in a_results if getattr(r, "healed", False))
     a_pass = sum(1 for r in a_results if r.status == AssertionStatus.PASS)
     a_fail = sum(1 for r in a_results if r.status == AssertionStatus.FAIL)
     a_skip = sum(1 for r in a_results if r.status == AssertionStatus.SKIPPED)
@@ -176,7 +176,7 @@ def _build_metrics(
             "total_steps": total_steps,
             "action_steps": len(result.action_steps),
         },
-        "healing": {"action": action_heals, "assertion": assertion_heals},
+        "healing": {"action": action_heals},
         "assertions": {
             "pass": a_pass,
             "fail": a_fail,
@@ -608,7 +608,6 @@ class TestCaseAgent:
         # 落库:AssertionResult.phase_index 一等字段(F2),to_dict 自然带出;expected 不再
         # 外塞覆盖(它本就来自 Assertion.expected = phase.expected,二者等价由 on_phase_end 保证)。
         recorder.set_case_assertions([r.to_dict() for r in all_results])
-        recorder.record.heal_count += sum(1 for r in all_results if r.healed)
 
         # —— 裁决:全阶段通过 + 执行完整 ——
         # 阶段失败即失败(PHASE_FAILED):某阶段 Validator 判 FAIL → react_loop 已停,该阶段
@@ -670,23 +669,22 @@ class TestCaseAgent:
                 r.reason or "(无)",
             )
 
-        # 收尾 Hooks:发生自愈触发 on_heal;失败触发 on_failure;after_case 无论成败都跑。
+        # —— 收尾 Hooks(**休眠的通用扩展点**,参考 Claude Code hooks)——
+        # 平台只提供机制、默认无 hook(run_executor 传 hooks=None;CLI 亦不预填)——真实执行
+        # 中本段不触发,仅当调用方显式装配 HookManager 注入时才跑。三事件:
+        #   on_heal —— 执行期发生**操作侧自愈**(react_loop 工具报错后重定位重试)时触发;
+        #   on_failure —— 用例 FAIL 时触发;after_case —— 无论成败都跑(通常用于清理)。
+        # 〔阶段化重设计后阶段裁决走 _check_llm_judge 直连、**不过 verify() 的 healable 装饰**
+        #   → 断言侧自愈不存在,on_heal 只由操作侧自愈触发。〕
         if self.hooks is not None:
             ctx.set("passed", passed)
-            # 自愈可观测(规格 §7.7):聚合断言侧(重定位后复验通过)+ 操作侧(工具报错
-            # 后重定位重试)两路自愈;任一发生即触发 on_heal,详情入 ctx 供 hook 消费。
-            healed_assertions = [r for r in all_results if r.healed]
+            # 操作侧自愈明细:react_loop 每步落定时已把 heal_attempts 累加进 record.heal_count
+            # (recorder.add_step),此处只透传明细 + 复用那个**单一来源**计数给 hook,不再重算。
             action_heals = [h for s in result.action_steps for h in s.heal_attempts]
-            if healed_assertions or action_heals:
-                ctx.set("heal_count", len(healed_assertions) + len(action_heals))
-                ctx.set("healed_assertions", [r.to_dict() for r in healed_assertions])
+            if action_heals:
+                ctx.set("heal_count", recorder.record.heal_count)
                 ctx.set("action_heals", action_heals)
-                logger.info(
-                    "用例 %s 发生自愈:断言侧 %d 次,操作侧 %d 次",
-                    case.id,
-                    len(healed_assertions),
-                    len(action_heals),
-                )
+                logger.info("用例 %s 发生操作侧自愈 %d 次", case.id, len(action_heals))
                 await self.hooks.run(ON_HEAL, ctx)
             if not passed:
                 await self.hooks.run(ON_FAILURE, ctx)

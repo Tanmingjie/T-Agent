@@ -100,7 +100,7 @@ interface CaseMetrics {
     total_steps?: number;
     action_steps?: number;
   };
-  healing?: { action?: number; assertion?: number };
+  healing?: { action?: number };
   assertions?: { pass?: number; fail?: number; skipped?: number; ai_judged?: number; total?: number };
 }
 
@@ -1010,10 +1010,8 @@ function MetricsPanel({ m }: { m: CaseMetrics }) {
               AI 兜底 {a.ai_judged}
             </span>
           )}
-          {((heal.action ?? 0) > 0 || (heal.assertion ?? 0) > 0) && (
-            <span className="text-gray-400">
-              自愈 操作 {heal.action ?? 0}/断言 {heal.assertion ?? 0}
-            </span>
+          {(heal.action ?? 0) > 0 && (
+            <span className="text-gray-400">自愈 {heal.action} 次</span>
           )}
         </div>
       </div>

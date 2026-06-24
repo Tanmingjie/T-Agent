@@ -142,76 +142,64 @@ async def test_agent_after_case_runs_on_success():
     assert cleaned == [True]  # after_case 跑了,且能读到 passed
 
 
-async def test_agent_fires_on_heal_when_assertion_healed(monkeypatch):
-    """阶段 Validator 侧发生自愈(重定位后复验通过)时,on_heal 被触发且 ctx 带自愈详情。"""
+async def test_agent_fires_on_heal_when_action_healed(monkeypatch):
+    """发生**操作侧自愈**(react_loop 工具报错重定位重试)时,on_heal 触发且 ctx 带计数。
+
+    H1:阶段化下断言裁决走 _check_llm_judge 直连、不过 healable 装饰 → 断言侧自愈不存在,
+    on_heal 只由操作侧自愈触发。这里 wrap ReActLoop.run:正常循环跑完(阶段判 PASS)后,
+    给首个 action_step 注入一条 heal_attempt,模拟执行期发生过操作侧自愈。
+    """
     from harness import agent as agent_mod
     from harness.agent import TestCaseAgent
-    from harness.assertion import AssertionResult, AssertionStatus
-    from input.models import Assertion
-    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
-
-    healed = AssertionResult(
-        assertion=Assertion(type="llm_judge", target="x", expected="x"),
-        status=AssertionStatus.PASS,
-        healed=True,
-        heal_note="P1 角色重定位",
-        ai_judged=True,
+    from tests.test_agent import (
+        SNAPSHOT_OK,
+        _case,
+        _FakeMCP,
+        _PhaseJudgeLLM,
+        _react_one_step,
+        _spec,
     )
 
-    async def fake_judge(self, a):
-        return healed
+    orig_run = agent_mod.ReActLoop.run
 
-    monkeypatch.setattr(agent_mod.AssertionEngine, "_check_llm_judge", fake_judge)
+    async def run_with_heal(self):
+        result = await orig_run(self)
+        if result.action_steps:
+            result.action_steps[0].heal_attempts.append({"strategy": "P1", "note": "角色重定位"})
+        return result
+
+    monkeypatch.setattr(agent_mod.ReActLoop, "run", run_with_heal)
 
     mgr = HookManager()
     seen: list = []
     mgr.register(ON_HEAL, lambda ctx: seen.append(ctx.get("heal_count")))
 
-    llm = _ScriptedLLM(
-        [
-            _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
-            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
-            _resp(content="TEST_RESULT: PASS"),
-        ]
-    )
+    llm = _PhaseJudgeLLM(_react_one_step(), ["PASS"])
     agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), hooks=mgr)
     record = await agent.run(_case(), spec=_spec(expected="出现待审批"))
 
-    assert seen == [1]  # on_heal 触发,且自愈计数=1
+    assert seen == [1]  # on_heal 触发,heal_count 来自 record 单一来源(操作侧累加)
     assert record.passed is True
+    assert record.heal_count == 1  # H2:口径单一,record.heal_count 即操作侧自愈数
 
 
-async def test_agent_no_on_heal_without_healing(monkeypatch):
+async def test_agent_no_on_heal_without_healing():
     """无自愈发生时不应触发 on_heal(避免噪声)。"""
-    from harness import agent as agent_mod
     from harness.agent import TestCaseAgent
-    from harness.assertion import AssertionResult, AssertionStatus
-    from input.models import Assertion
-    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
-
-    clean = AssertionResult(
-        assertion=Assertion(type="llm_judge", target="x", expected="x"),
-        status=AssertionStatus.PASS,
-        healed=False,
-        ai_judged=True,
+    from tests.test_agent import (
+        SNAPSHOT_OK,
+        _case,
+        _FakeMCP,
+        _PhaseJudgeLLM,
+        _react_one_step,
+        _spec,
     )
-
-    async def fake_judge(self, a):
-        return clean
-
-    monkeypatch.setattr(agent_mod.AssertionEngine, "_check_llm_judge", fake_judge)
 
     mgr = HookManager()
     seen: list = []
     mgr.register(ON_HEAL, lambda ctx: seen.append(1))
 
-    llm = _ScriptedLLM(
-        [
-            _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
-            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
-            _resp(content="TEST_RESULT: PASS"),
-        ]
-    )
+    llm = _PhaseJudgeLLM(_react_one_step(), ["PASS"])
     agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), hooks=mgr)
     await agent.run(_case(), spec=_spec(expected="出现待审批"))
 
