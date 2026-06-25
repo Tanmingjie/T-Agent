@@ -396,6 +396,30 @@ async def test_llm_judge_feeds_url_anchor_and_expectation():
     assert r.status == AssertionStatus.PASS  # evidence 在 URL 里 → 核验通过
 
 
+async def test_llm_judge_feeds_nav_anchor_when_url_changed():
+    # 运行时锚点:prev_url 与当前 URL 不同 → 喂「起始→当前」跳转事实(治登录达成类误判)。
+    llm = _CapturingJudgeLLM('{"verdict":"PASS","evidence":"/about","reason":"已跳转离开登录页"}')
+    eng = AssertionEngine(DictProbe(url="https://intranet/about"), llm=llm)
+    r = await eng._check_llm_judge(
+        Assertion(type="llm_judge", target="登录成功，进入主页面", confidence="low"),
+        prev_url="https://intranet/login",
+    )
+    assert "本阶段开始时 URL:https://intranet/login" in llm.last_user
+    assert "确定性事实" in llm.last_user
+    assert r.status == AssertionStatus.PASS
+
+
+async def test_llm_judge_no_nav_line_when_url_unchanged():
+    # 无跳转(prev_url == 当前 URL)→ 不注入跳转提示行,避免给裁判噪声。
+    llm = _CapturingJudgeLLM('{"verdict":"FAIL","evidence":"","reason":"未达成"}')
+    eng = AssertionEngine(DictProbe(url="https://intranet/login"), llm=llm)
+    await eng._check_llm_judge(
+        Assertion(type="llm_judge", target="登录成功", confidence="low"),
+        prev_url="https://intranet/login",
+    )
+    assert "本阶段开始时 URL" not in llm.last_user
+
+
 # ── 撤销证据接地推翻(2026-06-24,用户拍板①):裁决权交回模型 ─────────
 # eval_fg A/B 扩样(deepseek-v4-flash,n=63,3 站点,6 轮)实测:接地层「有益拦截」恒为 0、
 # 仅偶发误伤 → 净 ≤0;偏-FAIL 的 _JUDGE_SYSTEM 自身已扛住全部 false-green。回归基准见

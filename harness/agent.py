@@ -506,6 +506,10 @@ class TestCaseAgent:
         phase_results: list = []  # [(phase_index, AssertionResult)] —— 逐阶段裁决证据
 
         validated_phases: set[int] = set()  # E4 去重:同一 phase 只裁决一次
+        # 运行时锚点(2026-06-24):阶段起始 URL 基线。初始 = 起始页(通常登录页);每阶段裁完
+        # 更新为当时 URL,供下一阶段判跳转。裁判据「起始→当前」URL 变化确定性地认"导航/登录达成",
+        # 治陌生内网落地页被偏-FAIL 误判(裁判认不出 /about 是不是主页)。
+        prev_phase_url = {"url": (state.get("url") or "").strip()}
 
         async def on_phase_end(phase_index: int) -> str | None:
             if not (0 <= phase_index < len(spec.phases)):
@@ -543,11 +547,16 @@ class TestCaseAgent:
                 probe_p, healer=healer, tool_registry=self.tools_registry, llm=self.llm
             )
             r = await engine_p._check_llm_judge(
-                Assertion(type="llm_judge", target=expected, expected=expected, confidence="low")
+                Assertion(type="llm_judge", target=expected, expected=expected, confidence="low"),
+                prev_url=prev_phase_url["url"],  # 运行时锚点:本阶段起始 URL → 判跳转
             )
             r.phase_index = phase_index  # F2:一等字段,前端按阶段分组
             phase_results.append((phase_index, r))
             validated_phases.add(phase_index)
+            # 更新基线:下一阶段的起始 URL = 本阶段裁决时所处页面 URL。
+            cur = (state.get("url") or "").strip()
+            if cur:
+                prev_phase_url["url"] = cur
             # PASS / SKIPPED(裁判调用失败等)→ 不阻断继续;FAIL → 返回原因 → 阶段失败即失败。
             if r.status == AssertionStatus.FAIL:
                 return r.reason or f"阶段 {phase_index + 1} 的预期未在当前页面达成"
