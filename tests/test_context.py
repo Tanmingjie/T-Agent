@@ -5,6 +5,7 @@ from __future__ import annotations
 from harness.context import (
     ARCHIVED_PREFIX,
     OBS_PREFIX,
+    THINK_ARCHIVED_PREFIX,
     ContextCompactor,
     truncate_snapshot,
 )
@@ -88,3 +89,40 @@ def test_idempotent_archive():
 def test_no_observations_returns_zero():
     msgs = [{"role": "system", "content": "x"}, {"role": "user", "content": "task"}]
     assert ContextCompactor().compact_inplace(msgs, []) == 0
+
+
+def test_old_assistant_narration_archived():
+    """B:旧 assistant 叙述折叠为一行、最近 N 条保留原文(治 narration churn 的叙述无限累积)。"""
+    long = "这是一大段反复叙述的思考内容。" * 20  # 单行、足够长,折叠后更短
+    msgs = [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": long + "A"},
+        {"role": "user", "content": f"{OBS_PREFIX} obs"},
+        {"role": "assistant", "content": long + "B"},
+        {"role": "assistant", "content": long + "C"},
+        {"role": "assistant", "content": long + "D"},
+        {"role": "assistant", "content": long + "E"},
+    ]
+    saved = ContextCompactor(keep_recent_assistant=2).compact_inplace(msgs, [])
+    assert saved > 0
+    # assistant 在 idx 2,4,5,6,7;保留最近 2(6、7),更早 3 条(2、4、5)折叠
+    assert msgs[2]["content"].startswith(THINK_ARCHIVED_PREFIX)
+    assert msgs[4]["content"].startswith(THINK_ARCHIVED_PREFIX)
+    assert msgs[5]["content"].startswith(THINK_ARCHIVED_PREFIX)
+    assert msgs[6]["content"] == long + "D"  # 最近 2 条原文保留
+    assert msgs[7]["content"] == long + "E"
+
+
+def test_short_assistant_not_grown_by_archive():
+    """折叠不应把短 assistant 改得更长(加前缀反而变长)→ 短叙述原样保留。"""
+    msgs = [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "task"},
+        {"role": "assistant", "content": "点击"},
+        {"role": "assistant", "content": "再点击"},
+        {"role": "assistant", "content": "继续"},
+        {"role": "assistant", "content": "完成"},
+    ]
+    ContextCompactor(keep_recent_assistant=1).compact_inplace(msgs, [])
+    assert msgs[2]["content"] == "点击"  # 短串折叠后更长 → 跳过,保留原文

@@ -443,7 +443,8 @@ async def test_idle_nudge_feeds_fresh_snapshot_and_recovers():
     )
     result = await loop.run()
     assert snaps, "哑火时应主动抓取快照"
-    assert "[当前页面快照]" in seen_nudge["last_user"]
+    # A:快照作为独立 [观察] 消息喂回(带前缀 → 可被 Context Compact 折叠),不再拼进 nudge 文本
+    assert seen_nudge["last_user"].startswith("[观察]")
     assert "Login" in seen_nudge["last_user"]  # 快照内容被喂回
     assert plan2.all_done()
 

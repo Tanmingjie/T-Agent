@@ -30,6 +30,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Awaitable, Callable
 
+from harness.context import OBS_PREFIX
 from harness.llm import LLMClient, LLMToolCallError, ToolCall
 from harness.page_probe import build_ref_index, parse_snapshot
 from harness.step_plan import MARK_STEP_DONE_TOOL, StepPlan, StepStatus
@@ -470,15 +471,21 @@ class ReActLoop:
                     "browser_select_option 等操作目标元素。"
                     "所有步骤完成后停止调用工具(裁决由系统在阶段边界给出,你不需要输出 TEST_RESULT)。"
                 )
+                messages.append({"role": "user", "content": nudge})
+                # A:快照单独作为 [观察] 消息发(不再拼进 nudge 文本)——带 OBS 前缀才会被
+                # Context Compact 识别、随后轮折叠为一行。否则每次哑火塞的完整快照永不压缩、
+                # 在 churn 时堆成 token 爆炸(实测 TC201+等待 narration×24 烧到 144 万)。
                 if fresh:
-                    # 作为**普通** user 消息附快照(不加 [观察] 前缀 → 不被 Context Compact
-                    # 折叠/截断),确保模型下一轮能看到完整 ref 去操作。
-                    nudge += f"\n\n[当前页面快照]\n{fresh}"
+                    messages.append({"role": "user", "content": f"{OBS_PREFIX} {fresh}"})
                     if "[ref=" in fresh:
                         last_snapshot_text = fresh
                 else:
-                    nudge += "若不确定页面元素,先调用 browser_snapshot 获取带 ref 的快照,再操作。"
-                messages.append({"role": "user", "content": nudge})
+                    messages.append(
+                        {
+                            "role": "user",
+                            "content": "若不确定页面元素,先调用 browser_snapshot 获取带 ref 的快照,再操作。",
+                        }
+                    )
                 continue
             idle_nudges = 0  # 本轮有工具调用,重置哑火计数
 

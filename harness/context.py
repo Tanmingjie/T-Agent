@@ -20,6 +20,7 @@ from __future__ import annotations
 
 OBS_PREFIX = "[观察]"
 ARCHIVED_PREFIX = "[观察·已归档]"
+THINK_ARCHIVED_PREFIX = "[思考·已归档]"
 
 
 def _is_observation(msg: dict) -> bool:
@@ -28,6 +29,10 @@ def _is_observation(msg: dict) -> bool:
         and isinstance(msg.get("content"), str)
         and (msg["content"].startswith(OBS_PREFIX) or msg["content"].startswith(ARCHIVED_PREFIX))
     )
+
+
+def _is_assistant(msg: dict) -> bool:
+    return msg.get("role") == "assistant" and isinstance(msg.get("content"), str)
 
 
 def _first_line(text: str, limit: int = 100) -> str:
@@ -78,32 +83,34 @@ class ContextCompactor:
         max_obs_chars: int = 2000,
         snapshot_max_lines: int = 40,
         protect_head: int = 2,
+        keep_recent_assistant: int = 3,
     ) -> None:
         # 保留最近 N 条观察的(相对)完整内容,更早的折叠为一行
         self.keep_recent_observations = keep_recent_observations
         self.max_obs_chars = max_obs_chars
         self.snapshot_max_lines = snapshot_max_lines
         self.protect_head = protect_head  # 永远保护的前缀消息数(system + task)
+        # 保留最近 N 条 assistant 叙述的完整内容,更早的折叠为一行(B:治叙述通道无限累积——
+        # narration churn 时每轮都 append 一大段思考且从不压缩,是 token 爆炸的主因之一)。
+        self.keep_recent_assistant = keep_recent_assistant
 
     def compact_inplace(self, messages: list[dict], keywords: list[str] | None = None) -> int:
-        """就地压缩 messages 里的观察消息。返回大致省下的字符数。
+        """就地压缩 messages 里的观察 + 旧 assistant 叙述。返回大致省下的字符数。
 
         - 早于「最近 keep_recent_observations 条」的观察 → 折叠为一行归档(L1)。
         - 最近保留的观察 → 若过长按关键词截断(L2)。
+        - 早于「最近 keep_recent_assistant 条」的 assistant 叙述 → 折叠为一行归档(B)。
         """
         keywords = keywords or []
+        saved = 0
         obs_idx = [
             i for i, m in enumerate(messages) if i >= self.protect_head and _is_observation(m)
         ]
-        if not obs_idx:
-            return 0
-
         recent = (
             set(obs_idx[-self.keep_recent_observations :])
             if self.keep_recent_observations
             else set()
         )
-        saved = 0
         for i in obs_idx:
             content = messages[i]["content"]
             if i in recent:
@@ -127,4 +134,23 @@ class ContextCompactor:
                     new = f"{ARCHIVED_PREFIX} {summary}"
                     saved += max(0, len(content) - len(new))
                     messages[i]["content"] = new
+
+        # B:折叠旧 assistant 叙述(保护头之后、最近 keep_recent_assistant 条之外的)。
+        asst_idx = [
+            i for i, m in enumerate(messages) if i >= self.protect_head and _is_assistant(m)
+        ]
+        keep_asst = (
+            set(asst_idx[-self.keep_recent_assistant :]) if self.keep_recent_assistant else set()
+        )
+        for i in asst_idx:
+            if i in keep_asst:
+                continue
+            content = messages[i]["content"]
+            if content.startswith(THINK_ARCHIVED_PREFIX):
+                continue
+            summary = _first_line(content)
+            new = f"{THINK_ARCHIVED_PREFIX} {summary}"
+            if len(new) < len(content):
+                saved += len(content) - len(new)
+                messages[i]["content"] = new
         return saved
