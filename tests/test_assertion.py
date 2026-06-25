@@ -572,6 +572,29 @@ async def test_judge_visual_falls_back_when_model_rejects_image(monkeypatch):
     assert llm.calls == ["multi", "text", "text"]
 
 
+async def test_judge_vision_suffix_only_with_screenshot(monkeypatch):
+    """E6:截图在场 → system 拼视觉证据规则(放开颜色/状态灯类期望);无截图 → 不拼,纯文本纪律不变。"""
+    from harness import assertion as a_mod
+
+    monkeypatch.setattr(a_mod, "_JUDGE_VISUAL_DEFAULT", True)
+    llm = _VisualCapturingLLM('{"verdict":"PASS","evidence":"状态灯渲染为绿色","reason":"ok"}')
+
+    # 有截图:system 含视觉附加规则
+    probe = _VisualSnapshotProbe(url="https://x/", snapshot="- text", screenshot="ZZZ")
+    eng = AssertionEngine(probe, llm=llm)
+    await eng.verify(Assertion(type="llm_judge", target="状态灯为绿色"))
+    sys_msg = llm.last_messages[0]
+    assert sys_msg["role"] == "system"
+    assert "视觉证据规则" in sys_msg["content"]
+
+    # 无截图:退回纯文本,system 不含视觉规则
+    probe2 = _VisualSnapshotProbe(url="https://x/", snapshot="- text", screenshot="")
+    eng2 = AssertionEngine(probe2, llm=llm)
+    await eng2.verify(Assertion(type="llm_judge", target="状态灯为绿色"))
+    sys_msg2 = llm.last_messages[0]
+    assert "视觉证据规则" not in sys_msg2["content"]
+
+
 # ── 裁决 / 聚合 ───────────────────────────────────────────────
 
 
