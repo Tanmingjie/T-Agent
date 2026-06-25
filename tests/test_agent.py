@@ -8,7 +8,13 @@ from __future__ import annotations
 
 import json
 
-from harness.agent import TestCaseAgent, make_executor
+from harness.agent import (
+    _WAIT_CHUNK_SECONDS,
+    TestCaseAgent,
+    _chunked_wait,
+    _wait_seconds,
+    make_executor,
+)
 from harness.llm import LLMClient, LLMResponse, ToolCall
 from harness.step_plan import StepPlan
 from input.models import Phase, TestCase, TestSpec
@@ -58,7 +64,7 @@ class _FakeMCP:
     def to_litellm_tools(self):
         return [{"type": "function", "function": {"name": "browser_click", "description": "点击"}}]
 
-    async def call_tool(self, name, arguments=None):
+    async def call_tool(self, name, arguments=None, timeout=None):
         self.tool_calls.append((name, arguments))
         return name
 
@@ -131,6 +137,84 @@ async def test_executor_routes_control_vs_mcp():
     out2 = await execute("browser_click", {"ref": "e3"})
     assert mcp.tool_calls == [("browser_click", {"ref": "e3"})]
     assert out2.url == "https://intranet/order/list"
+
+
+# ── 按时长等待:分段累积 ───────────────────────────────────────
+
+
+def test_wait_seconds_only_pure_duration():
+    assert _wait_seconds({"time": 180}) == 180.0
+    assert _wait_seconds({"time": "30"}) == 30.0
+    # 带 text/textGone(有语义终止)→ 不分段,直通
+    assert _wait_seconds({"time": 180, "text": "完成"}) is None
+    assert _wait_seconds({"textGone": "加载中"}) is None
+    # 无效/非正
+    assert _wait_seconds({"time": 0}) is None
+    assert _wait_seconds({}) is None
+    assert _wait_seconds({"time": "x"}) is None
+
+
+async def test_chunked_wait_accumulates_full_duration():
+    """请求 50s、单段 20s → 分 3 段(20+20+10)真正累积请求时长,而非单次被 ~30s 截断。"""
+
+    class _WaitMCP:
+        def __init__(self):
+            self.waits = []
+
+        async def call_tool(self, name, arguments=None, timeout=None):
+            self.waits.append(arguments["time"])
+            return name
+
+        def result_to_text(self, result):
+            return "### Page\n- Page URL: https://intranet/x\n### Result\nWaited"
+
+    mcp = _WaitMCP()
+    assert _WAIT_CHUNK_SECONDS == 20.0  # 测试假设的段长(默认)
+    out = await _chunked_wait(mcp, 50.0)
+    # 三段累积到 50s(每段 < playwright-mcp ~30s 内部上限,确保等满)
+    assert mcp.waits == [20.0, 20.0, 10.0]
+    assert "已实际等待约 50s" in out.text
+    assert out.url == "https://intranet/x"
+
+
+async def test_chunked_wait_caps_at_max():
+    """请求超过上限 → 截断到上限并在观察里说明(防误填长期占住 worker)。"""
+
+    class _WaitMCP:
+        def __init__(self):
+            self.total = 0.0
+
+        async def call_tool(self, name, arguments=None, timeout=None):
+            self.total += arguments["time"]
+            return name
+
+        def result_to_text(self, result):
+            return "### Result\nWaited"
+
+    mcp = _WaitMCP()
+    out = await _chunked_wait(mcp, 99999.0)
+    assert mcp.total == 300.0  # 封顶 _WAIT_MAX_SECONDS 默认 5min
+    assert "已截断" in out.text
+
+
+async def test_executor_routes_pure_duration_wait_to_chunker():
+    """执行器把纯时长等待路由到分段器(多次小段调用),而非单次直通。"""
+    plan = StepPlan([Phase(steps=["等待观察"])])
+    mcp = _FakeMCP(SNAPSHOT_OK)
+    execute = make_executor(plan, mcp)
+    await execute("browser_wait_for", {"time": 50})
+    # 直通会是 1 次 time=50;分段后是多次小段(每段 ≤ 20)
+    waits = [a["time"] for n, a in mcp.tool_calls if n == "browser_wait_for"]
+    assert waits == [20.0, 20.0, 10.0]
+
+
+async def test_executor_text_wait_passes_through():
+    """等文本出现/消失仍单次直通(有语义终止条件,不分段)。"""
+    plan = StepPlan([Phase(steps=["等待文本"])])
+    mcp = _FakeMCP(SNAPSHOT_OK)
+    execute = make_executor(plan, mcp)
+    await execute("browser_wait_for", {"text": "登录成功"})
+    assert mcp.tool_calls == [("browser_wait_for", {"text": "登录成功"})]
 
 
 # ── 逐阶段 Validator 裁决 ─────────────────────────────────────

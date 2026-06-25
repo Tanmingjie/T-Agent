@@ -63,7 +63,7 @@ PLAYWRIGHT_MCP_HINT = """\
   ⚠️ ref 是 playwright-mcp 的专用引用,**不是 CSS 选择器**,不要写成 ref=e11 这种形式塞进选择器字段,直接把 e11 作为 ref 参数传。
 - 页面发生跳转/变化后,ref 会失效,需要重新 `browser_snapshot` 再操作。
 - `browser_type` 填完输入框、要触发提交时可带 submit=true,或之后单独 click 提交按钮。
-- 需要等待文本出现/消失用 `browser_wait_for`。
+- 需要等待用 `browser_wait_for`:等**文本出现/消失**传 `text`/`textGone`;需**按时长等待/观察**(如"等待 3 分钟")传 `time`(秒,如 180),平台会真正等满该时长(封顶 5 分钟)后再返回最新页面。
 
 【务必完成所有步骤】执行计划里的每一步都要真正做完并各自调用 mark_step_done,
 **不要在中途停止**;只有当所有步骤都完成后,才输出最终的 TEST_RESULT。"""
@@ -105,8 +105,56 @@ _STUCK_ROUND_BUDGET = int(os.getenv("STUCK_ROUND_BUDGET", "2"))
 # (放宽,长流程如下单结算偶发重复一两次快照/点击属正常,3 太敏感会误杀);env LOOP_WINDOW 可调。
 _LOOP_WINDOW = int(os.getenv("LOOP_WINDOW", "4"))
 
+# 「按时长等待」补齐:playwright-mcp 的 browser_wait_for 单次调用内部上限约 30s——请求
+# time=180 实测 ~30s 就返回(未等满),使「等待观察 N 分钟」类步骤拿不到真实经过的时间。
+# 解法:执行器把长时长等待**分段**(每段 < 内部上限)循环调用,真正累积到请求时长,封顶
+# WAIT_MAX_SECONDS(防误填"等 1 小时"长期占住 worker)。仅对纯时长等待(有 time、无 text/
+# textGone)生效;等"文本出现/消失"仍直通(本就有语义终止条件)。
+_WAIT_TOOL = "browser_wait_for"
+_WAIT_MAX_SECONDS = float(os.getenv("WAIT_MAX_SECONDS", "300"))  # 上限默认 5min
+_WAIT_CHUNK_SECONDS = float(
+    os.getenv("WAIT_CHUNK_SECONDS", "20")
+)  # 单段 < playwright-mcp ~30s 上限
+
 # 生成代码落盘目录:从 ArtifactStore 抽象取(T-P10),与 results 路由读取端单一真相
 _GENERATED_ROOT = str(get_artifact_store().generated_dir())
+
+
+def _wait_seconds(arguments: dict) -> float | None:
+    """从 browser_wait_for 参数取**纯时长等待**的秒数;非纯时长(带 text/textGone)或无效返回 None。"""
+    if not isinstance(arguments, dict):
+        return None
+    if arguments.get("text") or arguments.get("textGone"):
+        return None  # 等文本出现/消失:有语义终止条件,直通,不分段
+    raw = arguments.get("time")
+    if raw is None:
+        return None
+    try:
+        secs = float(raw)
+    except (TypeError, ValueError):
+        return None
+    return secs if secs > 0 else None
+
+
+async def _chunked_wait(mcp, requested: float) -> ToolOutcome:
+    """把长时长等待分段累积到真实请求时长(封顶 _WAIT_MAX_SECONDS),返回最后一段的观察。
+
+    每段时长 < playwright-mcp 单次内部上限(~30s),故每段都能等满;循环累积逼近请求时长。
+    单段 call_tool 显式给足超时(段长 + 余量),不受默认 120s 影响(段长本就远小于它)。
+    """
+    capped = min(requested, _WAIT_MAX_SECONDS)
+    remaining = capped
+    last_text = ""
+    while remaining > 0.5:
+        seg = min(_WAIT_CHUNK_SECONDS, remaining)
+        result = await mcp.call_tool(_WAIT_TOOL, {"time": seg}, timeout=seg + 30.0)
+        last_text = mcp.result_to_text(result)
+        remaining -= seg
+    note = f"\n### 平台说明\n已实际等待约 {capped:.0f}s(分段累积)"
+    if requested > capped:
+        note += f";请求 {requested:.0f}s 超过上限 {_WAIT_MAX_SECONDS:.0f}s,已截断"
+    url = parse_snapshot(last_text).url
+    return ToolOutcome(text=last_text + note, url=url)
 
 
 def _build_metrics(
@@ -191,7 +239,11 @@ def make_executor(step_plan: StepPlan, mcp) -> ToolExecutor:
         handled = step_plan.apply_tool_call(name, arguments)
         if handled is not None:
             return ToolOutcome(text=handled)
-        # 2) 其余 → playwright-mcp
+        # 2) 纯时长等待:分段累积到真实请求时长(治 playwright-mcp 单次 ~30s 内部上限,
+        #    封顶 _WAIT_MAX_SECONDS),否则「等待观察 N 分钟」实际只等 ~30s。
+        if name == _WAIT_TOOL and (secs := _wait_seconds(arguments)) is not None:
+            return await _chunked_wait(mcp, secs)
+        # 3) 其余 → playwright-mcp
         result = await mcp.call_tool(name, arguments)
         text = mcp.result_to_text(result)
         url = parse_snapshot(text).url  # 结果里若含 Page URL 则提取
