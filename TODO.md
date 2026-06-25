@@ -17,6 +17,24 @@
 
 ---
 
+## 〇、健壮化批次未决项(2026-06-25,本轮新增)
+
+- [ ] **④ 前端 running 重连/对账**(后台执行可靠性最后一块)— 当前丢了实时 SSE(退页面/重载)
+  就回不来:`statuses` 纯内存、`EventSource` 只在 `start()` 建一次、无重订阅;回来后 `statusOf`
+  退回 DB 的 `running`、`liveState` 空、抽屉 running 时又不拉 `/result` → **空白卡死**。修向:抽屉
+  running 但无实时数据时仍试拉 `/result`(拿到=已结束就显示;404=显示"连接断开·重连");用例页
+  挂载/定时向 DB 对账状态;回到有在跑 run 的套件时重订阅 SSE(queue 模式能从 run_event 完整重放)。
+  embedded/queue 都受益。详见记忆 [[execution-reliability-queue]]。
+- [ ] **queue 模式内网小跑验证 + 常驻服务化** — 本地端到端已验证可用;内网按 `RUN_MODE=queue` +
+  `scripts/worker.py`(systemd/容器常驻,多 worker 上 Postgres)小跑几条再压一夜 20 条。同时**定位
+  真正中断源**(非 --reload;查后端常驻方式 + 日志 `Shutting down`/`Started server process`;若 OOM
+  则并发别加剧)。
+- [ ] **A2/A4 哑火实验(暂缓)** — A2 弱化强制 `INTENT:` 行 / A4 去 system 内冗余工具清单,冲着
+  "说要调用≠真调用"的哑火去;现哑火已 0~2 次/长流程、无害,边际收益小。要做需改前后各跑
+  TC201+等待 ×3 比 narration 计数、可回退。详见记忆 [[narration-idle-weak-model]]。
+- [ ] **裁判杠杆二(暂不做)** — 多事实 expected"主锚点满足即过、不被次要项拖垮"。翻译批次1 已把
+  expected 收成"少而硬",触发面大幅收窄 → 暂不动偏-FAIL 严格度(有 false-green 风险)。观察内网偶发率再定。
+
 ## 一、功能补全(执行链产物 / 健壮性的实质缺口)
 
 - [ ] **轨迹驱动 codegen**(⑦ T1+T2,**产物核心缺口**)— 产物从"可读骨架"→"可回放"。

@@ -117,6 +117,42 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 重大 redesign 实施记录
 
+- **健壮化批次(2026-06-25,一串落地)** — 围绕"长用例/后台执行/翻译质量/弱模型"的一组修:
+  - **`browser_wait_for` 按时长等待补齐(`343db29`)**:playwright-mcp 单次 wait 内部上限 ~30s,
+    请求 `time=180` 实测 ~30s 就返回(等不满)。执行器([agent.py](harness/agent.py) `_chunked_wait`)把
+    纯时长等待**分段**(每段 20s<内部上限,确保等满)循环累积到请求时长,封顶 `WAIT_MAX_SECONDS`
+    (默认 300=5min)。仅纯时长(有 time、无 text/textGone)分段;等文本直通。**前置坑**:
+    `_is_tool_failure` 裸子串 `"Timeout"` 会误伤成功 wait 结果里的 `setTimeout(...)` → 每次等待被判
+    工具失败 → STEP_FAILED,"等待 N 分钟"必死;改负向后瞻 `(?<!set)timeout`(`12fc8a4`)。
+  - **阶段裁决 settle 削冗余(`6510756`)**:`browser_navigate/back/forward` 移出 `_NAV_TOOLS`
+    (Playwright goto 已自动等 `load`,再 settle 是冗余);阶段末尾 Validator 判前 settle 改用短超时
+    `PHASE_SETTLE_TIMEOUT`(默认 2s,治动态页每阶段白烧 8s)。保留阶段末尾 settle 必要性:防裁判
+    抓半渲染页 false-FAIL。**Playwright 判不出"SPA 内容稳定"**(无 load 事件),settle 是启发式替代。
+  - **上下文压缩堵两个泄漏通道(`33a8364`)**:`ContextCompactor` 此前只压 `[观察]`,两类原文无限
+    累积、是 narration churn 时 token 爆炸主因——① 哑火续推注入的快照拼在 nudge 文本里不带 `[观察]`
+    前缀→不被识别;② assistant 叙述从不压。改:续推快照单独发 `[观察]` 消息(可折叠)+ compactor
+    折叠旧 assistant(`keep_recent_assistant` 默认 3)。实测 TC201+等待 churn 从 24 哑火/144万token
+    降到 0~2 哑火/~58万。
+  - **翻译 expected 规则重构(`37e5a9d`→`0042a5d`,prompt review 批次1 B1-B5)**:阶段化要求每阶段
+    都有 expected,但真实用例常只有终态预期→翻译被迫为中间阶段脑补,易**越界**(把后续阶段状态写进
+    早期阶段,如登录阶段写"出现购物车图标"→裁判核验不到→冤死)。三条铁律:① **只用可核验判据**
+    (有文字元素/URL/可见文案,**禁图标/icon/图片/颜色**——a11y 抓不到);② **少而硬**(1-2 个主锚点,
+    每多一事实多一硬门槛);③ 只断言本阶段、缺源头就保守。+ 粗分阶段。**用户否决"软化中间阶段"**
+    (不同用例情况不一,且出处不可考)。spec-only+live 验证:saucedemo TC201 / the-internet TI01
+    (新非购物 fixture)expected 全 URL+文案、无图标,两站点 PASS。
+  - **执行驱动契约收敛(`426ffcd`,批次2 A1+A3)**:合并三段重复"真发调用"为一条三情形清单;
+    "目标态已满足别多疑"明确成"**直接发起 mark_step_done 调用**(非只文字说已完成)"。+ `e0a77a3`
+    目标态已满足=已达成别多疑(治开关已开却反复确认)。**A2(弱化强制 INTENT)/A4(去 system 冗余
+    工具清单)= 弱模型行为实验、需 A/B,暂缓**(哑火已 0~2 次,边际收益小)。见 [[narration-idle-weak-model]]。
+  - **后台执行可靠性(`86519c1` + queue 验证)**:内网实测两个 bug(历史 run 无详情 `/result` 空 /
+    running 退抽屉再进卡死空白)同根 = **embedded 模式 run 跑在 API 进程线程,进程/线程一中断就僵尸
+    +丢记录**。`execute_run` 旧外层 try 只有 finally、无 except→setup 异常漏标状态。修:单一兜底——任何
+    阶段异常都标 run failed + 给未落记录用例补「执行中断」占位 + 必发 suite_done。**queue 模式已本地
+    端到端验证可用**(入队→worker 领取→执行→落库→结果可读),是"后台跑/明早看/一夜 20 条"的正确
+    架构(解耦+抗 API 重启+可扩);多 worker 上 Postgres。详见 [[execution-reliability-queue]]。
+  - **流式思考一致性(`2d6c20f`)**:`ActionStep.reasoning` 取**实际流式给前端的累积文本**(含哑火/
+    复核续推轮),治"执行中流式看到的思考 ≠ 执行完点开步骤的思考"。
+
 - **词汇表扫描子系统收缩(2026-06-24,用户拍板 B,已落地)** — 阶段化重设计后词汇表价值塌缩:
   翻译只产意图不接地(驱动侧不再查词表)、裁决主走 `_check_llm_judge`(吃原始快照+URL,**不调
   `probe.query()`**,resolver 在裁决路是死参数)、codegen 词表来源定位器是孤儿(T7,只接执行
@@ -520,6 +556,8 @@ T-xx ↔ 规格小节对照见 `实现规格说明书.md` §5(各模块详细规
   有益拦截=0 的前提是模型偏-FAIL 够好,换**更弱**模型可能需重判——回归基准在 `eval_fg/` 常备。
 - **url_equals 对整 URL 精确匹配很脆**:浏览器自动补结尾 `/`、查询参数/语言前缀差异都会让"打开首页"类 url_equals false-fail 拖垮整条用例(AE03 实测,LLM 变异产 url_equals 时才暴露)。解:`_check_url_equals` 归一结尾斜杠 + 翻译引导导航锚点优先 `url_contains` 写**稳定 URL 片段**而非精确整串。**导航断言默认用 url_contains,别用 url_equals。**
 - **"用例级断言"列里混着不计入裁决的驱动门控观测**:Fix 3 后 `case_assertions` 同时含裁决证据(phase=step/final)和**仅观测**的步骤驱动门控(phase=gate)。读 CLI/前端断言列别把 gate 项当裁决依据——它标了「驱动门控·不计入裁决」;真正决定 PASS/FAIL 的只有 step(确定性锚点)+ final(终态裁判)。`verdict()` 只吃后两者。
+- **子串匹配失败标志会误伤**(2026-06-25 血泪):`_is_tool_failure` 用裸子串 `"Timeout"` 抓超时报错,结果误中 `browser_wait_for` 成功结果里的 `setTimeout(...)` → 每次按时长等待都被判工具失败 → STEP_FAILED,"等待 N 分钟"类步骤 100% 失败。教训:**失败标志别用会嵌进正常文本的裸子串**,用词边界/负向后瞻(`(?<!set)timeout`)或更具体措辞。排查时一度误判成 120s 超时,实测 playwright-mcp 单次 wait 内部 ~30s 就返回(等不满)——所以"按时长等待"要在执行器**分段累积**才能真等满(`agent._chunked_wait`)。
+- **embedded 模式 run 命绑 API 进程,中断=僵尸+丢记录**(2026-06-25):embedded 执行跑在 API 进程的守护线程里,**进程/线程一中断**(终端/SSH 断、OOM、手动重启、setup 阶段异常逃出 try)就留下 DB `running` 僵尸 + `/result` 全空(记录是用例跑完才落库)。诊断指纹:**"卡死 running 的 run 一触发新执行就变 failed"** = 僵尸收尾(它不在内存 `_sse_queues` 里 → 说明进程已中断过)。`execute_run` 已加最外层兜底(任何异常标 failed + 占位记录 + 必发 suite_done);但**根治是 queue 模式**(`RUN_MODE=queue` + `scripts/worker.py`,run 不在 API 进程里、抗重启、worker 崩溃 stale 回收重跑)。**关浏览器/退页面不影响执行**(执行在服务端;唯一杀 run 的是 API 进程停)。**审批模式**例外:关页面没人批 → run 卡审批处。
 
 ## 常用命令
 
@@ -586,8 +624,10 @@ cd frontend && npm run preview    # 本地预览生产构建
 #   MCP_ISOLATED=1 / MCP_HEADLESS=1               → playwright-mcp 启动参数
 #   MCP_SCREENSHOT=0                               → 关截图捕获
 #   〔VOCAB_SCAN / SCAN_CRAWL_DEPTH / SCAN_MAX_PAGES 已删除(2026-06-24 扫描子系统收缩)〕
-#   MCP_SETTLE=0                                   → 关「导航类动作后等页面稳定」(默认开)
+#   MCP_SETTLE=0                                   → 关「交互类动作后等页面稳定」(默认开;导航类已不 settle,Playwright 自动等 load)
 #   MCP_SETTLE_TIMEOUT_MS=8000 / MCP_SETTLE_INTERVAL_MS=400 → settle 超时/轮询间隔
+#   PHASE_SETTLE_TIMEOUT_MS=2000                   → 阶段末尾 Validator 判前 settle 短超时(默认 2s,防动态页白烧 8s)
+#   WAIT_MAX_SECONDS=300 / WAIT_CHUNK_SECONDS=20   → browser_wait_for 按时长等待:上限(默认 5min)/ 分段时长(<内部 ~30s 上限)
 #   HEAL_VISUAL=0                                  → 关视觉自愈截图双通道(默认开,需多模态模型)
 #   AGENT_MAX_STEPS=40                             → API 执行的 ReAct 最大步数(长流程如结算需调大)
 #   RUN_MODE=queue                                 → 双进程执行(API 入队,scripts/worker.py 领取);默认 embedded(进程内线程,SSE 实时)
