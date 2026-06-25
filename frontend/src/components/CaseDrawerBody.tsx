@@ -838,7 +838,6 @@ const PHASE_LABEL: Record<string, string> = {
   spec: "翻译",
   executing: "执行",
   codegen: "代码",
-  scanning: "扫描",
 };
 
 function MetricsPanel({ m }: { m: CaseMetrics }) {

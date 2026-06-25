@@ -45,12 +45,10 @@ from harness.tools import ToolRegistry
 from input.models import (
     Assertion,
     ExecutionRecord,
-    PageVocabulary,
     TestCase,
     TestSpec,
 )
 from intelligence.pre_analysis import SpecGenerator
-from intelligence.scanner import Scanner, url_scope
 from storage.artifacts import get_artifact_store
 
 logger = logging.getLogger(__name__)
@@ -94,11 +92,6 @@ _SETTLE_ENABLED = os.getenv("MCP_SETTLE", "1") != "0"
 _SETTLE_TIMEOUT = float(os.getenv("MCP_SETTLE_TIMEOUT_MS", "8000")) / 1000.0
 _SETTLE_INTERVAL = float(os.getenv("MCP_SETTLE_INTERVAL_MS", "400")) / 1000.0
 
-# 词汇表增量扫描(策略C)开关:**默认关**(2026-06-10),env VOCAB_SCAN=1 开启。
-# 主动扫描(/vocabulary/scan,会导航的探索式扫描)是词汇表主入口;执行期增量扫描降级为
-# 可选补充——避免它延后用例收尾(交互执行末尾多一次 LLM 往返)、避免与主动扫描两写入源。
-_INCREMENTAL_SCAN = os.getenv("VOCAB_SCAN", "0") != "0"
-
 # 单步定位失败预算(#1 快速失败):同一业务步累计定位失败(自愈也没救回)达此数 →
 # 快速判 STEP_FAILED 终止(疑似点错前序元素致后续找不到目标)。env STEP_FAIL_BUDGET 可调。
 # E2(2026-06-23):3→5,给「诊断换法」自适应留空间(像 Claude 一样多试几招),仍兜底真卡死。
@@ -114,28 +107,6 @@ _LOOP_WINDOW = int(os.getenv("LOOP_WINDOW", "4"))
 
 # 生成代码落盘目录:从 ArtifactStore 抽象取(T-P10),与 results 路由读取端单一真相
 _GENERATED_ROOT = str(get_artifact_store().generated_dir())
-
-
-def _evidence_rank(cand: dict) -> int:
-    """执行后补充候选的「元素证据强度」:有实际定位器最强,其次有真实可及名。"""
-    if cand.get("selector"):
-        return 2
-    if cand.get("name"):
-        return 1
-    return 0
-
-
-def _already_covered(existing_entry, cand: dict) -> bool:
-    """该业务词是否已被词汇表覆盖且一致(覆盖即不再补;保守:不一致/未命中均判未覆盖)。
-
-    一致判据:既有词条的真实名与本次跑通的一致,或既有词条带 selector(已是可靠定位)。
-    """
-    if not isinstance(existing_entry, dict):
-        return False
-    if existing_entry.get("selector"):
-        return True
-    name = (existing_entry.get("name") or "").strip()
-    return bool(name) and name == (cand.get("name") or "").strip()
 
 
 def _build_metrics(
@@ -722,10 +693,6 @@ class TestCaseAgent:
                 logger.warning("用例 %s 代码生成失败:%s", case.id, e)
             _mark_phase("codegen")
 
-        # —— 词汇表增量扫描(策略C):执行结束后复用已见快照提炼业务词→元素映射并库 ——
-        await self._incremental_scan(result, emit_phase)
-        _mark_phase("scanning")
-
         # —— 分阶段成本/质量指标(#6):随 record 落库 + 透出前端 ——
         # 可观测埋点,best-effort:任何异常都不得影响用例结果(与 codegen/scan 同口径)。
         try:
@@ -754,104 +721,6 @@ class TestCaseAgent:
             result.stop_reason.value,
         )
         return record
-
-    async def _incremental_scan(self, result, emit_phase) -> None:
-        """执行后增量补充(策略C,**辅助**):用执行轨迹里**跑通的真实元素**(ground truth)
-        总结这条用例触达、但词汇表还缺的业务词,LLM 挑选规范化后增量并库(手动条目优先)。
-
-        与主动扫描分工:**主动扫描**(/vocabulary/scan)负责全量铺页面词汇;**本模块**只用
-        执行真值补**这条用例的增量**——无新词则 **0 次 LLM 调用**。复用执行期已登录会话,
-        不另开浏览器、不重走全流程。best-effort,失败只告警不影响用例结果。仅当注入了带
-        VocabularyManager 的 resolver(即真正接了词汇表持久化)时才执行。
-        """
-        if not _INCREMENTAL_SCAN or self.vocab_resolver is None:
-            return
-        manager = getattr(self.vocab_resolver, "manager", None)
-        if manager is None:
-            return
-        login_role = getattr(self.vocab_resolver, "login_role", "") or ""
-
-        # 1) 从执行轨迹收集「业务词 → 真实元素」候选(只取真正操作过、有元素证据的步),
-        #    按 URL 分组;同 URL 内同业务词留证据最强的一条(有 selector > 仅有 name)。
-        #    步骤按 step_no 有序:**空 url 的步(如 browser_type 不导航、outcome.url 为空)
-        #    继承最近一个非空 url**——它其实就在那个页面上,否则空 url 自成一组会落出
-        #    base_url 为空的孤儿词汇表行(同一逻辑页被拆成两条;live 实证过)。
-        by_url: dict[str, dict[str, dict]] = {}
-        cur_url = ""
-        for s in sorted(result.action_steps, key=lambda x: x.step_no):
-            if (s.url or "").strip():
-                cur_url = s.url.strip()
-            term = (s.step_target or s.tool_input.get("element") or "").strip()
-            name = (s.element_name or "").strip()
-            selector = (s.element_selector or "").strip()
-            if not term or (not name and not selector):
-                continue  # 无业务词或无真实元素证据(纯 mark_done/snapshot 等)→ 跳过
-            cand = {
-                "term": term,
-                "role": (s.element_role or "").strip(),
-                "name": name,
-                "selector": selector,
-            }
-            page = by_url.setdefault(cur_url, {})
-            prev = page.get(term)
-            if prev is None or _evidence_rank(cand) > _evidence_rank(prev):
-                page[term] = cand
-        by_url.pop("", None)  # 整轮都没拿到 url(异常)→ 丢弃,不落 base_url 为空的孤儿行
-        if not by_url:
-            return
-
-        scanner = Scanner(self.llm)
-        phase_emitted = False
-        for url, cands in by_url.items():
-            # 2) 确定性过滤:已被词汇表覆盖且一致的业务词不再补;复用既有页身份(对齐键,免重复行)
-            existing_page = await self._safe_find_page(manager, url, login_role)
-            existing_vocab = existing_page.vocabulary if existing_page else {}
-            supplements = [
-                c for term, c in cands.items() if not _already_covered(existing_vocab.get(term), c)
-            ]
-            if not supplements:
-                continue
-            # 3) 仅在有待补充候选时,叫 LLM 做一次「总结挑词」(无候选则 0 调用)
-            if not phase_emitted:
-                await emit_phase("scanning", "总结补充词汇表")
-                phase_emitted = True
-            delta = await scanner.summarize_supplements(
-                supplements, existing_terms=list(existing_vocab.keys())
-            )
-            if not delta:
-                continue
-            # 4) 落库:用既有页身份(无则按 URL 推断)构造 delta 词汇表,merge_scanned(手动优先)
-            if existing_page is not None:
-                base_url, url_pattern, page_title = (
-                    existing_page.base_url,
-                    existing_page.url_pattern,
-                    existing_page.page_title,
-                )
-            else:
-                base_url, url_pattern = url_scope(url)
-                page_title = ""
-            pv = PageVocabulary(
-                base_url=base_url,
-                url_pattern=url_pattern,
-                page_title=page_title,
-                login_role=login_role,
-                vocabulary=delta,
-            )
-            try:
-                await manager.merge_scanned(pv)
-            except Exception as e:  # noqa: BLE001 — 并库失败不影响用例结果
-                logger.warning("执行后词汇并库失败:%s", e)
-
-    async def _safe_find_page(self, manager, url: str, login_role: str):
-        """find_page 包错:执行后补充是 best-effort,查词汇表异常不该打断用例收尾。
-
-        执行轨迹未存 page_title,按 url + 宽松匹配(空 title/role 通配)查既有页。
-        """
-        try:
-            return await manager.find_page(url, "", login_role)
-        except Exception as e:  # noqa: BLE001
-            logger.warning("执行后查词汇表失败:%s", e)
-            return None
 
     def _token_usage(self) -> int:
         fn = getattr(self.llm, "usage_summary", None)

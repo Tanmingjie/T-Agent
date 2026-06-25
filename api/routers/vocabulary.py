@@ -1,21 +1,18 @@
-"""词汇表 CRUD + 主动扫描路由(Spec §4.5)。
+"""词汇表 CRUD 路由(Spec §4.5)。
 
-主动扫描(2026-06-10):会导航的只读探索式扫描——起浏览器、可选登录、按入口清单逐页
-抓快照提炼词汇,可选浅爬点击触发的内页。扫描在**独立线程 + 独立事件循环 + 独立 Store**
-里跑(同 execution_worker,避免阻塞 API loop),状态经内存表轮询。
+〔2026-06-24 扫描子系统收缩〕:词汇表自动扫描(主动扫描 ActiveScanner + 执行后增量扫描)
+整体退役——阶段化重设计后翻译不接地、裁决主走 llm_judge,自动扫描产出几乎不被消费。本路由
+只保留**手动维护**(CRUD);运行时 `VocabularyResolver` 仍服务断言探针解析与操作侧自愈。
 """
 
 from __future__ import annotations
 
 import logging
-import os
-import uuid
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 from api.auth import Principal, get_principal, role_in_project
-from api.execution_worker import spawn_run
 from api.server import get_repo, get_store
 from input.models import PageVocabulary
 
@@ -30,9 +27,6 @@ async def _ensure_project_access(store, principal: Principal, project_id: str) -
 
 router = APIRouter(tags=["vocabulary"])
 logger = logging.getLogger(__name__)
-
-# 主动扫描状态(内存,进程级):scan_id → {status, report?, error?}
-_scan_status: dict[str, dict] = {}
 
 
 class VocabularyEntry(BaseModel):
@@ -117,104 +111,3 @@ async def delete_vocabulary(
     if not await repo.delete_by_key(url_pattern, page_title, login_role, base_url, project_id):
         raise HTTPException(404, "Vocabulary entry not found")
     return {"ok": True}
-
-
-class ScanRequest(BaseModel):
-    base_url: str  # 被测系统根地址(作用域键)
-    entry_paths: list[str] = []  # 入口页面/路径清单(空=只扫 "/")
-    # 最简登录方式(2026-06-15):账号 + 密码直接表单登录(无需预配 Session Profile)。
-    # 两者都填才登录;留空=扫公开页。login_url 留空时默认用 base_url 作登录页。
-    username: str = ""
-    password: str = ""
-    login_url: str = ""
-    login_role: str = ""  # 词条归属角色(可空)
-    shallow_crawl: bool = False  # 可选浅爬:点击导航类元素进入点击触发的内页(只读护栏)
-
-
-def _mcp_args() -> list[str]:
-    args = ["@playwright/mcp@latest"]
-    if os.getenv("MCP_ISOLATED", "1") != "0":
-        args.append("--isolated")
-    if os.getenv("MCP_HEADLESS", "1") != "0":
-        args.append("--headless")
-    return args
-
-
-@router.post("/vocabulary/scan")
-async def trigger_scan(body: ScanRequest):
-    """启动一次主动扫描(会导航的只读探索式扫描)。后台线程跑,返回 scan_id 供轮询。
-
-    覆盖 base_url 主页 + 入口清单 + (可选)点击触发的内页。需登录的页面填 ``username`` +
-    ``password``(最简表单登录,无需预配 Session Profile);公开页面留空即可。
-    """
-    scan_id = uuid.uuid4().hex[:12]
-    _scan_status[scan_id] = {"status": "running", "report": None, "error": None}
-    db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///storage/ai_test.db")
-
-    async def _worker() -> None:
-        from harness.agent import settle_page
-        from harness.llm import LiteLLMClient
-        from harness.session import make_mcp_credential_login
-        from intelligence.active_scan import ActiveScanner
-        from intelligence.scanner import Scanner
-        from intelligence.vocabulary import VocabularyManager
-        from mcp_client.client import MCPClient
-        from storage.db import Store
-
-        store = Store(url=db_url)
-        await store.init()
-        try:
-            async with MCPClient(args=_mcp_args()) as mcp:
-                manager = VocabularyManager(store)
-                scanner = Scanner(LiteLLMClient())
-
-                async def _settle(_mcp):
-                    await settle_page(_mcp)
-
-                # 登录回调:填了账号+密码则做最简表单登录(否则扫公开页)
-                login = None
-                if body.username and body.password:
-                    login = make_mcp_credential_login(
-                        mcp,
-                        body.login_url or body.base_url,
-                        body.username,
-                        body.password,
-                        settle=_settle,
-                    )
-
-                active = ActiveScanner(
-                    mcp,
-                    scanner,
-                    manager,
-                    login_role=body.login_role,
-                    settle=_settle,
-                    crawl_depth=int(os.getenv("SCAN_CRAWL_DEPTH", "1")),
-                    max_pages=int(os.getenv("SCAN_MAX_PAGES", "20")),
-                )
-                report = await active.scan(
-                    body.base_url,
-                    body.entry_paths,
-                    login=login,
-                    shallow_crawl=body.shallow_crawl,
-                )
-                _scan_status[scan_id] = {
-                    "status": "completed",
-                    "report": report.to_dict(),
-                    "error": None,
-                }
-        except Exception as e:  # noqa: BLE001
-            logger.exception("主动扫描 %s 失败", scan_id)
-            _scan_status[scan_id] = {"status": "failed", "report": None, "error": str(e)}
-        finally:
-            await store.close()
-
-    spawn_run(scan_id, _worker)
-    return {"scan_id": scan_id, "status": "started"}
-
-
-@router.get("/vocabulary/scan/{scan_id}")
-async def scan_status(scan_id: str):
-    st = _scan_status.get(scan_id)
-    if st is None:
-        raise HTTPException(404, "scan not found")
-    return {"scan_id": scan_id, **st}

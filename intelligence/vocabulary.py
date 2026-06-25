@@ -82,31 +82,6 @@ class VocabularyManager:
             return None
         return _term_lookup(page.vocabulary, term)
 
-    async def merge_scanned(self, scanned: PageVocabulary) -> PageVocabulary:
-        """把 AI 扫描结果并入既有词汇表;手动条目不被覆盖。"""
-        # 保证扫描结果落进本 manager 的租户作用域(scanner 可能未感知 project)。
-        scanned.project_id = self.project_id
-        existing = await self.store.get_vocabulary(
-            scanned.url_pattern,
-            scanned.page_title,
-            scanned.login_role,
-            scanned.base_url,
-            self.project_id,
-        )
-        if existing is None:
-            await self.store.save_vocabulary(scanned)
-            return scanned
-        merged = dict(existing.vocabulary)
-        for term, entry in scanned.vocabulary.items():
-            old = merged.get(term)
-            if isinstance(old, dict) and old.get("source") == MANUAL:
-                continue  # 手动条目优先,保留
-            merged[term] = entry
-        existing.vocabulary = merged
-        existing.stale = False
-        await self.store.save_vocabulary(existing)
-        return existing
-
     async def mark_stale(
         self, url_pattern: str, page_title: str, login_role: str, base_url: str = ""
     ) -> bool:

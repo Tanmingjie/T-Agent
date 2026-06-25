@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
-import { apiDelete, apiGet, apiPost, apiPut } from "../api/client";
+import { apiDelete, apiGet, apiPut } from "../api/client";
 import { withProject } from "../lib/session";
 
 /** 词条:业务词 → 页面真实元素。selector(CSS)最稳健,优先于 role+name。 */
@@ -27,32 +27,11 @@ const EMPTY_PAGE: Vocab = {
   vocabulary: {},
 };
 
-interface ScanForm {
-  base_url: string;
-  entry_paths: string; // 每行一个路径
-  username: string;
-  password: string;
-  login_url: string;
-  shallow_crawl: boolean;
-}
-
-const EMPTY_SCAN: ScanForm = {
-  base_url: "",
-  entry_paths: "",
-  username: "",
-  password: "",
-  login_url: "",
-  shallow_crawl: false,
-};
-
 export default function VocabularyPage() {
   const [items, setItems] = useState<Vocab[]>([]);
   const [query, setQuery] = useState("");
-  const [scanning, setScanning] = useState(false);
-  const [scanMsg, setScanMsg] = useState<string | null>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [newPage, setNewPage] = useState<Vocab | null>(null);
-  const [scanForm, setScanForm] = useState<ScanForm | null>(null);
 
   function keyOf(v: Vocab) {
     return `${v.base_url}|${v.url_pattern}|${v.page_title}|${v.login_role}`;
@@ -67,51 +46,6 @@ export default function VocabularyPage() {
   useEffect(() => {
     load();
   }, [query]);
-
-  /** 主动扫描:起浏览器→(可选登录)→按入口清单逐页提炼词汇,(可选)浅爬点击触发的内页。 */
-  async function runScan(form: ScanForm) {
-    setScanForm(null);
-    setScanning(true);
-    setScanMsg("主动扫描已启动:正在起浏览器、逐页提炼词汇…");
-    try {
-      const { scan_id } = await apiPost<{ scan_id: string }>("/vocabulary/scan", {
-        base_url: form.base_url,
-        entry_paths: form.entry_paths
-          .split("\n")
-          .map((s) => s.trim())
-          .filter(Boolean),
-        username: form.username,
-        password: form.password,
-        login_url: form.login_url,
-        shallow_crawl: form.shallow_crawl,
-      });
-      // 轮询状态
-      for (let i = 0; i < 600; i++) {
-        await new Promise((r) => setTimeout(r, 2000));
-        const st = await apiGet<{
-          status: string;
-          report?: { page_count: number; total_terms: number };
-          error?: string;
-        }>(`/vocabulary/scan/${scan_id}`);
-        if (st.status === "completed") {
-          await load();
-          setScanMsg(
-            `扫描完成:${st.report?.page_count ?? 0} 页,新增/更新 ${st.report?.total_terms ?? 0} 个业务词。`,
-          );
-          return;
-        }
-        if (st.status === "failed") {
-          setScanMsg(`扫描失败:${st.error ?? "未知错误"}`);
-          return;
-        }
-      }
-      setScanMsg("扫描仍在进行,稍后刷新页面查看新增词条。");
-    } catch (e) {
-      setScanMsg(`扫描请求失败:${e instanceof Error ? e.message : String(e)}`);
-    } finally {
-      setScanning(false);
-    }
-  }
 
   /** 保存整页词汇表(API 按 url_pattern+title+role 为键 upsert)。 */
   async function savePage(v: Vocab) {
@@ -161,32 +95,12 @@ export default function VocabularyPage() {
         <div className="flex gap-2">
           <button
             onClick={() => setNewPage({ ...EMPTY_PAGE })}
-            className="border border-gray-300 text-gray-700 px-3.5 py-2 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors"
+            className="bg-brand-600 text-white px-3.5 py-2 rounded-md text-sm font-medium hover:bg-brand-700 transition-colors"
           >
             新建词汇表
           </button>
-          <button
-            onClick={() => setScanForm({ ...EMPTY_SCAN })}
-            disabled={scanning}
-            className="bg-brand-600 text-white px-3.5 py-2 rounded-md text-sm font-medium hover:bg-brand-700 disabled:opacity-50 transition-colors"
-          >
-            {scanning ? "扫描中…" : "主动扫描"}
-          </button>
         </div>
       </div>
-
-      {scanMsg && (
-        <div className="mb-4 flex items-start gap-2 rounded-md border border-blue-200 bg-blue-50 px-4 py-3 text-sm text-blue-800">
-          <span className="mt-0.5">ℹ️</span>
-          <span className="flex-1">{scanMsg}</span>
-          <button
-            onClick={() => setScanMsg(null)}
-            className="text-blue-400 hover:text-blue-600"
-          >
-            ✕
-          </button>
-        </div>
-      )}
 
       <div className="flex items-center gap-2 mb-3">
         <input
@@ -197,15 +111,6 @@ export default function VocabularyPage() {
         />
         <span className="text-xs text-gray-400 ml-auto">共 {items.length} 条</span>
       </div>
-
-      {scanForm && (
-        <ScanFormPanel
-          form={scanForm}
-          onChange={setScanForm}
-          onCancel={() => setScanForm(null)}
-          onRun={() => runScan(scanForm)}
-        />
-      )}
 
       {newPage && (
         <NewPageForm
@@ -219,7 +124,7 @@ export default function VocabularyPage() {
       {items.length === 0 ? (
         <div className="bg-white border border-gray-200 rounded-lg py-16 text-center">
           <p className="text-gray-500 text-sm">
-            暂无词汇表数据。点击"新建词汇表"手动维护，或"扫描页面"自动提炼。
+            暂无词汇表数据。点击"新建词汇表"手动维护业务词 → 页面元素的映射。
           </p>
         </div>
       ) : (
@@ -278,97 +183,6 @@ export default function VocabularyPage() {
           </table>
         </div>
       )}
-    </div>
-  );
-}
-
-function ScanFormPanel({
-  form,
-  onChange,
-  onCancel,
-  onRun,
-}: {
-  form: ScanForm;
-  onChange: (f: ScanForm) => void;
-  onCancel: () => void;
-  onRun: () => void;
-}) {
-  return (
-    <div className="bg-white border rounded p-4 mb-4">
-      <h3 className="font-semibold mb-1">主动扫描</h3>
-      <p className="text-xs text-gray-500 mb-3">
-        起浏览器逐页提炼业务词→元素映射。需登录的页面填下方账号 + 密码即可自动登录;公开页面留空。
-      </p>
-      <div className="grid grid-cols-2 gap-3">
-        <label className="text-xs text-gray-600">
-          系统 base_url(必填)
-          <input
-            className="border px-2 py-1 rounded w-full mt-1 text-sm font-mono"
-            value={form.base_url}
-            onChange={(e) => onChange({ ...form, base_url: e.target.value })}
-            placeholder="https://www.saucedemo.com"
-          />
-        </label>
-        <label className="text-xs text-gray-600">
-          登录页地址(可选,留空=用 base_url)
-          <input
-            className="border px-2 py-1 rounded w-full mt-1 text-sm font-mono"
-            value={form.login_url}
-            onChange={(e) => onChange({ ...form, login_url: e.target.value })}
-            placeholder="留空=用 base_url"
-          />
-        </label>
-        <label className="text-xs text-gray-600">
-          账号(可选,需登录才填)
-          <input
-            className="border px-2 py-1 rounded w-full mt-1 text-sm"
-            value={form.username}
-            onChange={(e) => onChange({ ...form, username: e.target.value })}
-            placeholder="留空=扫公开页"
-            autoComplete="off"
-          />
-        </label>
-        <label className="text-xs text-gray-600">
-          密码(可选,需登录才填)
-          <input
-            type="password"
-            className="border px-2 py-1 rounded w-full mt-1 text-sm"
-            value={form.password}
-            onChange={(e) => onChange({ ...form, password: e.target.value })}
-            placeholder="留空=扫公开页"
-            autoComplete="off"
-          />
-        </label>
-      </div>
-      <label className="text-xs text-gray-600 block mt-3">
-        入口路径清单(每行一个,留空=只扫 /)
-        <textarea
-          className="border px-2 py-1 rounded w-full mt-1 text-sm font-mono h-20"
-          value={form.entry_paths}
-          onChange={(e) => onChange({ ...form, entry_paths: e.target.value })}
-          placeholder={"/inventory.html\n/cart.html"}
-        />
-      </label>
-      <label className="flex items-center gap-2 text-xs text-gray-700 mt-3">
-        <input
-          type="checkbox"
-          checked={form.shallow_crawl}
-          onChange={(e) => onChange({ ...form, shallow_crawl: e.target.checked })}
-        />
-        浅爬:点击导航类元素进入点击触发的内页(只读,跳过高危词)
-      </label>
-      <div className="flex gap-2 mt-3">
-        <button
-          onClick={onRun}
-          disabled={!form.base_url.trim()}
-          className="bg-brand-600 text-white px-3.5 py-1.5 rounded-md text-sm font-medium hover:bg-brand-700 disabled:opacity-50 transition-colors"
-        >
-          开始扫描
-        </button>
-        <button onClick={onCancel} className="text-gray-600 px-3 py-1.5 text-sm">
-          取消
-        </button>
-      </div>
     </div>
   );
 }

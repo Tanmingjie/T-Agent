@@ -39,7 +39,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `harness/context.py` — **Context Compact**。发 LLM 前压缩:旧观察折叠成一行(L1)、近期快照按关键词相关度截断(L2),治 token 膨胀。
 - `harness/recorder.py` — 汇总 `ExecutionRecord`;`to_history()` 把 model_output / action_result 分离序列化。
 - `harness/hooks.py` — 生命周期 Hook(before_case 失败→用例 FAIL 不进 Agent)+ 共享 `ExecutionContext`。
-- `harness/session.py` — 仅留 `make_mcp_credential_login`(账号+密码表单登录回调,供主动扫描登录用)。〔**2026-06-18 会话/Cookie 复用退役**:原 `SessionManager`/`LoginHook`/`CaptureSessionHook`/`make_mcp_cookie_*` + `SessionProfile` 整体删除——Cookie 复用对 SPA/Token 型登录不对症、TTL 与真实会话寿命脱节;登录态跨用例复用改由后续「环境管理」主线维护。`harness/hook_builder.py` 随之删除,`Suite.session_profile` 及 `session_profile` 表经 alembic `0002` 降除。〕
+- 〔`harness/session.py` **2026-06-24 删除**:其唯一残留 `make_mcp_credential_login` 仅供已退役的主动扫描登录用,随扫描子系统收缩一并删。早先(2026-06-18)已删 `SessionManager`/`LoginHook`/`CaptureSessionHook`/`make_mcp_cookie_*` + `SessionProfile`(Cookie 复用对 SPA/Token 型登录不对症、TTL 与真实会话寿命脱节);登录态跨用例复用交后续「环境管理」主线。`harness/hook_builder.py` 同期删除,`Suite.session_profile` 及表经 alembic `0002` 降除。〕
 - 〔`harness/precondition.py` 预置条件三分类器 **2026-06-22 删除**:阶段化重设计后预置条件退化为纯背景 `list[str]`(不执行、不 guard、不分类),原 state_hook/action_step/ambiguous 三分类 + 标黄确认端点一并退役。〕
 - `harness/skills.py` — Skill 体系(**2026-06-15 对齐 Anthropic/Claude Code 标准 Skill**;**E3 2026-06-23 三层加载**):单一 `Skill`(name+description+content),**渐进披露**——System Prompt 常驻 `name—description` 清单,LLM 判断相关时**主动调 `load_skill(name)` 工具**展开正文(主路,由 E1 的 BASE_PROMPT 引导)。`DEFAULT_SKILLS` 内置基线 `preload=True`(表单操作/结果定位 + E3 加的「重新快照拿新 ref」「找不到元素的常见原因」机械套路);项目 Skill `preload=False` 走真渐进加载(E3 停 `api/run_executor.py` 的 `preload=True` force-preload TODO)。E3 加 `SkillManager.relevant(step_text, top_k)` 按 token 重叠挑相关 skill(确定性、无 LLM)+ `auto_load(step_text)` top1 直接加载;ReActLoop 在卡住时按 `stuck_round_budget` 触发**甲层**(浮现命中 skill 名催加载)、`*2` 触发**乙层**(平台 auto_load 注入)。〔删旧 DomainSkill/PageSkill/ToolSkill 三类与 URL/关键词平台侧匹配——加载与否改由 LLM 决策 + 卡住时平台兜底。〕
 - `harness/permission.py` — 高危词 + prod 环境锁;Reason 后 Act 前拦截;trust_mode / 可注入 approver;无 approver 默认拒绝。
@@ -116,6 +116,25 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 功能点拆分单独 commit/push,每点单测 + saucedemo live 冒烟)**。
 
 ### 重大 redesign 实施记录
+
+- **词汇表扫描子系统收缩(2026-06-24,用户拍板 B,已落地)** — 阶段化重设计后词汇表价值塌缩:
+  翻译只产意图不接地(驱动侧不再查词表)、裁决主走 `_check_llm_judge`(吃原始快照+URL,**不调
+  `probe.query()`**,resolver 在裁决路是死参数)、codegen 词表来源定位器是孤儿(T7,只接执行
+  捕获)。**整套自动扫描子系统养着却几乎不产出价值**,据此做诚实减法:
+  - **删除**:`intelligence/active_scan.py`(ActiveScanner 浏览器探索/登录/浅爬)、
+    `intelligence/scanner.py`(Scanner LLM 提炼 + `summarize_supplements` + `url_scope`)、
+    `agent._incremental_scan`/`_safe_find_page`/`_evidence_rank`/`_already_covered`(执行后增量
+    扫描)、`VocabularyManager.merge_scanned`、`api/routers/vocabulary.py` 的 `/vocabulary/scan`
+    POST+GET 端点、前端 `VocabularyPage` 主动扫描表单 + 轮询、`harness/session.py`
+    (`make_mcp_credential_login` 仅供扫描登录,随之孤儿)。env `VOCAB_SCAN`/`SCAN_CRAWL_DEPTH`/
+    `SCAN_MAX_PAGES` 删除。净 −733 行(+4 文件删除)。
+  - **保留**:`VocabularyResolver` + `VocabularyManager`(resolve/find_page/mark_stale)+ 词汇表
+    CRUD(API + 前端手动维护)+ `react_loop._heal_action` 操作侧自愈查词表 + `MCPPageProbe(resolver=)`
+    断言探针解析。词汇表 = **纯手动维护 + 运行时解析**,自动扫描整体退役。
+  - **验证**:pytest 477 passed(2 个预存在 Windows 失败不变);前端 build 绿;`api.server` 导入
+    冒烟通过。纯减法(不碰驱动/裁决路径)→ 不单独 live 冒烟。
+  - **若将来要捞回价值**:T7(codegen 接词表兜底断言目标定位器)是词表唯一仍有实质价值的接点,
+    要做就接 `resolve_locators`/`locator_from_vocab` 进 codegen,而非重建扫描。
 
 - **阶段⑦ codegen → scanning 走查(走查结论=设计健全、不 redesign,2026-06-24)** — ⑦ =
   执行链末端产物(passed 时 BDDGenerator 生成 pytest-bdd 三件套 + 默认关的执行后增量扫描)。
@@ -335,6 +354,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - **执行中实时反馈(已做,修执行期抽屉空白)** — 根因:`agent.run` 原把 `step_callback` 放在 `loop.run()` **返回之后**一次性补发,执行期间(占满几乎全部耗时)SSE 只有 `case_start`、抽屉拿不到任何 live 数据。修:① `ReActLoop` 加 `on_step` 回调,每步落定**即时**推送 `step_change`(去掉事后补发);② `agent.run` 发**生命周期阶段**事件 `phase`(spec 翻译 / executing / asserting / codegen),orchestrator 的 `sse_callback` 透传;③ 前端 `useSuiteRun` 收 `phase` 入 `CaseRunState.phases`,`CaseDrawerBody` 加 `RunningView`(阶段清单:末项转圈、其余打勾 + 实时步骤),`case_start` 时右栏默认切到该视图;用例在本次会话内跑完(running→passed/failed)**重新拉结果**,免得抽屉停在"执行中"。参考 TestSprite 的运行态交互。
 - **词汇表全链接通 + 可观测(已做)** — 此前词汇表只服务**判定/产物**(断言探针、codegen),
   执行驱动完全没用,且规格设想的两处是孤儿代码。本轮补齐:
+  - 〔**2026-06-24 扫描子系统收缩(用户拍板 B):本条描述的 Scanner 策略C 已删除**——见下「词汇表扫描子系统收缩」。下文 Scanner/`_incremental_scan`/`merge_scanned` 均已不存在,保留作历史。〕
   - **Scanner 策略C(执行后增量补充)** — `agent.run` 结束后 `_incremental_scan`。**2026-06-15
     按用户设计意图重写**(原实现跑偏:逐页跑一遍和主动扫描一样的全页提炼,既贵又丢真值、与
     主动扫描两写入源)。**新逻辑**:职责分工——主动扫描(`/vocabulary/scan`)铺全量页面词汇,
@@ -556,8 +576,7 @@ cd frontend && npm run preview    # 本地预览生产构建
 #   CUSTOM_TOOLS_YAML=examples/custom_tools.yaml  → Custom Tool
 #   MCP_ISOLATED=1 / MCP_HEADLESS=1               → playwright-mcp 启动参数
 #   MCP_SCREENSHOT=0                               → 关截图捕获
-#   VOCAB_SCAN=1                                   → 开执行期增量词汇表扫描(**默认关**;主动扫描为主入口)
-#   SCAN_CRAWL_DEPTH=1 / SCAN_MAX_PAGES=20         → 主动扫描浅爬深度 / 单次最多扫页数
+#   〔VOCAB_SCAN / SCAN_CRAWL_DEPTH / SCAN_MAX_PAGES 已删除(2026-06-24 扫描子系统收缩)〕
 #   MCP_SETTLE=0                                   → 关「导航类动作后等页面稳定」(默认开)
 #   MCP_SETTLE_TIMEOUT_MS=8000 / MCP_SETTLE_INTERVAL_MS=400 → settle 超时/轮询间隔
 #   HEAL_VISUAL=0                                  → 关视觉自愈截图双通道(默认开,需多模态模型)

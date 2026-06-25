@@ -122,13 +122,12 @@
   占比/哑火率/完整性闸门拦截率/**llm_judge 占比=false-green 风险面**)+ 套件级趋势。纯前端
   聚合 + 汇总组件,无需后端改动。
 
-- [ ] **`_incremental_scan` 逐步 url 归属精度** — 按步 `s.url` 分组,部分步(browser_type)
-  `outcome.url` 空靠"继承最近非空 url"兜底,偶尔把跨页元素归到前一页 url 组。不影响 selector
-  正确性,但页面归属不精确影响按 url 解析命中。根因在 react_loop 逐步 url 捕获精度。
-  〔注:`VOCAB_SCAN` 默认关,影响面小。〕
-
-- [ ] **定时扫描触发**(§6.4)— 手动主动扫描 + stale + 执行期增量(默认关)已做;唯"**定时**"
-  调度无实现。
+- [x] ~~**`_incremental_scan` 逐步 url 归属精度**~~ — **2026-06-24 移除**:`_incremental_scan`
+  随扫描子系统收缩(用户拍板 B)整体删除,该精度问题不复存在。
+- [x] ~~**定时扫描触发**(§6.4)~~ — **2026-06-24 移除**:主动扫描子系统整体退役,定时调度无意义。
+- [ ] **(可选)T7 codegen 接词汇表兜底断言目标定位器** — 扫描收缩后词汇表唯一仍有实质价值的
+  接点:codegen 当前只接执行捕获定位器,断言目标(走 probe 不留 selector)无 vocab 兜底 → 文本
+  兜底。要捞回词表价值就接 `resolve_locators`/`locator_from_vocab` 进 codegen(见一.T7)。
 
 - [ ] **prompt 优化 C/D**(省 token,有正确性风险)— 每步约 3 次 LLM 往返
   (snapshot→action→mark_done)、system 每轮重列全部工具文本(已另经 `tools=` 传,冗余)。
