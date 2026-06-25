@@ -51,6 +51,7 @@ async def execute_run(
     from harness.llm import build_llm_client
     from harness.orchestrator import Orchestrator
     from harness.skills import build_skill_manager
+    from input.models import ExecutionRecord
     from intelligence.vocabulary import VocabularyManager, VocabularyResolver
     from mcp_client.client import MCPClient
     from storage.db import Store
@@ -58,10 +59,14 @@ async def execute_run(
     store = Store(url=db_url)
     await store.init()
     repo = SQLModelRepository(store)
+    cases: list = []  # 提到 try 外:异常兜底时给未落记录的用例补占位记录要用
+    saved_ids: set[str] = set()  # 本 run 已落库的 case_id(_save_record 累加)
+    fail_reason = ""
+    completed = False
     try:
         suite = await store.get_suite(suite_id)
         if suite is None:
-            await repo.update_run(run_id, status="failed", finished_at=time.time())
+            fail_reason = "套件不存在"
             return
         cases = await repo.list_by_suite(suite_id)
         if case_id is not None:
@@ -139,32 +144,65 @@ async def execute_run(
         async def _save_record(record) -> None:
             record.run_id = run_id
             await repo.save_record(record)
+            saved_ids.add(record.case_id)
             case = _case_by_id.get(record.case_id)
             if case is not None and case.precondition_items:
                 await store.save_case(case)
 
+        orch = Orchestrator(agent_factory=make_agent)
+        result = await orch.run_suite(
+            cases,
+            suite=suite,
+            sse_callback=sse_cb,
+            run_id=run_id,
+            on_record=_save_record,
+            parallelism=parallelism,
+        )
+        await repo.update_run(
+            run_id,
+            status="completed",
+            passed_cases=result.passed_count,
+            failed_cases=result.failed_count,
+            finished_at=time.time(),
+        )
+        completed = True
+    except Exception as e:  # noqa: BLE001 — 任何阶段(setup/orchestrator)异常都在此兜底
+        fail_reason = str(e) or e.__class__.__name__
+        logger.exception("Run %s 异常中断", run_id)
         try:
-            orch = Orchestrator(agent_factory=make_agent)
-            result = await orch.run_suite(
-                cases,
-                suite=suite,
-                sse_callback=sse_cb,
-                run_id=run_id,
-                on_record=_save_record,
-                parallelism=parallelism,
-            )
-            await repo.update_run(
-                run_id,
-                status="completed",
-                passed_cases=result.passed_count,
-                failed_cases=result.failed_count,
-                finished_at=time.time(),
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.exception("Run %s failed", run_id)
-            await sse_cb("error", {"message": str(e)})
-            await repo.update_run(run_id, status="failed", finished_at=time.time())
-        finally:
-            await sse_cb("suite_done", {"run_id": run_id, "sentinel": True})
+            await sse_cb("error", {"message": fail_reason})
+        except Exception:  # noqa: BLE001
+            pass
     finally:
+        # 兜底:run 未正常完成(setup 阶段异常 / 进程被中断 / orchestrator 抛错)→ 标 failed
+        # (幂等)+ 给「本 run 未落任何记录」的用例补一条「执行中断」占位记录。根治旧代码的
+        # 两个坑:① 外层 setup 异常漏标状态 → 僵尸 running;② 中途被杀 → /result 全空、抽屉无详情。
+        if not completed:
+            try:
+                await repo.update_run(run_id, status="failed", finished_at=time.time())
+            except Exception:  # noqa: BLE001
+                logger.warning("标记 run %s failed 失败", run_id, exc_info=True)
+            for c in cases:
+                if c.id in saved_ids:
+                    continue
+                try:
+                    await repo.save_record(
+                        ExecutionRecord(
+                            exec_id=f"{run_id}-{c.id}-interrupted",
+                            case_id=c.id,
+                            suite_id=suite_id,
+                            run_id=run_id,
+                            passed=False,
+                            final_result=(
+                                "执行中断,未产生完整记录" f"(原因:{fail_reason or '进程被中断'})"
+                            ),
+                        )
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning("补占位记录失败 case=%s", c.id, exc_info=True)
+        # 无论成功/失败/中断,确保前端 SSE 收到 suite_done 收尾(否则 /stream 永不终止)。
+        try:
+            await sse_cb("suite_done", {"run_id": run_id, "sentinel": True})
+        except Exception:  # noqa: BLE001
+            pass
         await store.close()
