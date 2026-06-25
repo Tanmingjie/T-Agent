@@ -68,6 +68,9 @@ async def test_run_single_case_filters_to_one(client, monkeypatch):
     # 不真正起 worker 线程,只验证单用例过滤 + run 以 1 条用例建立
     import api.routers.execution as execmod
 
+    # 强制 embedded 路径(否则环境/.env 的 RUN_MODE=queue 会走入队分支,不调 spawn_run)
+    monkeypatch.setenv("RUN_MODE", "embedded")
+
     captured = {}
 
     def _fake_spawn(run_id, main):
@@ -84,3 +87,29 @@ async def test_run_single_case_filters_to_one(client, monkeypatch):
 
     run = await srv._repo.get_run(run_id)
     assert run["total_cases"] == 1  # 只跑 1 条
+
+
+@pytest.mark.asyncio
+async def test_stream_queue_mode_uses_repo_get_run(client):
+    """queue 模式 SSE(run 不在内存 _sse_queues)走 repo.get_run,不再 AttributeError。
+
+    回归:此前 stream_events 误调 store.get_run(get_run 只在 repo 上)→ 切 RUN_MODE=queue
+    后 /stream 直接 500。
+    """
+    import api.server as srv
+
+    run_id = "qrun1"
+    await srv._repo.create_run(run_id, "sx", 1, None, None)
+    # 写一条 suite_done run_event,让 queue 分支首轮轮询即收尾返回(不依赖内存队列)
+    await srv._store.append_run_event(run_id, "suite_done", {"run_id": run_id})
+
+    r = await client.get(f"/api/suites/sx/stream?run_id={run_id}")
+    assert r.status_code == 200  # 不再 500
+    assert "event: suite_done" in r.text
+
+
+@pytest.mark.asyncio
+async def test_stream_queue_mode_unknown_run_404(client):
+    """queue 模式:run 既不在内存队列、repo 也查不到、未入队 → 404(非 500)。"""
+    r = await client.get("/api/suites/sx/stream?run_id=does-not-exist")
+    assert r.status_code == 404
