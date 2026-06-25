@@ -6,10 +6,11 @@ import {
   Settings,
   Zap,
   UserRound,
+  BookMarked,
 } from "lucide-react";
 
 // 项目级导航。作用域分两组:
-//   概览 / 测试任务(版本降为任务页内的下拉)走上半组;项目级配置(词汇表/设置)走下半组。
+//   概览 / 测试任务(版本降为任务页内的下拉)走上半组;项目级配置(词汇表/Skills/设置)走下半组。
 //   报告不在此 —— 它是任务级,挂在测试任务工作区(SuiteLayout)内。
 const groups = [
   {
@@ -23,6 +24,7 @@ const groups = [
     label: "配置",
     links: [
       { to: "/vocabulary", label: "词汇表", icon: BookOpen, end: false },
+      { to: "/skills", label: "Skills", icon: BookMarked, end: false },
       { to: "/settings", label: "设置", icon: Settings, end: false },
     ],
   },

@@ -1,11 +1,11 @@
-// 平台化 T-P11/M2:项目设置页(标签页)——LLM 配置 / HTTP 工具 / Skills。
+// 平台化 T-P11/M2:项目设置页(标签页)——LLM 配置 / HTTP 工具。Skills 已独立为 /skills 页。
 // 后端 API 见 api/routers/projects.py;凭据(api_key/headers)不返明文。
 import { useEffect, useState } from "react";
 import { Check, Plug, Trash2, Plus } from "lucide-react";
 import { apiGet, apiPut, apiPost, apiDelete } from "../api/client";
 import { getProjectId } from "../lib/session";
 
-type Tab = "llm" | "http" | "skills";
+type Tab = "llm" | "http";
 
 export default function ProjectSettingsPage() {
   const pid = getProjectId();
@@ -22,7 +22,6 @@ export default function ProjectSettingsPage() {
   const tabs: { id: Tab; label: string }[] = [
     { id: "llm", label: "LLM 配置" },
     { id: "http", label: "HTTP 工具" },
-    { id: "skills", label: "Skills" },
   ];
 
   return (
@@ -48,7 +47,6 @@ export default function ProjectSettingsPage() {
       </div>
       {tab === "llm" && <LLMSection pid={pid} />}
       {tab === "http" && <HttpToolsSection pid={pid} />}
-      {tab === "skills" && <SkillsSection pid={pid} />}
     </div>
   );
 }
@@ -212,76 +210,6 @@ function HttpToolsSection({ pid }: { pid: string }) {
         </select>
         <Input placeholder="http://内网/api" value={url} onChange={(e) => setUrl(e.target.value)} />
         <AddBtn onClick={add} />
-      </div>
-    </Card>
-  );
-}
-
-// ── Skills ───────────────────────────────────────────────────
-
-interface Skill {
-  name: string;
-  description: string;
-  content: string;
-}
-
-function SkillsSection({ pid }: { pid: string }) {
-  const [skills, setSkills] = useState<Skill[]>([]);
-  const [name, setName] = useState("");
-  const [description, setDescription] = useState("");
-  const [content, setContent] = useState("");
-
-  async function load() {
-    setSkills(await apiGet<Skill[]>(`/projects/${pid}/skills`));
-  }
-  useEffect(() => {
-    load();
-  }, [pid]);
-
-  async function add() {
-    if (!name) return;
-    await apiPut(`/projects/${pid}/skills/${encodeURIComponent(name)}`, {
-      name,
-      description,
-      content,
-    });
-    setName("");
-    setDescription("");
-    setContent("");
-    load();
-  }
-  async function del(n: string) {
-    await apiDelete(`/projects/${pid}/skills/${encodeURIComponent(n)}`);
-    load();
-  }
-
-  return (
-    <Card>
-      <p className="text-xs text-gray-500">
-        项目业务知识(标准 Skill 渐进加载)。<b>简述</b>常驻提示供 AI 判断是否相关;相关时 AI
-        自动加载<b>正文</b>。简述写「这条知识讲什么、何时用」,正文写完整业务规则。
-      </p>
-      <ToolList
-        items={skills.map((s) => ({
-          key: s.name,
-          label: `${s.name}: ${s.description || s.content.slice(0, 50)}`,
-        }))}
-        onDelete={del}
-      />
-      <div className="space-y-2 pt-2">
-        <Input placeholder="名称" value={name} onChange={(e) => setName(e.target.value)} />
-        <Input
-          placeholder="简述(常驻提示,供 AI 判断何时加载,如「订单状态流转规则」)"
-          value={description}
-          onChange={(e) => setDescription(e.target.value)}
-        />
-        <textarea
-          placeholder="正文(AI 判断相关时加载的完整业务知识)"
-          value={content}
-          onChange={(e) => setContent(e.target.value)}
-          className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm h-20"
-        />
-        <AddBtn onClick={add} label="添加 Skill" />
       </div>
     </Card>
   );
