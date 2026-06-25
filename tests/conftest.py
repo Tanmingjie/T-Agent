@@ -15,3 +15,4 @@ def _fast_settle(monkeypatch):
 
     monkeypatch.setattr(agent, "_SETTLE_INTERVAL", 0.0, raising=False)
     monkeypatch.setattr(agent, "_SETTLE_TIMEOUT", 0.05, raising=False)
+    monkeypatch.setattr(agent, "_PHASE_SETTLE_TIMEOUT", 0.05, raising=False)

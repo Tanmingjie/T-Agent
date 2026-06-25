@@ -76,21 +76,25 @@ _NO_SHOT_TOOLS = {"browser_snapshot", "browser_take_screenshot"}
 # 截图开关:默认开,env MCP_SCREENSHOT=0 关闭
 _CAPTURE_SCREENSHOTS = os.getenv("MCP_SCREENSHOT", "1") != "0"
 
-# 导航/加载类动作:执行后页面可能在跳转或异步加载,需等稳定再抓快照/截图,
-# 否则会抓到空白 loading 态(如"点登录→页面加载中→快照无 ref→后续步骤卡住")。
+# 交互类动作:可能触发**无 load 事件**的异步内容(SPA 局部刷新/延迟跳转),Playwright 的
+# 自动等待覆盖不到 → 执行后做一次 settle,避免随后抓到空白/半渲染快照(快照无 ref→卡住)。
+# 〔2026-06-25〕**显式导航 browser_navigate/back/forward 不在此列**:Playwright 的 goto 默认
+# 已自动等到 'load' 才返回,再 settle 纯属冗余(每次白烧一轮轮询)。settle 只留给"点击触发
+# 异步内容"这类 Playwright 判不出加载完成的场景(如"点登录→SPA 异步渲染主页")。
 _NAV_TOOLS = {
     "browser_click",
-    "browser_navigate",
-    "browser_navigate_back",
-    "browser_navigate_forward",
     "browser_press_key",
     "browser_file_upload",
 }
 # 页面稳定等待(settle)开关与参数。默认开;env MCP_SETTLE=0 关闭。
-# 机制:导航类动作后轮询 a11y 快照,ref 节点数 >0 且连续两次不变即认为稳定(或超时)。
+# 机制:交互动作后轮询 a11y 快照,ref 节点数 >0 且连续两次不变即认为稳定(或超时)。
 _SETTLE_ENABLED = os.getenv("MCP_SETTLE", "1") != "0"
 _SETTLE_TIMEOUT = float(os.getenv("MCP_SETTLE_TIMEOUT_MS", "8000")) / 1000.0
 _SETTLE_INTERVAL = float(os.getenv("MCP_SETTLE_INTERVAL_MS", "400")) / 1000.0
+# 阶段末尾 Validator 判前的 settle 超时:阶段末步是 mark_step_done(不改页面),页面通常在
+# 前序动作后已稳——这里只防"点击触发的 SPA 异步内容还在渲染就被裁判抓到"→ **短超时即可**
+# (默认 2s),不必沿用主 settle 的 8s(动态页/长轮询页会每阶段白烧满)。env 可调。
+_PHASE_SETTLE_TIMEOUT = float(os.getenv("PHASE_SETTLE_TIMEOUT_MS", "2000")) / 1000.0
 
 # 单步定位失败预算(#1 快速失败):同一业务步累计定位失败(自愈也没救回)达此数 →
 # 快速判 STEP_FAILED 终止(疑似点错前序元素致后续找不到目标)。env STEP_FAIL_BUDGET 可调。
@@ -561,9 +565,12 @@ class TestCaseAgent:
                 return f"阶段 {phase_index + 1} 无 expected,无法裁决"
             # E4 判前 settle:mark_step_done 不触发 settle,Validator 在 mark 当场抓快照
             # 可能抓到「上一动作还在加载」的页面(裁判要么白等要么把过渡态误判)。先等
-            # 页面稳定再 refresh,确保 judge 看的是**稳定终态页**。
+            # 页面稳定再 refresh,确保 judge 看的是**稳定终态页**。用短超时(_PHASE_SETTLE_TIMEOUT,
+            # 默认 2s):页面多半已稳,这里只兜"SPA 异步内容还在渲染",不必磨满主 settle 的 8s。
             if _SETTLE_ENABLED:
-                await settle_page(self.mcp, timeout=_SETTLE_TIMEOUT, interval=_SETTLE_INTERVAL)
+                await settle_page(
+                    self.mcp, timeout=_PHASE_SETTLE_TIMEOUT, interval=_SETTLE_INTERVAL
+                )
             # resolver 不传:阶段裁决只走 _check_llm_judge(吃 raw_snapshot/current_url,
             # 绝不调 probe.query()),resolver 在这条路上是死参数。词汇表运行时解析当前唯一
             # 真实消费点是 react_loop 操作侧自愈(直连 vocab_resolver,不经本 probe)。

@@ -505,6 +505,17 @@ async def test_settle_page_waits_until_stable():
     assert n == 3
 
 
+def test_nav_tools_exclude_explicit_navigation():
+    """显式导航(Playwright 已自动等 load)不进 settle 名单;交互类(可能触发 SPA 异步)仍在。"""
+    from harness.agent import _NAV_TOOLS
+
+    assert "browser_navigate" not in _NAV_TOOLS
+    assert "browser_navigate_back" not in _NAV_TOOLS
+    assert "browser_navigate_forward" not in _NAV_TOOLS
+    assert "browser_click" in _NAV_TOOLS
+    assert "browser_press_key" in _NAV_TOOLS
+
+
 async def test_settle_page_times_out_on_persistent_blank():
     from harness.agent import settle_page
 
