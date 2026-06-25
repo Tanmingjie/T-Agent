@@ -129,8 +129,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
     (`make_mcp_credential_login` 仅供扫描登录,随之孤儿)。env `VOCAB_SCAN`/`SCAN_CRAWL_DEPTH`/
     `SCAN_MAX_PAGES` 删除。净 −733 行(+4 文件删除)。
   - **保留**:`VocabularyResolver` + `VocabularyManager`(resolve/find_page/mark_stale)+ 词汇表
-    CRUD(API + 前端手动维护)+ `react_loop._heal_action` 操作侧自愈查词表 + `MCPPageProbe(resolver=)`
-    断言探针解析。词汇表 = **纯手动维护 + 运行时解析**,自动扫描整体退役。
+    CRUD(API + 前端手动维护)+ `react_loop._heal_action` 操作侧自愈查词表。词汇表 = **纯手动
+    维护 + 运行时解析**,自动扫描整体退役。
+  - **⚠️ 运行时解析的诚实现状(别比实现乐观)**:`VocabularyResolver.resolve` **当前唯一真实
+    被调用的点是操作侧自愈**(`react_loop._heal_action`,且仅在工具报错触发自愈时跑;直连
+    `vocab_resolver`,不经 probe)。**`MCPPageProbe(resolver=)` + `probe.query()` 的断言探针解析
+    是休眠的**——它只服务结构化断言(`text_equals`/`element_visible` 等),而阶段化裁决只走
+    `_check_llm_judge`(吃 raw_snapshot+URL,不调 query),结构化断言引擎(`verify()`/`query()`)
+    已是化石路径。`on_phase_end` 的 probe 已**不再传 resolver**(死参数已删,2026-06-24)。
+    **若要进一步清理**:`MCPPageProbe.query` 的 resolver 解析 + 结构化断言引擎整体删除是另一桩
+    更大的化石清理(碰 `page_probe`/`assertion`/断言侧 healing/一批测试),与本次扫描收缩不同
+    量级,留作独立任务——除非结构化确定性断言确定不再回归,否则先休眠保留。
   - **验证**:pytest 477 passed(2 个预存在 Windows 失败不变);前端 build 绿;`api.server` 导入
     冒烟通过。纯减法(不碰驱动/裁决路径)→ 不单独 live 冒烟。
   - **若将来要捞回价值**:T7(codegen 接词表兜底断言目标定位器)是词表唯一仍有实质价值的接点,

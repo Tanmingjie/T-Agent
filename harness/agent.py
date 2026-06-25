@@ -512,7 +512,10 @@ class TestCaseAgent:
             # 页面稳定再 refresh,确保 judge 看的是**稳定终态页**。
             if _SETTLE_ENABLED:
                 await settle_page(self.mcp, timeout=_SETTLE_TIMEOUT, interval=_SETTLE_INTERVAL)
-            probe_p = MCPPageProbe(self.mcp, resolver=self.vocab_resolver)
+            # resolver 不传:阶段裁决只走 _check_llm_judge(吃 raw_snapshot/current_url,
+            # 绝不调 probe.query()),resolver 在这条路上是死参数。词汇表运行时解析当前唯一
+            # 真实消费点是 react_loop 操作侧自愈(直连 vocab_resolver,不经本 probe)。
+            probe_p = MCPPageProbe(self.mcp)
             await probe_p.refresh()  # 抓当时所处页面快照(阶段边界,页面还在那一刻)
             engine_p = AssertionEngine(
                 probe_p, healer=healer, tool_registry=self.tools_registry, llm=self.llm
