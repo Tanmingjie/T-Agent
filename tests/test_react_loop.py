@@ -299,6 +299,50 @@ async def test_stream_dropped_toolcall_recovered_by_nonstream_recheck():
     assert any(s.tool_name == "browser_click" for s in result.action_steps)
 
 
+async def test_reasoning_captures_full_streamed_text_across_idle_round():
+    """执行中流式给前端的思考(含哑火续推轮)= 执行后步骤定格的 reasoning,两者一致。
+
+    回归:旧实现 ActionStep.reasoning 只取动作轮的 resp.content,丢掉了「哑火/复核续推」轮
+    流式给前端的思考 → 「执行中流式看到的」≠「执行完点开步骤看到的」。现取实际流式累积文本。
+    """
+    plan = _plan(1)
+    streamed: list[str] = []  # 前端实际收到的流式片段
+
+    class _StreamingLLM(LLMClient):
+        def __init__(self):
+            self.n = 0
+
+        async def chat(self, messages, tools=None, on_delta=None, **kwargs):
+            self.n += 1
+            if on_delta is not None:
+                if self.n == 1:  # 流式轮①:只思考、不调工具 → 哑火
+                    await on_delta("哑火轮的思考。")
+                    return _resp(content="哑火轮的思考。")
+                await on_delta("动作轮的思考。")  # 流式轮②:真正动作
+                return _resp(content="动作轮的思考。", calls=[("mark_step_done", {"step_no": 1})])
+            return _resp(content="复核也没调用")  # 哑火后非流式复核:仍无调用,续推
+
+    async def _sink(t):
+        streamed.append(t)
+
+    loop = ReActLoop(
+        _StreamingLLM(),
+        tools=[{"x": 1}],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+        on_llm_delta=_sink,
+        max_steps=5,
+    )
+    result = await loop.run()
+    act = [s for s in result.action_steps if s.tool_name == "mark_step_done"]
+    assert act, "应产生 mark_step_done 步"
+    # 该步 reasoning == 前端流式收到的全部(哑火轮 + 动作轮),不是只动作轮
+    assert act[0].reasoning == "".join(streamed)
+    assert "哑火轮的思考。" in act[0].reasoning
+    assert "动作轮的思考。" in act[0].reasoning
+
+
 async def test_llm_finished_without_toolcall():
     # 无待办步骤(空 plan,all_resolved 为真)时,模型不调工具并自报结果 → 正常结束
     plan = _plan(0)

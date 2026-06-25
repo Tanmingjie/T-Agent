@@ -315,6 +315,21 @@ class ReActLoop:
         auto_loaded_stuck: set[int] = set()  # 已对该步发**乙层**(自动注入 skill)过
         prev_round_fp: str = ""  # 上一轮结束时的页面指纹,供 stuck 检测做 round-to-round 对比
         prev_phase_index: int | None = None  # 跨 phase 重置护栏计数用
+        # 「思考」流式一致性:用包装的 delta 回调把**实际流式给前端的文本**逐块累积,作为
+        # ActionStep.reasoning 的来源——而非只取本轮 resp.content。两者会在「哑火续推 / 过早-mark
+        # 守卫续推 / 流式丢调用后的非流式复核」等**不产生动作**的轮次发生分歧:那些轮的思考流
+        # 给了前端(累进 accumThink)却没进任何步骤,导致「执行中流式看到的思考」≠「执行完点开
+        # 步骤看到的思考」。这里累积到某步真正落定(产生 action_step)时归入该步、再清空给下一步,
+        # 与前端 step_change 落定即 resetStream 的归并口径对齐 → live == 回看 == 回放,同一份来源。
+        streamed_parts: list[str] = []
+
+        async def _capture_delta(text: str) -> None:
+            streamed_parts.append(text)
+            if self.on_llm_delta is not None:
+                await self.on_llm_delta(text)
+
+        # 仅在确有前端流式订阅时包装(否则 chat 走非流式、不触发 delta,reasoning 回退 resp.content)
+        delta_cb = _capture_delta if self.on_llm_delta is not None else None
 
         for iteration in range(1, self.max_steps + 1):
             result.iterations = iteration
@@ -339,7 +354,7 @@ class ReActLoop:
             current_prompt = self._snapshot_prompt(messages)
 
             try:
-                resp = await self.llm.chat(messages, tools=self.tools, on_delta=self.on_llm_delta)
+                resp = await self.llm.chat(messages, tools=self.tools, on_delta=delta_cb)
             except LLMToolCallError as e:
                 # 铁律3:偶发 tool_call 格式错误不得搞崩 ReAct 循环。还有未完成步骤时,
                 # 不直接终止,而是哑火续推(纠偏后让模型重出正确调用),仅在预算耗尽/
@@ -502,6 +517,9 @@ class ReActLoop:
 
             # Act + Observe:逐个执行 tool_call
             intent = _parse_intent(reasoning)
+            # 本步「思考」取**实际流式给前端的累积文本**(含本步之前哑火/复核/守卫续推轮),
+            # 与执行中流式看到的一致;无流式(CLI 非流式)或未采到时回退本轮 resp.content。
+            reasoning_full = "".join(streamed_parts).strip() or reasoning
             # 本轮所有 ref 都基于「上一次观察到的快照」分配,先建一份 ref→节点 索引
             ref_index = build_ref_index(last_snapshot_text)
             cur_step = self.step_plan.current
@@ -564,7 +582,7 @@ class ReActLoop:
                         step_no=step_no,
                         tool_name=tc.name,
                         tool_input=tc.arguments,
-                        reasoning=reasoning,
+                        reasoning=reasoning_full,
                         intent=intent,
                         prompt=current_prompt,
                         tool_result=outcome.text,
@@ -661,6 +679,11 @@ class ReActLoop:
                             result.failed_step_target = ps.text
                             step_failed_stop = True
                             break
+
+            # 本轮已产出 action_step(s)、思考流已归并入对应步 → 清空缓冲给下一步(对齐前端
+            # step_change 落定即 resetStream)。哑火/守卫续推轮在上面已 continue,不会走到这里,
+            # 故其思考流会继续累积到下一个真正落定的步骤,与前端 accumThink 跨轮累进一致。
+            streamed_parts.clear()
 
             if step_failed_stop:
                 break
