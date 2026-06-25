@@ -199,19 +199,25 @@ _FAILURE_MARKERS = (
     "### Error",
     "[工具执行异常]",
     "Unknown engine",
-    "Timeout",
     "resolved to 0 element",
     "no element",
     "not found",
     "strict mode violation",
 )
+# 「超时」类失败单独用正则:裸子串 "Timeout" 会误伤 browser_wait_for 成功结果里的
+# `setTimeout(...)`(实测每次按时长等待都被误判为工具失败 → 触发无意义自愈 + 累加单步失败
+# 预算 → 5 次后 STEP_FAILED,使「等待观察 N 分钟」这类步骤必死)。用负向后瞻排除 setTimeout,
+# 只认真正的超时报错(`Timeout 30000ms exceeded` / `TimeoutError` 等)。
+_TIMEOUT_FAIL_RE = re.compile(r"(?<!set)timeout", re.IGNORECASE)
 
 
 def _is_tool_failure(text: str | None) -> bool:
     if not text:
         return False
     low = text.lower()
-    return any(m.lower() in low for m in _FAILURE_MARKERS)
+    if any(m.lower() in low for m in _FAILURE_MARKERS):
+        return True
+    return bool(_TIMEOUT_FAIL_RE.search(text))
 
 
 class ReActLoop:

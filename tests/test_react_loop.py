@@ -626,6 +626,14 @@ def test_is_tool_failure_markers():
     assert _is_tool_failure("locator resolved to 0 elements")
     assert not _is_tool_failure("### Ran Playwright code ... ok")
     assert not _is_tool_failure(None)
+    # 真超时报错仍判失败
+    assert _is_tool_failure("Error: Timeout 30000ms exceeded")
+    assert _is_tool_failure("locator.click: TimeoutError")
+    # 回归:browser_wait_for 成功结果含 setTimeout(...),不得误判为失败
+    assert not _is_tool_failure(
+        "### Result\nWaited for 180\n### Ran Playwright code\n"
+        "await new Promise(f => setTimeout(f, 180 * 1000));\n### Page\n- Page URL: x"
+    )
 
 
 async def test_action_healing_records_attempt_and_hints():
