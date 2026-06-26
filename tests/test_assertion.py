@@ -572,6 +572,36 @@ async def test_judge_visual_falls_back_when_model_rejects_image(monkeypatch):
     assert llm.calls == ["multi", "text", "text"]
 
 
+def test_snapshot_for_judge_keeps_evidence_beyond_head_limit():
+    """长快照里证据(温度 32.00)排在头部上限之后,相关度窗口仍把它保留进裁判视野。"""
+    from harness.assertion import _snapshot_for_judge
+
+    filler = "\n".join(f"- generic [ref=e{i}]: 噪声行 {i}" for i in range(2000))
+    evidence = '- text [ref=e9001]: "状态 On"\n- text [ref=e9002]: "温度 32.00 ℃"'
+    snapshot = filler + "\n" + evidence
+    assert len(snapshot) > 9000  # 证据落在头部硬截断之外
+    out = _snapshot_for_judge(snapshot, "设备状态 On 且温度 32.00", limit=9000)
+    assert "32.00" in out  # 头部硬截断会丢掉的证据,相关度窗口保住了
+    assert "On" in out
+    assert len(out) <= 9000 + 200  # 仍受上限约束(留少量结构余量)
+
+
+def test_snapshot_for_judge_short_returns_full():
+    from harness.assertion import _snapshot_for_judge
+
+    s = "- text: 短快照,无需截断"
+    assert _snapshot_for_judge(s, "任意期望") == s
+
+
+def test_snapshot_for_judge_anchor_absent_falls_back_to_head():
+    """锚点存在但快照里一行都没命中(证据真缺)→ 退回头部截断,让裁判看到页面据缺失判 FAIL。"""
+    from harness.assertion import _snapshot_for_judge
+
+    snapshot = "x" * 20000
+    out = _snapshot_for_judge(snapshot, "温度 32.00", limit=9000)  # 快照里没有 32.00
+    assert len(out) <= 9000 + 30 and out.startswith("x")
+
+
 async def test_judge_vision_suffix_only_with_screenshot(monkeypatch):
     """E6:截图在场 → system 拼视觉证据规则(放开颜色/状态灯类期望);无截图 → 不拼,纯文本纪律不变。"""
     from harness import assertion as a_mod

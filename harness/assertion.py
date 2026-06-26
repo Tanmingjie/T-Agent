@@ -33,6 +33,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Protocol, runtime_checkable
@@ -87,6 +88,80 @@ _JUDGE_VISION_SUFFIX = """
   这视为合法证据,无需从快照文本逐字摘录。
 - 偏-FAIL 纪律不变:视觉特征**看不清 / 分辨不出颜色 / 截图里找不到该元素** → 一律判 FAIL。
 - 文本 / URL / 数值类期望仍以 A11y 快照 + URL 的逐字证据为准(截图只是补充,别拿它替代文本证据)。"""
+
+# 喂裁判的快照字符上限。超过则**按期望锚点做相关度窗口截断**(而非头部硬切)——治长页面
+# (IoT 仪表盘等)证据(状态/数值)排在 6000 字之后被切掉、裁判"找不到证据"误判 FAIL。
+_JUDGE_SNAPSHOT_LIMIT = int(os.getenv("JUDGE_SNAPSHOT_LIMIT", "9000"))
+
+# 从期望抽强锚点:引号字面 / 数字(含小数,如 32.00)/ 较长英文词(≥3)/ CJK 串(≥2)。
+# 刻意不取超短英文(如 "On"),其子串("on")会命中 console/button 等噪声行。
+_ANCHOR_NUM_RE = re.compile(r"\d+(?:\.\d+)?")
+_ANCHOR_WORD_RE = re.compile(r"[A-Za-z]{3,}|[一-鿿]{2,}")
+
+
+def _judge_anchors(expectation: str) -> list[str]:
+    raw: list[str] = []
+    raw += re.findall(r'"([^"]+)"', expectation)
+    raw += re.findall(r"'([^']+)'", expectation)
+    raw += _ANCHOR_NUM_RE.findall(expectation)
+    raw += _ANCHOR_WORD_RE.findall(expectation)
+    seen: set[str] = set()
+    out: list[str] = []
+    for a in raw:
+        a = a.strip()
+        if len(a) >= 2 and a.lower() not in seen:
+            seen.add(a.lower())
+            out.append(a)
+    return out
+
+
+def _snapshot_for_judge(
+    snapshot: str, expectation: str, *, limit: int = _JUDGE_SNAPSHOT_LIMIT
+) -> str:
+    """长快照按期望锚点做**相关度窗口**截断,确保证据区进裁判视野。
+
+    ≤limit 原样返回。否则:保留命中任一锚点的行 + 其上下文邻居(±3 行)+ 头部页面元信息,
+    用「... [略]」标省略;无锚点(纯中文无引号无数字等)→ 退回头部硬截断(证据真缺则裁判照样
+    FAIL,正确)。仅截断,不替裁判下结论。
+    """
+    if len(snapshot) <= limit:
+        return snapshot
+    lines = snapshot.splitlines()
+    anchors = [a.lower() for a in _judge_anchors(expectation)]
+    if not anchors:
+        return snapshot[:limit] + "\n... [快照已截断]"
+    keep = [False] * len(lines)
+    ctx = 3
+    for i, ln in enumerate(lines):
+        low = ln.lower()
+        if any(a in low for a in anchors):
+            for j in range(max(0, i - ctx), min(len(lines), i + ctx + 1)):
+                keep[j] = True
+    for i, ln in enumerate(lines[:8]):  # 头部页面元信息(URL/Title)
+        low = ln.lower()
+        if "page url" in low or "page title" in low or ln.strip().startswith("###"):
+            keep[i] = True
+    out: list[str] = []
+    used = 0
+    gap = False
+    for i, ln in enumerate(lines):
+        if keep[i]:
+            if gap:
+                out.append("... [略]")
+                gap = False
+            out.append(ln)
+            used += len(ln) + 1
+            if used >= limit:
+                out.append("... [快照已截断]")
+                break
+        else:
+            gap = True
+    # 锚点一行都没命中(证据可能真缺,或锚点形态对不上)→ 退回头部截断,至少让裁判看到页面、
+    # 据缺失判 FAIL(给空快照反而让裁判无从判断)。
+    if not out:
+        return snapshot[:limit] + "\n... [快照已截断]"
+    return "\n".join(out)
+
 
 # 阶段一支持的确定性断言类型
 _SUPPORTED = {
@@ -255,11 +330,13 @@ class AssertionEngine:
                 f"本阶段开始时 URL:{prev_url}\n"
                 f"(页面已从上面这个起始 URL 跳转到下面的当前 URL —— 确定性事实)\n\n"
             )
+        # 按期望锚点相关度截断(治长页面证据排在头部 6000 字之后被切掉→裁判找不到证据误判 FAIL)
+        snap_for_judge = _snapshot_for_judge(snapshot_text, expectation) if snapshot_text else ""
         user_text = (
             f"期望:{expectation}\n\n"
             f"{nav_line}"
             f"当前页面 URL:{cur_url or '(未知)'}\n\n"
-            f"当前页面无障碍快照:\n{snapshot_text[:6000] or '(无快照)'}"
+            f"当前页面无障碍快照:\n{snap_for_judge or '(无快照)'}"
         )
         # E6 多模态裁判通道(默认关,env JUDGE_VISUAL=1 开启):
         # 抓一张截图作第二通道,治 a11y 树看不全的角标/图标/canvas 类预期(judge 容易看走眼)。
