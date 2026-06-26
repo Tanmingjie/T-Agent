@@ -32,6 +32,25 @@ def test_truncate_keeps_head_and_keywords():
     assert len(out.splitlines()) <= 21
 
 
+def test_truncate_keeps_interactive_even_when_keywords_miss():
+    """内网血泪:步骤是中文、目标元素 a11y 名是英文/自定义组件 → 关键词命不中。
+    截断必须仍保留可交互元素行(button / web component),否则模型拿不到 ref → 找不到元素。"""
+    rows = "\n".join(f'  - listitem [ref=e{i}]: "data row {i}"' for i in range(2, 60))
+    text = (
+        "### Page URL: http://intranet/orders\n### Page Title: 订单\n"
+        f"{rows}\n"
+        '  - sl-button [ref=e120] "Submit":\n'
+        "    - button [ref=e121]: Submit"
+    )
+    # 关键词是中文,命不中英文 Submit / 自定义组件
+    out = truncate_snapshot(text, keywords=["点击提交审批按钮", "提交审批"], max_lines=20)
+    assert "已按相关度截断" in out  # 确实截断了
+    # 可交互目标行仍被保留(标准 button 角色 + 自定义组件 sl-button)
+    assert "ref=e121" in out
+    assert "ref=e120" in out
+    assert len(out.splitlines()) <= 21
+
+
 def test_truncate_noop_when_short():
     text = '### Page\n- Page URL: x\n- button "a"'
     assert truncate_snapshot(text, [], max_lines=40) == text
