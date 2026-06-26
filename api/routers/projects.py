@@ -93,6 +93,7 @@ class ProjectUpdate(BaseModel):
     name: str | None = None
     description: str | None = None
     max_concurrency: int | None = None  # 项目级并发 run 配额(0=不限)
+    translation_knowledge: str | None = None  # 翻译知识/操作指南(注入翻译 prompt)
 
 
 @router.put("/projects/{project_id}")
@@ -106,7 +107,7 @@ async def update_project(
     if p is None:
         raise HTTPException(404, "项目不存在")
     data = p.model_dump()
-    for k in ("name", "description", "max_concurrency"):
+    for k in ("name", "description", "max_concurrency", "translation_knowledge"):
         v = getattr(body, k)
         if v is not None:
             data[k] = v

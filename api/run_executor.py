@@ -103,6 +103,13 @@ async def execute_run(
         llm_config = await store.get_llm_config(suite.project_id) if suite.project_id else None
         mcp_args = _mcp_args()
 
+        # 项目级翻译知识/操作指南:注入翻译 prompt(助补全流程/对齐术语/写对 expected)
+        translation_knowledge = ""
+        if suite.project_id:
+            project = await store.get_project(suite.project_id)
+            if project is not None:
+                translation_knowledge = project.translation_knowledge or ""
+
         tools_registry = None
         # 平台:项目级 HTTP 型 Custom Tool(M2)优先;无则回退 env YAML(单机/命令型)。
         if suite.project_id:
@@ -163,6 +170,7 @@ async def execute_run(
                     hooks=None,
                     skills=skills,
                     tools_registry=tools_registry,
+                    translation_knowledge=translation_knowledge,
                     max_steps=int(os.getenv("AGENT_MAX_STEPS", "40")),
                 )
                 if approver is not None:

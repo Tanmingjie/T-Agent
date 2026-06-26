@@ -241,6 +241,9 @@ class Project(BaseModel):
     description: str = ""
     owner: str | None = None  # 创建人(user id),自动成为项目管理员
     max_concurrency: int = 0  # 项目级并发 run 配额(0=不限,平台化 M2);worker 领取处生效
+    # 翻译知识/操作指南(自然语言):注入翻译 prompt 助补全流程/对齐术语/写对 expected
+    # (受 pre_analysis 两条护栏约束,不接地、不脑补)。项目级,全项目用例共用。
+    translation_knowledge: str = ""
     created_at: float = Field(default_factory=time.time)
     updated_at: float = Field(default_factory=time.time)
 

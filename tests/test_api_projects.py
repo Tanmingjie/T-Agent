@@ -64,6 +64,27 @@ async def test_create_project_makes_creator_admin(ctx):
 
 
 @pytest.mark.asyncio
+async def test_translation_knowledge_roundtrip(ctx):
+    """项目级翻译知识:PUT 保存 → GET 回读;默认空。"""
+    client, _ = ctx
+    pid = (await client.post("/api/projects", json={"name": "K"}, headers=_h("alice"))).json()["id"]
+    # 默认空
+    r = await client.get(f"/api/projects/{pid}", headers=_h("alice"))
+    assert r.json().get("translation_knowledge", "") == ""
+    # admin 保存
+    kn = "提交前必须先选审批人。术语:商品=标的物。"
+    r = await client.put(
+        f"/api/projects/{pid}",
+        json={"translation_knowledge": kn},
+        headers=_h("alice"),
+    )
+    assert r.status_code == 200
+    # 回读
+    r = await client.get(f"/api/projects/{pid}", headers=_h("alice"))
+    assert r.json()["translation_knowledge"] == kn
+
+
+@pytest.mark.asyncio
 async def test_list_projects_scoped_to_membership(ctx):
     client, _ = ctx
     p1 = (await client.post("/api/projects", json={"name": "A"}, headers=_h("alice"))).json()["id"]

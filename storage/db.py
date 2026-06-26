@@ -214,6 +214,7 @@ class ProjectRow(SQLModel, table=True):
     description: str = ""
     owner: str | None = None
     max_concurrency: int = 0  # 项目级并发 run 配额(0=不限,M2)
+    translation_knowledge: str = ""  # 翻译知识/操作指南(注入翻译 prompt;全项目用例共用)
     created_at: float = 0.0
     updated_at: float = 0.0
 
