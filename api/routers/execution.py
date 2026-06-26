@@ -19,7 +19,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from api.auth import require_suite_access
-from api.execution_worker import make_sse_bridge, schedule_queue_cleanup, spawn_run
+from api.execution_worker import spawn_run
 from api.repository import get_suite_settings, set_suite_settings
 
 router = APIRouter(tags=["execution"])
@@ -43,9 +43,11 @@ def get_store():
 # 单机隐式 admin 放行;平台 SSE 鉴权随 T-P09 双进程改造引入 token。
 _suite_guard = [Depends(require_suite_access)]
 
-# In-memory registry of active SSE queues + permission events。
-# 权限事件用 threading.Event(执行在 worker 线程/loop,审批在 API loop,跨线程 set)。
-_sse_queues: dict[str, asyncio.Queue] = {}
+# embedded 模式下「本进程内有活 worker 线程」的 run 集合,纯作**僵尸检测**用
+# (DB 为 running 但不在此集合 = 上次进程崩溃遗留 → 自动收尾)。SSE 投递不再走内存,
+# 统一经 run_event 表(execute_run 落表,/stream 从 seq 0 重放+尾随),故退出再进可看全程。
+_live_runs: set[str] = set()
+# 权限审批结果回传:执行在 worker 线程/loop,审批在 API loop,跨线程用 threading.Event set。
 _permission_events: dict[str, threading.Event] = {}
 _permission_results: dict[str, dict] = {}
 
@@ -88,7 +90,7 @@ async def trigger_run(
     runs = await repo.list_runs_by_suite(suite_id)
     active_run = next((r for r in runs if r["status"] == "running"), None)
     if active_run is not None:
-        if active_run["id"] in _sse_queues:
+        if active_run["id"] in _live_runs:
             raise HTTPException(409, "已有执行在进行中")
         await repo.update_run(active_run["id"], status="failed", finished_at=time.time())
 
@@ -99,25 +101,18 @@ async def trigger_run(
     )
 
     # 双进程模式(RUN_MODE=queue):API 只入队,独立 worker(scripts/worker.py)领取执行。
-    # SSE 实时进度由 T-P09(LISTEN/NOTIFY)接;此模式下 /stream 暂无 live 数据,前端轮询结果。
-    # 默认 embedded:进程内线程执行(单机,SSE 实时,行为不变)。
+    # 默认 embedded:进程内守护线程执行(单机)。两模式进度都落 run_event 表,/stream 统一
+    # 从表重放+尾随 → 退出执行页再进来可看全程。
     if os.getenv("RUN_MODE") == "queue":
         await store.enqueue_run(run_id, suite_id, suite.project_id, case_id)
         return {"run_id": run_id, "status": "queued"}
 
-    settings = await get_suite_settings(store, suite_id)
-    parallelism = int(settings.get("parallelism", 1))
-    approve_mode = settings.get("permission_mode") == "approve"
-
-    queue: asyncio.Queue = asyncio.Queue()
-    _sse_queues[run_id] = queue
-    api_loop = asyncio.get_running_loop()  # worker 经它 call_soon_threadsafe 桥回 SSE
-    sse_cb = make_sse_bridge(api_loop, queue)
-
+    api_loop = asyncio.get_running_loop()
     db_url = os.getenv("DATABASE_URL", "sqlite+aiosqlite:///storage/ai_test.db")
 
-    def _perm_approver_factory(sse):
-        """API 进程内审批:Reason 后 Act 前经 SSE 推审批请求,threading.Event 跨线程等结果。"""
+    def _perm_approver_factory(emit):
+        """API 进程内审批:Reason 后 Act 前经 emit 推审批请求(落表可重放),
+        threading.Event 跨线程等结果(执行在 worker 线程,审批 POST 在 API loop)。"""
         from harness.permission import threading_event_approver
 
         async def _perm_approver(req):
@@ -125,7 +120,7 @@ async def trigger_run(
             ev = threading.Event()
             _permission_events[event_id] = ev
             _permission_results[event_id] = {"approved": False}
-            await sse(
+            await emit(
                 "permission",
                 {
                     "event_id": event_id,
@@ -142,8 +137,11 @@ async def trigger_run(
 
         return _perm_approver
 
+    _live_runs.add(run_id)  # 僵尸检测标记:本进程有活 worker 线程
+
     async def _worker_main() -> None:
-        # 共享执行核(api/run_executor.py):自带独立 Store/loop;SSE 经 sse_cb 桥回 API loop。
+        # 共享执行核(api/run_executor.py):自带独立 Store/loop;事件由 execute_run 落 run_event
+        # 表(sse_cb=None,不再走内存队列)。/stream 从表重放+尾随。
         from api.run_executor import execute_run
 
         try:
@@ -152,13 +150,11 @@ async def trigger_run(
                 run_id=run_id,
                 suite_id=suite_id,
                 case_id=case_id,
-                sse_cb=sse_cb,
-                perm_approver=_perm_approver_factory(sse_cb) if approve_mode else None,
+                sse_cb=None,
+                perm_approver_factory=_perm_approver_factory,
             )
         finally:
-            # 收尾:在 API loop 上安全移除 SSE 队列(让 /stream 终止)
-            await asyncio.sleep(0.5)
-            schedule_queue_cleanup(api_loop, _sse_queues, run_id)
+            api_loop.call_soon_threadsafe(_live_runs.discard, run_id)
 
     spawn_run(run_id, _worker_main)
     return {"run_id": run_id, "status": "started"}
@@ -168,53 +164,37 @@ async def trigger_run(
 async def stream_events(
     suite_id: str, run_id: str, store=Depends(get_store), repo=Depends(get_repo)
 ):
-    queue = _sse_queues.get(run_id)
+    # 统一:从 run_event 表**重放(seq 0 起)+ 尾随**——embedded/queue 同一逻辑。在场或晚到
+    # (退出执行页再进来)订阅者都能拿到完整进度,suite_done/error 收尾。run 不存在则 404。
+    from api.execution_worker import format_sse
 
-    if queue is not None:
-        # embedded 模式:内存队列(实时,单机)
-        async def _generate():
-            yield ": keepalive\n\n"
-            while True:
-                try:
-                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
-                    yield msg
-                    if msg.startswith("event: suite_done") or msg.startswith("event: error"):
-                        break
-                except asyncio.TimeoutError:
-                    yield ": keepalive\n\n"
+    run = await repo.get_run(run_id)
+    if run is None and await store.get_queued_run(run_id) is None:
+        raise HTTPException(404, "Run not found")
 
-    else:
-        # queue 模式(双进程):尾随 run_event 表(worker 跨进程写)。在场即从头重放,
-        # 晚到订阅者也能拿到完整进度;suite_done/error 收尾。run 不存在则 404。
-        from api.execution_worker import format_sse
-
-        run = await repo.get_run(run_id)
-        if run is None and await store.get_queued_run(run_id) is None:
-            raise HTTPException(404, "Run not found")
-
-        async def _generate():
-            yield ": keepalive\n\n"
-            last_seq = 0
-            idle = 0
-            while True:
-                events = await store.list_run_events(run_id, after_seq=last_seq)
-                if events:
-                    idle = 0
-                    for ev in events:
-                        last_seq = ev.seq
-                        yield format_sse(ev.event_type, ev.data)
-                        if ev.event_type in ("suite_done", "error"):
-                            return
-                else:
-                    idle += 1
-                    yield ": keepalive\n\n"
-                    # 兜底:run 已落终态且无新事件 → 收尾(防 worker 没发 suite_done)
-                    if idle >= 4:
-                        cur = await repo.get_run(run_id)
-                        if cur and cur["status"] in ("completed", "failed", "aborted"):
-                            yield format_sse("suite_done", {"run_id": run_id, "sentinel": True})
-                            return
-                await asyncio.sleep(0.5)
+    async def _generate():
+        yield ": keepalive\n\n"
+        last_seq = 0
+        idle = 0
+        while True:
+            events = await store.list_run_events(run_id, after_seq=last_seq)
+            if events:
+                idle = 0
+                for ev in events:
+                    last_seq = ev.seq
+                    yield format_sse(ev.event_type, ev.data)
+                    if ev.event_type in ("suite_done", "error"):
+                        return
+            else:
+                idle += 1
+                yield ": keepalive\n\n"
+                # 兜底:run 已落终态且无新事件 → 收尾(防 worker 没发 suite_done)
+                if idle >= 4:
+                    cur = await repo.get_run(run_id)
+                    if cur and cur["status"] in ("completed", "failed", "aborted"):
+                        yield format_sse("suite_done", {"run_id": run_id, "sentinel": True})
+                        return
+            await asyncio.sleep(0.5)
 
     return StreamingResponse(
         _generate(),

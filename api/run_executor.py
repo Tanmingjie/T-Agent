@@ -5,13 +5,17 @@
 落 ExecutionRecord + 更新 RunRecord。
 
 两处复用:
-- API 单机路径(`execution.py`):线程内调用,SSE 经 `make_sse_bridge` 桥回 API loop。
-- 独立 worker 进程(`scripts/worker.py`):领队列任务后直接调用;SSE 由 T-P09 的
-  LISTEN/NOTIFY 接(此前 sse_cb 可为 no-op,run 仍完整执行并落库)。
+- API 单机路径(`execution.py`):线程内调用。
+- 独立 worker 进程(`scripts/worker.py`):领队列任务后直接调用。
 
-权限审批:`perm_approver` 由调用方注入(API 用 threading.Event 跨线程;worker 进程用
-审批工单表,T-P09)。不注入则按 suite 的 permission_mode;approve 模式无 approver 时
-权限层默认拒绝(保守)。
+**进度持久化(2026-06-26 统一)**:execute_run 是**唯一的事件落库点**——内部 `_emit`
+把每个生命周期事件写 `run_event` 表(供 `/stream` 从 seq 0 重放,实现「退出执行页再进来
+看全程」),再可选转发给调用方传入的 `sse_cb`(live 低延迟通道,可为 None)。embedded /
+queue 两模式都走这条路 → 行为一致、都可重连重放。调用方**不再各自往 run_event 表写**。
+
+权限审批:`perm_approver_factory(emit)` 由调用方注入(API 用 threading.Event 跨线程;
+worker 进程用审批工单表)。工厂收到 execute_run 的 `_emit`,使权限事件也落表可重放。
+不注入则按 suite 的 permission_mode;approve 模式无 approver 时权限层默认拒绝(保守)。
 """
 
 from __future__ import annotations
@@ -42,8 +46,8 @@ async def execute_run(
     run_id: str,
     suite_id: str,
     case_id: str | None = None,
-    sse_cb: SSECallback,
-    perm_approver=None,
+    sse_cb: SSECallback | None = None,
+    perm_approver_factory: Callable[[SSECallback], object] | None = None,
 ) -> None:
     """执行一个 run 到完成(自带独立 Store/loop 资源)。失败不抛,落 failed 状态。"""
     from api.repository import SQLModelRepository, get_suite_settings
@@ -63,6 +67,22 @@ async def execute_run(
     saved_ids: set[str] = set()  # 本 run 已落库的 case_id(_save_record 累加)
     fail_reason = ""
     completed = False
+
+    async def _emit(event: str, data: dict) -> None:
+        """唯一事件落库点:写 run_event 表(供 /stream 从 seq 0 重放)+ 转发 live 通道。
+
+        落表 best-effort(失败不阻断执行);转发同理。两模式共用,保证退出再进可重放全程。
+        """
+        try:
+            await store.append_run_event(run_id, event, data)
+        except Exception:  # noqa: BLE001
+            logger.warning("写 run_event 失败 run=%s event=%s", run_id, event, exc_info=True)
+        if sse_cb is not None:
+            try:
+                await sse_cb(event, data)
+            except Exception:  # noqa: BLE001
+                pass
+
     try:
         suite = await store.get_suite(suite_id)
         if suite is None:
@@ -118,6 +138,13 @@ async def execute_run(
                         )
                     )
 
+        # 审批器:工厂注入 _emit,使权限事件也落 run_event 表(可重放)。
+        approver = (
+            perm_approver_factory(_emit)
+            if (approve_mode and perm_approver_factory is not None)
+            else None
+        )
+
         @asynccontextmanager
         async def make_agent():
             skills = build_skill_manager(
@@ -135,8 +162,8 @@ async def execute_run(
                     tools_registry=tools_registry,
                     max_steps=int(os.getenv("AGENT_MAX_STEPS", "40")),
                 )
-                if approve_mode and perm_approver is not None:
-                    agent.permission_approver = perm_approver
+                if approver is not None:
+                    agent.permission_approver = approver
                 yield agent
 
         _case_by_id = {c.id: c for c in cases}
@@ -153,7 +180,7 @@ async def execute_run(
         result = await orch.run_suite(
             cases,
             suite=suite,
-            sse_callback=sse_cb,
+            sse_callback=_emit,
             run_id=run_id,
             on_record=_save_record,
             parallelism=parallelism,
@@ -169,10 +196,7 @@ async def execute_run(
     except Exception as e:  # noqa: BLE001 — 任何阶段(setup/orchestrator)异常都在此兜底
         fail_reason = str(e) or e.__class__.__name__
         logger.exception("Run %s 异常中断", run_id)
-        try:
-            await sse_cb("error", {"message": fail_reason})
-        except Exception:  # noqa: BLE001
-            pass
+        await _emit("error", {"message": fail_reason})
     finally:
         # 兜底:run 未正常完成(setup 阶段异常 / 进程被中断 / orchestrator 抛错)→ 标 failed
         # (幂等)+ 给「本 run 未落任何记录」的用例补一条「执行中断」占位记录。根治旧代码的
@@ -200,9 +224,6 @@ async def execute_run(
                     )
                 except Exception:  # noqa: BLE001
                     logger.warning("补占位记录失败 case=%s", c.id, exc_info=True)
-        # 无论成功/失败/中断,确保前端 SSE 收到 suite_done 收尾(否则 /stream 永不终止)。
-        try:
-            await sse_cb("suite_done", {"run_id": run_id, "sentinel": True})
-        except Exception:  # noqa: BLE001
-            pass
+        # 无论成功/失败/中断,确保 suite_done 收尾事件落表(否则 /stream 尾随永不终止)。
+        await _emit("suite_done", {"run_id": run_id, "sentinel": True})
         await store.close()

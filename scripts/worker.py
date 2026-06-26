@@ -13,9 +13,8 @@
     WORKER_MAX_PROJECT_CONC     单项目最大并发 run(0=不限,默认 0)
     + 执行相关:MCP_ISOLATED/MCP_HEADLESS/AGENT_MAX_STEPS/CUSTOM_TOOLS_YAML 等(同 API)
 
-注:SSE 实时进度由 T-P09(LISTEN/NOTIFY)接;本进程执行期 sse_cb 为 no-op,run 仍完整
-落库(ExecutionRecord/RunRecord),前端可轮询结果接口。审批暂走 trust(approve 模式的
-跨进程审批工单留 T-P09)。
+注:进度事件由 execute_run 统一落 run_event 表,API /stream 从表重放+尾随转 SSE(前端
+实时/重连均可)。审批走 permission_request 工单(跨进程,超时默认拒绝)。
 """
 
 from __future__ import annotations
@@ -55,29 +54,32 @@ async def _run_one(db_url: str, claimed) -> None:
     stop = asyncio.Event()
     approve_timeout = float(os.getenv("WORKER_APPROVE_TIMEOUT", "300"))
 
-    async def _sse_cb(event: str, data: dict) -> None:
-        try:
-            await hb_store.append_run_event(claimed.run_id, event, data)
-        except Exception:  # noqa: BLE001
-            logger.exception("写进度事件失败 run=%s event=%s", claimed.run_id, event)
+    def _make_approver(emit):
+        """审批器工厂:emit 是 execute_run 的事件落库回调(权限事件也落 run_event 可重放)。
+        写 permission_request 工单(跨进程审批)后轮询其状态,超时默认拒绝(保守)。"""
 
-    async def _approver(req) -> bool:
-        req_id = uuid.uuid4().hex[:12]
-        await hb_store.create_permission_request(
-            req_id, claimed.run_id, getattr(req, "tool_name", ""), getattr(req, "reason", "")
-        )
-        await _sse_cb(
-            "permission",
-            {"event_id": req_id, "action": getattr(req, "tool_name", ""),
-             "reason": getattr(req, "reason", "")},
-        )
-        deadline = asyncio.get_event_loop().time() + approve_timeout
-        while asyncio.get_event_loop().time() < deadline:
-            row = await hb_store.get_permission_request(req_id)
-            if row is not None and row.status != "pending":
-                return row.status == "approved"
-            await asyncio.sleep(1.0)
-        return False  # 超时默认拒绝(保守)
+        async def _approver(req) -> bool:
+            req_id = uuid.uuid4().hex[:12]
+            await hb_store.create_permission_request(
+                req_id, claimed.run_id, getattr(req, "tool_name", ""), getattr(req, "reason", "")
+            )
+            await emit(
+                "permission",
+                {
+                    "event_id": req_id,
+                    "action": getattr(req, "tool_name", ""),
+                    "reason": getattr(req, "reason", ""),
+                },
+            )
+            deadline = asyncio.get_event_loop().time() + approve_timeout
+            while asyncio.get_event_loop().time() < deadline:
+                row = await hb_store.get_permission_request(req_id)
+                if row is not None and row.status != "pending":
+                    return row.status == "approved"
+                await asyncio.sleep(1.0)
+            return False  # 超时默认拒绝(保守)
+
+        return _approver
 
     async def _heartbeat() -> None:
         while not stop.is_set():
@@ -97,8 +99,8 @@ async def _run_one(db_url: str, claimed) -> None:
             run_id=claimed.run_id,
             suite_id=claimed.suite_id,
             case_id=claimed.case_id,
-            sse_cb=_sse_cb,
-            perm_approver=_approver,
+            sse_cb=None,  # 事件由 execute_run 统一落 run_event 表
+            perm_approver_factory=_make_approver,
         )
         status = "done"
     except Exception:  # noqa: BLE001

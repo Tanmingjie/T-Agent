@@ -36,6 +36,22 @@ function RunProvider({
   const run = useSuiteRun(suiteId);
   // 离开任务工作区 / 切换任务(suiteId 变)时关 SSE;切 tab(children 变、suiteId 不变)不关。
   useEffect(() => () => run.stop(), [suiteId]); // eslint-disable-line react-hooks/exhaustive-deps
+  // 进入任务时:若该任务有**正在执行**的 run(退出执行页/回首页再进来),自动重连其 SSE,
+  // 从 run_event 表重放进度 → 不再「再点进去就空白卡执行中」。
+  useEffect(() => {
+    if (!suiteId) return;
+    let cancelled = false;
+    apiGet<{ id: string; status: string }[]>(`/suites/${suiteId}/runs`)
+      .then((runs) => {
+        if (cancelled) return;
+        const active = (runs || []).find((r) => r.status === "running");
+        if (active) run.resume(active.id);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [suiteId]); // eslint-disable-line react-hooks/exhaustive-deps
   return <RunCtx.Provider value={run}>{children}</RunCtx.Provider>;
 }
 

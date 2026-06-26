@@ -108,3 +108,46 @@ async def test_execute_run_no_placeholder_for_already_saved_case(tmp_path, monke
     recs = {r.case_id: r for r in await repo.list_records_by_run(run_id)}
     assert recs["t1"].passed is True and recs["t1"].final_result == "真PASS"  # 真记录未被覆盖
     assert recs["t2"].passed is False and "执行中断" in recs["t2"].final_result  # t2 补占位
+
+
+@pytest.mark.asyncio
+async def test_execute_run_persists_events_to_run_event_for_replay(tmp_path, monkeypatch):
+    """统一持久化(2026-06-26):execute_run 把进度事件落 run_event 表,供 /stream 从 seq 0
+    重放(退出执行页再进来看全程)。sse_cb=None 也照样落表。"""
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/ev.db"
+    store = Store(url=db_url)
+    await store.init()
+    repo = SQLModelRepository(store)
+    await repo.create(Suite(id="sx", name="SX", base_url="https://x.com"))
+    await repo.bulk_insert(
+        [TestCase(id="t1", name="C1", steps=["a"], base_url="https://x.com", suite_id="sx")]
+    )
+    run_id = "evrun"
+    await repo.create_run(run_id, "sx", 1, None, None)
+
+    import harness.orchestrator as orch_mod
+
+    class _EmittingOrch:
+        def __init__(self, *a, **k):
+            pass
+
+        async def run_suite(self, cases, *, sse_callback=None, **k):
+            # 模拟执行期推几条进度事件(orchestrator 经 sse_callback 发)
+
+            class _R:
+                passed_count = 1
+                failed_count = 0
+
+            await sse_callback("case_start", {"case_id": "t1"})
+            await sse_callback("step_change", {"case_id": "t1", "step_index": 0})
+            return _R()
+
+    monkeypatch.setattr(orch_mod, "Orchestrator", _EmittingOrch)
+
+    # sse_cb=None:没有 live 通道也必须落表
+    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx", sse_cb=None)
+
+    events = await store.list_run_events(run_id, after_seq=0)
+    types = [e.event_type for e in events]
+    assert "case_start" in types and "step_change" in types
+    assert types[-1] == "suite_done"  # 收尾事件落表 → /stream 尾随能终止

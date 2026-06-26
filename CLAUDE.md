@@ -117,6 +117,26 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 重大 redesign 实施记录
 
+- **SSE 进度统一到 run_event 表 + 前端重连(2026-06-26,已落地)** ★ — 治"执行中退出执行页/
+  回首页再进来 → 看不到执行过程、空白卡执行中"(用户报,RUN_MODE 默认 embedded)。根因**前后端两层**:
+  ① 前端 `statuses`+`EventSource` 全活在 `useSuiteRun` React 内存,**只在 `start()` 建 EventSource、
+  无重订阅路径** → 退首页 `RunProvider` 卸载即清空;② **embedded 模式 SSE 只走内存队列 `_sse_queues`、
+  一字节不落库** → 即便前端会重连也无东西可回放(running 用例的记录是跑完才落)。对比 queue 模式
+  早已 `append_run_event` 落 `run_event` 表、`/stream` 从 seq 0 重放,天然可重连看全程。
+  - **统一到 run_event 表**:`execute_run` 成为**唯一事件落库点**(内部 `_emit` = 写 run_event 表
+    + 可选转发 live sse_cb),embedded/queue 都走它 → 行为一致、都可重放。`/stream` **一律从表
+    重放(seq 0)+ 尾随**(删 embedded 的内存队列分支)。`sse_cb` 改 `Optional`(embedded 传 None,
+    不再走内存桥);`perm_approver` → `perm_approver_factory(emit)`(权限事件也经 `_emit` 落表可重放)。
+    `scripts/worker.py` 停掉自己的 `append_run_event`(execute_run 统一落)、approver 改工厂。
+    `_sse_queues` dict 退化为 `_live_runs: set`(仅 embedded **僵尸检测**:DB running 但不在集合 =
+    上次进程崩残留)。代价:embedded SSE 从内存即时推变 ~0.5s 表轮询(测试执行每步数秒,无感)。
+  - **前端重连**:`useSuiteRun` 抽出 `attach(runId)`(start/resume 共用监听)+ 新增 `resume(runId)`
+    (不新建 run、直接订阅,statuses 由重放重建);`RunProvider` 进任务时查 `/suites/{id}/runs`,
+    有 running run 即 `resume` → 看到「之前已跑的步骤」。
+  - **验证**:pytest 491 passed(2 预存在 Windows 失败不变);新增 `test_execute_run_persists_events
+    _to_run_event_for_replay` + `/stream` 重放/404 回归;前端 build 绿。**内网真实重连验证待用户**
+    (CLI 冒烟不覆盖 API/SSE 路径)。详见 [[execution-reliability-queue]]。
+
 - **健壮化批次(2026-06-25,一串落地)** — 围绕"长用例/后台执行/翻译质量/弱模型"的一组修:
   - **`browser_wait_for` 按时长等待补齐(`343db29`)**:playwright-mcp 单次 wait 内部上限 ~30s,
     请求 `time=180` 实测 ~30s 就返回(等不满)。执行器([agent.py](harness/agent.py) `_chunked_wait`)把

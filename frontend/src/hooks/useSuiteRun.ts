@@ -112,34 +112,18 @@ export function useSuiteRun(suiteId: string | undefined) {
     esRef.current = null;
   }, []);
 
-  const start = useCallback(
-    // caseId 给定时只跑该单条用例(抽屉「执行」按钮),否则跑 caseIds 代表的整套件
-    async (caseIds: string[], caseId?: string) => {
+  // 订阅某个 run 的 SSE。statuses 由事件(重放 seq 0 起 + 尾随)重建,故 start(新建 run)
+  // 与 resume(重连已在跑的 run,退出执行页再进来用)共用这套监听。
+  const attach = useCallback(
+    (run_id: string) => {
       if (!suiteId) return;
       stop();
-      // 预置所有用例为 pending
-      const seed: Record<string, CaseRunState> = {};
-      for (const cid of caseIds)
-        seed[cid] = { status: "pending", steps: [], phases: [] };
-      setStatuses(seed);
-      setRunning(true);
-      setDone(false);
-      setResult(null);
-      setError(null);
+      const es = new EventSource(
+        sseUrl(`/suites/${suiteId}/stream?run_id=${run_id}`),
+      );
+      esRef.current = es;
 
-      try {
-        const runPath = caseId
-          ? `/suites/${suiteId}/run?case_id=${encodeURIComponent(caseId)}`
-          : `/suites/${suiteId}/run`;
-        const { run_id } = await apiPost<{ run_id: string }>(runPath);
-        setRunId(run_id);
-
-        const es = new EventSource(
-          sseUrl(`/suites/${suiteId}/stream?run_id=${run_id}`),
-        );
-        esRef.current = es;
-
-        const upd = (caseId: string, fn: (c: CaseRunState) => CaseRunState) =>
+      const upd = (caseId: string, fn: (c: CaseRunState) => CaseRunState) =>
           setStatuses((prev) => ({
             ...prev,
             [caseId]: fn(
@@ -261,6 +245,7 @@ export function useSuiteRun(suiteId: string | undefined) {
           setDone(true);
           setRunning(false);
           es.close();
+          esRef.current = null;
         });
 
         es.addEventListener("error", (e) => {
@@ -271,12 +256,58 @@ export function useSuiteRun(suiteId: string | undefined) {
           }
           // 否则 EventSource 会自动重连,不处理
         });
+    },
+    [suiteId, stop, scheduleNotify],
+  );
+
+  const start = useCallback(
+    // caseId 给定时只跑该单条用例(抽屉「执行」按钮),否则跑 caseIds 代表的整套件
+    async (caseIds: string[], caseId?: string) => {
+      if (!suiteId) return;
+      stop();
+      // 预置所有用例为 pending
+      const seed: Record<string, CaseRunState> = {};
+      for (const cid of caseIds)
+        seed[cid] = { status: "pending", steps: [], phases: [] };
+      setStatuses(seed);
+      setRunning(true);
+      setDone(false);
+      setResult(null);
+      setError(null);
+
+      try {
+        const runPath = caseId
+          ? `/suites/${suiteId}/run?case_id=${encodeURIComponent(caseId)}`
+          : `/suites/${suiteId}/run`;
+        const { run_id } = await apiPost<{ run_id: string }>(runPath);
+        setRunId(run_id);
+        attach(run_id);
       } catch (e) {
         setError(e instanceof Error ? e.message : String(e));
         setRunning(false);
       }
     },
-    [suiteId, stop, scheduleNotify],
+    [suiteId, stop, attach],
+  );
+
+  // 重连一个**已在执行**的 run(退出执行页/回首页再进来时调用):不新建 run,直接订阅其 SSE。
+  // 进度由 /stream 从 run_event 表重放(seq 0 起)重建 statuses,故能看到「之前已跑的步骤」。
+  const resume = useCallback(
+    (run_id: string, caseIds?: string[]) => {
+      if (!suiteId || esRef.current) return; // 已有订阅则不重复
+      if (caseIds?.length) {
+        const seed: Record<string, CaseRunState> = {};
+        for (const cid of caseIds)
+          seed[cid] = { status: "pending", steps: [], phases: [] };
+        setStatuses(seed);
+      }
+      setRunId(run_id);
+      setRunning(true);
+      setDone(false);
+      setError(null);
+      attach(run_id);
+    },
+    [suiteId, attach],
   );
 
   return {
@@ -288,6 +319,7 @@ export function useSuiteRun(suiteId: string | undefined) {
     error,
     runId,
     start,
+    resume,
     stop,
     subscribeStream,
     getStream,
