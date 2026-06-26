@@ -185,10 +185,16 @@ async def _run(args: argparse.Namespace) -> int:
     tools_registry = load_tool_registry_from_yaml(args.tools) if args.tools else None
     if tools_registry is not None:
         print(f"已加载 Custom Tool:{tools_registry.names}")
+    # 翻译知识/操作指南(--knowledge <file>):注入翻译 prompt 助补全流程/对齐术语/写对 expected
+    translation_knowledge = ""
+    if args.knowledge:
+        translation_knowledge = Path(args.knowledge).read_text(encoding="utf-8")
+        print(f"已加载翻译知识:{args.knowledge}({len(translation_knowledge)} 字符)")
     agent = TestCaseAgent(
         llm,
         None,
         context=args.context,
+        translation_knowledge=translation_knowledge,
         max_steps=args.max_steps,
         vocab_resolver=resolver,
         skills=skills,
@@ -249,6 +255,11 @@ def main(argv: list[str] | None = None) -> int:
         "--tools",
         default=None,
         help="Custom Tool YAML 配置路径(LLM 按需调用 + custom_tool 数据断言)",
+    )
+    p.add_argument(
+        "--knowledge",
+        default=None,
+        help="翻译知识/操作指南文件(自然语言文本):注入翻译 prompt 助补全流程/对齐术语/写对 expected",
     )
     p.add_argument("--spec-only", action="store_true", help="只生成并打印 TestSpec,不执行")
     p.add_argument("--check-llm", action="store_true", help="只做 LLM 连通性自检,不跑用例")

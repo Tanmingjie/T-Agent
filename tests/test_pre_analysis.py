@@ -39,6 +39,30 @@ def test_build_messages_includes_case_content():
     assert "状态变为待审批" in user
 
 
+def test_knowledge_injected_when_provided():
+    """提供翻译知识时,作为「理解用」背景块进入 user 消息,排在用例之前。"""
+    msgs = build_spec_messages(_case(), knowledge="本系统提交订单前必须先选审批人。")
+    user = msgs[1]["content"]
+    assert "业务知识/操作指南" in user
+    assert "提交订单前必须先选审批人" in user
+    # 知识块在用例之前
+    assert user.index("提交订单前必须先选审批人") < user.index("用例名称")
+
+
+def test_no_knowledge_block_when_absent():
+    """不提供知识时不注入空块(行为与旧版一致)。"""
+    user = build_spec_messages(_case())[1]["content"]
+    assert "业务知识/操作指南" not in user
+
+
+def test_system_prompt_has_knowledge_guardrails():
+    """系统 prompt 必须钉死两条护栏:用知识但仍不接地、不脑补 expected。"""
+    system = build_spec_messages(_case())[0]["content"]
+    assert "业务知识/操作指南" in system
+    assert "不写 selector" in system  # 护栏①:仍不接地
+    assert "理想态" in system  # 护栏②:不把指南理想态当页面必现写进 expected
+
+
 def test_system_prompt_describes_phase_structure():
     """翻译 prompt 引导:只产意图不接地、阶段化分组、组级 expected、driving/验证分离。"""
     system = build_spec_messages(_case())[0]["content"]

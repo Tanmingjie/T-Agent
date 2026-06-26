@@ -265,6 +265,7 @@ class TestCaseAgent:
         mcp,
         *,
         context: str = "",
+        translation_knowledge: str = "",
         max_steps: int = 30,
         spec_generator: SpecGenerator | None = None,
         hooks: HookManager | None = None,
@@ -277,6 +278,9 @@ class TestCaseAgent:
         self.llm = llm
         self.mcp = mcp
         self.context = context
+        # 项目级「翻译知识/操作指南」:注入翻译 prompt 助补全流程/对齐术语/写对 expected
+        # (受 pre_analysis 两条护栏约束,不接地、不脑补)。区别于 self.context(执行期业务背景)。
+        self.translation_knowledge = translation_knowledge
         self.max_steps = max_steps
         self.spec_generator = spec_generator or SpecGenerator(llm)
         self.hooks = hooks
@@ -292,7 +296,9 @@ class TestCaseAgent:
         预置条件不再分类(纯背景 list[str],原样进 spec.preconditions);翻译只产意图,
         阶段化分组 + 组级预期,不接地。``on_delta`` 给定走流式(长生成不被网关空闲超时切断)。
         """
-        return await self.spec_generator.generate(case, on_delta=on_delta)
+        return await self.spec_generator.generate(
+            case, knowledge=self.translation_knowledge, on_delta=on_delta
+        )
 
     async def run(
         self,
