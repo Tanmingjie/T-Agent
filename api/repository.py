@@ -72,6 +72,12 @@ class ExecutionRepository(ABC):
     async def get_run(self, run_id: str) -> dict | None: ...
 
     @abstractmethod
+    async def request_cancel(self, run_id: str) -> bool: ...
+
+    @abstractmethod
+    async def is_cancel_requested(self, run_id: str) -> bool: ...
+
+    @abstractmethod
     async def list_runs_by_suite(self, suite_id: str) -> list[dict]: ...
 
     @abstractmethod
@@ -225,7 +231,26 @@ class SQLModelRepository(
                 "failed_cases": row.failed_cases,
                 "started_at": row.started_at,
                 "finished_at": row.finished_at,
+                "cancel_requested": row.cancel_requested,
             }
+
+    async def request_cancel(self, run_id: str) -> bool:
+        """置「停止」标志。仅对仍在 running 的 run 生效;返回是否标记成功(幂等)。"""
+        async with self._store._sf() as s:
+            row = await s.get(RunRecordRow, run_id)
+            if row is None or row.status != "running":
+                return False
+            row.cancel_requested = True
+            row.updated_at = time.time()
+            s.add(row)
+            await s.commit()
+            return True
+
+    async def is_cancel_requested(self, run_id: str) -> bool:
+        """轻量轮询:执行链各检查点据此优雅退出。run 不存在按未取消处理。"""
+        async with self._store._sf() as s:
+            row = await s.get(RunRecordRow, run_id)
+            return bool(row and row.cancel_requested)
 
     async def list_runs_by_suite(self, suite_id: str) -> list[dict]:
         async with self._store._sf() as s:
@@ -245,6 +270,7 @@ class SQLModelRepository(
                     "failed_cases": r.failed_cases,
                     "started_at": r.started_at,
                     "finished_at": r.finished_at,
+                    "cancel_requested": r.cancel_requested,
                 }
                 for r in rows
             ]

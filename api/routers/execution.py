@@ -160,6 +160,26 @@ async def trigger_run(
     return {"run_id": run_id, "status": "started"}
 
 
+@router.post("/suites/{suite_id}/runs/{run_id}/stop", dependencies=_suite_guard)
+async def stop_run(suite_id: str, run_id: str, repo=Depends(get_repo), store=Depends(get_store)):
+    """请求停止一个正在执行的 run(协作式优雅停)。
+
+    置 run_record.cancel_requested 标志;执行链(orchestrator 每用例前 / ReAct 每轮)轮询到
+    后,正在飞的那步 MCP/LLM 调用跑完即优雅退出,未开跑的用例补「已中止」占位,run 终态记
+    aborted。embedded / queue 两模式统一(都各自有 Store 读同一标志)。幂等:已结束/不存在
+    返回 ok=false。"""
+    run = await repo.get_run(run_id)
+    if run is None:
+        raise HTTPException(404, "Run not found")
+    if run["status"] != "running":
+        return {"ok": False, "status": run["status"], "detail": "run 已结束,无需停止"}
+    flagged = await repo.request_cancel(run_id)
+    if flagged:
+        # 落 run_event 表,让在场/重连的 /stream 订阅者即时看到「停止中」。
+        await store.append_run_event(run_id, "aborting", {"run_id": run_id})
+    return {"ok": flagged, "status": "running" if flagged else run["status"]}
+
+
 @router.get("/suites/{suite_id}/stream")
 async def stream_events(
     suite_id: str, run_id: str, store=Depends(get_store), repo=Depends(get_repo)

@@ -65,6 +65,7 @@ export function useSuiteRun(suiteId: string | undefined) {
   const [permission, setPermission] = useState<PermReq | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  const [aborting, setAborting] = useState(false); // 已请求停止、等执行链优雅退出
   const esRef = useRef<EventSource | null>(null);
 
   // 外部 store:流式文本(per-case),与高频重渲染隔离。
@@ -118,6 +119,7 @@ export function useSuiteRun(suiteId: string | undefined) {
     (run_id: string) => {
       if (!suiteId) return;
       stop();
+      setAborting(false); // 新订阅起点:清旧「停止中」(重放到 aborting 事件会再置回)
       const es = new EventSource(
         sseUrl(`/suites/${suiteId}/stream?run_id=${run_id}`),
       );
@@ -234,6 +236,9 @@ export function useSuiteRun(suiteId: string | undefined) {
           if (d) setPermission(d as unknown as PermReq);
         });
 
+        // 「停止中」:用户请求停止已落 run_event,执行链尚在优雅退出。让 UI 即时反映。
+        es.addEventListener("aborting", () => setAborting(true));
+
         es.addEventListener("suite_done", (e) => {
           const d = safeParse((e as MessageEvent).data);
           if (d)
@@ -244,6 +249,7 @@ export function useSuiteRun(suiteId: string | undefined) {
             });
           setDone(true);
           setRunning(false);
+          setAborting(false);
           es.close();
           esRef.current = null;
         });
@@ -274,6 +280,7 @@ export function useSuiteRun(suiteId: string | undefined) {
       setDone(false);
       setResult(null);
       setError(null);
+      setAborting(false);
 
       try {
         const runPath = caseId
@@ -305,10 +312,22 @@ export function useSuiteRun(suiteId: string | undefined) {
       setRunning(true);
       setDone(false);
       setError(null);
+      setAborting(false);
       attach(run_id);
     },
     [suiteId, attach],
   );
+
+  // 请求停止当前 run(协作式):置后端标志,执行链优雅退出后会发 suite_done 收尾。
+  const requestStop = useCallback(async () => {
+    if (!suiteId || !runId) return;
+    setAborting(true); // 乐观:立刻反映「停止中」(后端 aborting 事件会再确认)
+    try {
+      await apiPost(`/suites/${suiteId}/runs/${runId}/stop`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    }
+  }, [suiteId, runId]);
 
   return {
     statuses,
@@ -318,8 +337,10 @@ export function useSuiteRun(suiteId: string | undefined) {
     permission,
     error,
     runId,
+    aborting,
     start,
     resume,
+    requestStop,
     stop,
     subscribeStream,
     getStream,

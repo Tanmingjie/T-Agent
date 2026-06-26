@@ -136,6 +136,7 @@ class StopReason(str, Enum):
     TOOL_CALL_ERROR = "tool_call_error"  # tool_call 容错+重试仍失败
     STEP_FAILED = "step_failed"  # 单步连续定位失败超预算(快速失败,疑似点错前序元素)
     PHASE_FAILED = "phase_failed"  # 阶段边界 Validator 判该阶段 expected 未达成(阶段失败即失败)
+    ABORTED = "aborted"  # 用户请求停止(协作式优雅退出,正在飞的那步跑完即停)
 
 
 @dataclass
@@ -248,6 +249,7 @@ class ReActLoop:
         step_fail_budget: int = 5,
         stuck_round_budget: int = 2,
         skill_manager=None,
+        should_abort=None,
     ) -> None:
         self.llm = llm
         self.tools = tools
@@ -287,6 +289,9 @@ class ReActLoop:
         # 在卡住兜底时用。skill_manager 暴露 `.relevant(step_text)`(甲:浮现催加载)和
         # `.auto_load(step_text)`(乙:平台直接加载,返回已加载的 skill 名)。
         self.skill_manager = skill_manager
+        # 协作式停止(可选):async () -> bool。每轮循环顶部查一次,True → 停因 ABORTED 优雅
+        # 退出(不强杀,正在飞的那步 MCP/LLM 调用跑完即停)。来源是用户「停止」请求标志。
+        self.should_abort = should_abort
         self.execute = execute
         self.step_plan = step_plan
         self.build_system = build_system
@@ -340,6 +345,10 @@ class ReActLoop:
 
         for iteration in range(1, self.max_steps + 1):
             result.iterations = iteration
+            # 协作式停止:用户请求「停止」时,在下一轮开始前优雅退出(本轮还没发起新调用)。
+            if self.should_abort is not None and await self.should_abort():
+                result.stop_reason = StopReason.ABORTED
+                break
             # 每轮刷新 system,反映最新 StepPlan 进度
             messages[0]["content"] = self.build_system(self.step_plan)
 

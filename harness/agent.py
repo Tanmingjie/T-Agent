@@ -303,8 +303,12 @@ class TestCaseAgent:
         ctx: ExecutionContext | None = None,
         step_callback=None,
         run_id: str | None = None,
+        should_abort=None,
     ) -> ExecutionRecord:
-        """执行一条用例,返回 ExecutionRecord(PASS/FAIL 由断言裁决)。"""
+        """执行一条用例,返回 ExecutionRecord(PASS/FAIL 由断言裁决)。
+
+        ``should_abort``:可选 async () -> bool,协作式停止信号,透传给 ReActLoop 每轮检查。
+        """
         ctx = ctx or ExecutionContext(case=case)
         recorder = Recorder(case.id, suite_id=case.suite_id, run_id=run_id)
 
@@ -615,6 +619,7 @@ class TestCaseAgent:
             step_fail_budget=_STEP_FAIL_BUDGET,  # #1 单步定位失败预算 → 快速失败
             stuck_round_budget=_STUCK_ROUND_BUDGET,  # E2 步级卡住主动提醒
             skill_manager=self.skills,  # E3 卡住兜底:甲(浮现催加载)/乙(自动注入)
+            should_abort=should_abort,  # 协作式停止:用户请求时优雅退出(停因 ABORTED)
         )
         await emit_phase("executing", "驱动浏览器逐步执行")
         result = await loop.run()
@@ -684,6 +689,11 @@ class TestCaseAgent:
                     f"[FAIL] 阶段 {fi + 1 if fi >= 0 else '?'} 的预期未达成:"
                     f"{result.failed_phase_reason or '(见阶段裁决)'};"
                     f"仅完成 {done_steps}/{total_steps} 步。"
+                )
+            elif result.stop_reason == ReActStopReason.ABORTED:
+                incomplete_reason = (
+                    f"[FAIL] 执行已被用户中止:仅完成 {done_steps}/{total_steps} 步,"
+                    f"后续步骤未执行。"
                 )
             elif result.stop_reason == ReActStopReason.STEP_FAILED and result.failed_step_no:
                 incomplete_reason = (

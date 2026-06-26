@@ -137,6 +137,9 @@ class RunRecordRow(SQLModel, table=True):
     project_id: str = Field(default="", index=True)  # 多租户(T-P04b)
     version_id: str = Field(default="", index=True)
     status: str = "running"  # running | completed | aborted | failed
+    # 用户「停止」请求标志:执行链(orchestrator/ReAct)协作式轮询,见检查点即优雅退出。
+    # 跨 embedded(进程内线程)/ queue(独立 worker 进程)统一——两者都各自有 Store 能读到。
+    cancel_requested: bool = False
     total_cases: int = 0
     passed_cases: int = 0
     failed_cases: int = 0

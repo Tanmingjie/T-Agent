@@ -27,7 +27,9 @@ class _FakeAgent:
         self.fail_ids = set(fail_ids or [])
         self.raise_ids = set(raise_ids or [])
 
-    async def run(self, case, spec=None, ctx=None, step_callback=None, run_id=None):
+    async def run(
+        self, case, spec=None, ctx=None, step_callback=None, run_id=None, should_abort=None
+    ):
         self.calls.append(case.id)
         self.contexts.append(ctx)
         if case.id in self.raise_ids:
@@ -58,6 +60,22 @@ async def test_aggregates_pass_fail_counts():
     assert result.total == 3
     assert result.passed_count == 2
     assert result.failed_count == 1
+
+
+async def test_should_abort_skips_not_yet_started_cases():
+    """协作式停止:should_abort 在第一条用例后置 True → 剩余用例不进 agent,补「已中止」占位。"""
+    agent = _FakeAgent()
+    n = {"i": 0}
+
+    async def should_abort() -> bool:
+        n["i"] += 1
+        return n["i"] > 1  # 第一条用例放行(返回 False),其后全部中止
+
+    result = await Orchestrator(agent).run_suite(_cases("A", "B", "C"), should_abort=should_abort)
+    assert agent.calls == ["A"]  # 只有 A 真跑;B/C 被跳过
+    assert result.total == 3
+    skipped = [r for r in result.records if r.case_id in ("B", "C")]
+    assert all(not r.passed and "中止" in r.final_result for r in skipped)
 
 
 # ── 用例间隔离 ───────────────────────────────────────────────
@@ -110,7 +128,9 @@ class _ConcAgent:
         self.fail_ids = set(fail_ids or [])
         self.raise_ids = set(raise_ids or [])
 
-    async def run(self, case, spec=None, ctx=None, step_callback=None, run_id=None):
+    async def run(
+        self, case, spec=None, ctx=None, step_callback=None, run_id=None, should_abort=None
+    ):
         self.tracker["cur"] += 1
         self.tracker["max"] = max(self.tracker["max"], self.tracker["cur"])
         self.tracker["calls"].append(case.id)

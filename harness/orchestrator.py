@@ -74,6 +74,7 @@ class Orchestrator:
         run_id: str | None = None,
         on_record: Callable[[ExecutionRecord], Coroutine[Any, Any, None]] | None = None,
         parallelism: int = 1,
+        should_abort: Callable[[], Coroutine[Any, Any, bool]] | None = None,
     ) -> SuiteResult:
         suite_id = suite.id if suite else None
         result = SuiteResult(suite_id=suite_id)
@@ -106,12 +107,26 @@ class Orchestrator:
 
         async def _run_case(case: TestCase, case_idx: int) -> ExecutionRecord:
             async with sem:  # 并发上限:同时最多 parallelism 条用例在跑
+                # 协作式停止:已请求停止则跳过尚未开跑的用例(给一条「已中止」占位记录,
+                # 不进浏览器)。正在跑的用例由 ReActLoop 在其循环里优雅退出。
+                if should_abort is not None and await should_abort():
+                    return ExecutionRecord(
+                        exec_id=f"aborted-{case.id}",
+                        case_id=case.id,
+                        suite_id=suite_id,
+                        passed=False,
+                        final_result="执行已被用户中止,该用例未开始",
+                        start_time=time.time(),
+                        end_time=time.time(),
+                    )
                 if sse_callback:
                     await sse_callback(
                         "case_start",
                         {"case_id": case.id, "title": case.name, "index": case_idx},
                     )
-                record = await self._run_one(case, suite, sse_callback=sse_callback, run_id=run_id)
+                record = await self._run_one(
+                    case, suite, sse_callback=sse_callback, run_id=run_id, should_abort=should_abort
+                )
                 record.suite_id = suite_id
 
                 # 先持久化该用例结果,**再**发 case_result —— 前端收到完成事件会立即回拉
@@ -169,6 +184,7 @@ class Orchestrator:
         suite: Suite | None,
         sse_callback: SSECallback = None,
         run_id: str | None = None,
+        should_abort: Callable[[], Coroutine[Any, Any, bool]] | None = None,
     ) -> ExecutionRecord:
         """执行单条用例;异常被隔离为 FAIL 记录,不冒泡影响其它用例。"""
         ctx = ExecutionContext(case=case, suite=suite)
@@ -178,12 +194,15 @@ class Orchestrator:
                 await sse_callback(event, data)
 
         cb = _step_cb if sse_callback else None
+        # should_abort 只在确有信号时传(保持 agent.run 的最小契约:无停止需求的调用方/fake
+        # agent 不必识别该 kwarg)。
+        extra = {"should_abort": should_abort} if should_abort is not None else {}
         try:
             # agent_factory:每条用例独立 agent + MCP(并发隔离);否则用共享 agent(串行)。
             if self.agent_factory is not None:
                 async with self.agent_factory() as agent:
-                    return await agent.run(case, ctx=ctx, step_callback=cb, run_id=run_id)
-            return await self.agent.run(case, ctx=ctx, step_callback=cb, run_id=run_id)
+                    return await agent.run(case, ctx=ctx, step_callback=cb, run_id=run_id, **extra)
+            return await self.agent.run(case, ctx=ctx, step_callback=cb, run_id=run_id, **extra)
         except Exception as e:  # noqa: BLE001 — 用例间隔离:A 的异常不拖垮 B
             logger.warning("用例 %s 执行异常,记为 FAIL:%s", case.id, e)
             return ExecutionRecord(

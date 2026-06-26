@@ -11,6 +11,7 @@ import {
   CheckCircle,
   XCircle,
   Clock,
+  Square,
 } from "lucide-react";
 import Drawer from "../components/Drawer";
 import CaseDrawerBody from "../components/CaseDrawerBody";
@@ -240,6 +241,17 @@ export default function SuiteCasesPage() {
             )}
             {run.running ? "执行中…" : "执行"}
           </button>
+          {run.running && (
+            <button
+              onClick={run.requestStop}
+              disabled={run.aborting}
+              title="协作式停止:正在执行的那一步跑完即停"
+              className="inline-flex items-center gap-1.5 border border-red-300 text-red-600 px-3.5 py-2 rounded-md text-sm font-medium hover:bg-red-50 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+            >
+              <Square size={15} />
+              {run.aborting ? "停止中…" : "停止"}
+            </button>
+          )}
         </div>
       </div>
 

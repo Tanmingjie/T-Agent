@@ -179,6 +179,13 @@ async def execute_run(
             if case is not None and case.precondition_items:
                 await store.save_case(case)
 
+        async def _should_abort() -> bool:
+            """协作式停止信号:用户「停止」请求落 run_record.cancel_requested,执行链轮询。"""
+            try:
+                return await repo.is_cancel_requested(run_id)
+            except Exception:  # noqa: BLE001 — 查标志失败按未取消处理(不误停)
+                return False
+
         orch = Orchestrator(agent_factory=make_agent)
         result = await orch.run_suite(
             cases,
@@ -187,10 +194,13 @@ async def execute_run(
             run_id=run_id,
             on_record=_save_record,
             parallelism=parallelism,
+            should_abort=_should_abort,
         )
+        # 用户中止 → 终态记 aborted(区别于正常 completed);否则 completed。
+        aborted = await _should_abort()
         await repo.update_run(
             run_id,
-            status="completed",
+            status="aborted" if aborted else "completed",
             passed_cases=result.passed_count,
             failed_cases=result.failed_count,
             finished_at=time.time(),

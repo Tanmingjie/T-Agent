@@ -113,3 +113,41 @@ async def test_stream_queue_mode_unknown_run_404(client):
     """queue 模式:run 既不在内存队列、repo 也查不到、未入队 → 404(非 500)。"""
     r = await client.get("/api/suites/sx/stream?run_id=does-not-exist")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_stop_running_run_flags_cancel(client):
+    """停止端点:对 running 的 run 置 cancel_requested + 落 aborting 事件;幂等于已结束/不存在。"""
+    import api.server as srv
+
+    run_id = "stoprun1"
+    await srv._repo.create_run(run_id, "sx", 1, None, None)
+
+    r = await client.post(f"/api/suites/sx/runs/{run_id}/stop")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    assert await srv._repo.is_cancel_requested(run_id) is True
+    # 落了 aborting run_event(供 /stream 订阅者即时看「停止中」)
+    events = await srv._store.list_run_events(run_id)
+    assert any(e.event_type == "aborting" for e in events)
+
+
+@pytest.mark.asyncio
+async def test_stop_finished_run_is_noop(client):
+    """已结束的 run:停止幂等返回 ok=false,不置标志。"""
+    import api.server as srv
+
+    run_id = "stoprun2"
+    await srv._repo.create_run(run_id, "sx", 1, None, None)
+    await srv._repo.update_run(run_id, status="completed")
+
+    r = await client.post(f"/api/suites/sx/runs/{run_id}/stop")
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+    assert await srv._repo.is_cancel_requested(run_id) is False
+
+
+@pytest.mark.asyncio
+async def test_stop_unknown_run_404(client):
+    r = await client.post("/api/suites/sx/runs/nope/stop")
+    assert r.status_code == 404

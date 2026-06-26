@@ -108,6 +108,36 @@ async def test_capture_screenshot_attached_to_step():
     assert "browser_click" in [t for _, t in shots]
 
 
+async def test_should_abort_stops_gracefully():
+    """协作式停止:should_abort 返回 True → 下一轮开始前优雅退出,停因 ABORTED、步骤未完成。"""
+    plan = _plan(3)
+    aborted_after = {"n": 0}
+
+    async def should_abort() -> bool:
+        # 第 2 轮起请求停止(第 1 轮先正常跑一步,验证「飞行中那步不被打断、下一轮才停」)
+        aborted_after["n"] += 1
+        return aborted_after["n"] >= 2
+
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_click", {"ref": "e1"})]),
+            _resp(calls=[("browser_click", {"ref": "e2"})]),  # 不应到达(已被中止)
+        ]
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+        should_abort=should_abort,
+    )
+    result = await loop.run()
+    assert result.stop_reason == StopReason.ABORTED
+    assert not plan.all_done()
+    assert result.iterations == 2  # 第 1 轮跑了一步,第 2 轮顶部检测到停止即退出
+
+
 async def test_step_fail_budget_fast_fails():
     """#1:同一业务步累计定位失败达预算 → STEP_FAILED 快速失败,标明卡死步(不磨到 max_steps)。"""
     plan = _plan(2)
