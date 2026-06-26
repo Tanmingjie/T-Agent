@@ -32,6 +32,7 @@ def test_lazy_skill_lists_description_not_content():
     assert "DESC_订单状态流转" in text  # 简述常驻清单
     assert "BODY_完整规则" not in text  # 正文未加载,不进 prompt
     assert "可按需加载的技能" in text
+    assert "load_skill" in text  # 引导随清单一起出现(BASE 不再常驻死指令)
 
 
 def test_load_expands_content_and_marks_loaded():

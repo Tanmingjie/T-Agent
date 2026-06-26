@@ -136,8 +136,9 @@ class SkillManager:
         if pending:
             lines.append("## 可按需加载的技能")
             lines.append(
-                "下列技能只给出简述。判断与当前步骤相关时,调用 "
-                'load_skill(name="技能名") 展开其完整内容,再据此操作:'
+                "下列技能只给出简述(业务/操作知识)。**动手前先扫一眼**:判断与当前步骤相关时,"
+                '**先**调用 load_skill(name="技能名") 展开其完整内容(正文会出现在「已加载技能」区)'
+                ",再据此动手——不要等失败了才加载:"
             )
             for s in pending:
                 lines.append(f"- {s.name}:{s.description or '(无简述)'}")

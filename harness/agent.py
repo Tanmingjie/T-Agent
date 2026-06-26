@@ -34,7 +34,7 @@ from harness.hooks import (
 from harness.llm import LLMClient
 from harness.page_probe import MCPPageProbe, parse_snapshot
 from harness.permission import PermissionChecker
-from harness.prompt import PromptBuilder
+from harness.prompt import BASE_PROMPT, PromptBuilder
 from harness.react_loop import ReActLoop
 from harness.react_loop import StopReason as ReActStopReason
 from harness.react_loop import ToolExecutor, ToolOutcome
@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 
 # playwright-mcp 工具使用提示(以 Context 形式注入 System Prompt)
 PLAYWRIGHT_MCP_HINT = """\
+【浏览器操作(playwright-mcp)】
 浏览器操作通过 playwright-mcp 工具完成,关键用法:
 - 先用 `browser_navigate` 打开目标页面;之后用 `browser_snapshot` 获取 A11y 快照,快照里每个可操作元素都带一个 ref(形如 e11)。
 - 操作元素时(`browser_click` / `browser_type` / `browser_select_option` / `browser_hover`)必须传两个参数:
@@ -63,10 +64,7 @@ PLAYWRIGHT_MCP_HINT = """\
   ⚠️ ref 是 playwright-mcp 的专用引用,**不是 CSS 选择器**,不要写成 ref=e11 这种形式塞进选择器字段,直接把 e11 作为 ref 参数传。
 - 页面发生跳转/变化后,ref 会失效,需要重新 `browser_snapshot` 再操作。
 - `browser_type` 填完输入框、要触发提交时可带 submit=true,或之后单独 click 提交按钮。
-- 需要等待用 `browser_wait_for`:等**文本出现/消失**传 `text`/`textGone`;需**按时长等待/观察**(如"等待 3 分钟")传 `time`(秒,如 180),平台会真正等满该时长(封顶 5 分钟)后再返回最新页面。
-
-【务必完成所有步骤】执行计划里的每一步都要真正做完并各自调用 mark_step_done,
-**不要在中途停止**;只有当所有步骤都完成后,才输出最终的 TEST_RESULT。"""
+- 需要等待用 `browser_wait_for`:等**文本出现/消失**传 `text`/`textGone`;需**按时长等待/观察**(如"等待 3 分钟")传 `time`(秒,如 180),平台会真正等满该时长(封顶 5 分钟)后再返回最新页面。"""
 
 # 控制工具的名字(执行器据此路由,permission/截图据此跳过):StepPlan 推进 + Skill 渐进加载
 _CONTROL_TOOLS = {"mark_step_done", LOAD_SKILL_TOOL}
@@ -444,8 +442,10 @@ class TestCaseAgent:
         if self.tools_registry is not None:
             tools += self.tools_registry.to_litellm_tools()
 
-        prompt_ctx = "\n\n".join(p for p in (self.context, PLAYWRIGHT_MCP_HINT) if p)
-        builder = PromptBuilder(spec, tools, context=prompt_ctx)
+        # playwright-mcp 工具机制是平台固定说明(非业务背景),并入 base 层紧跟 BASE_PROMPT;
+        # context 只承载真正的用户业务背景(self.context),无则不渲染「## 业务背景」。
+        base = f"{BASE_PROMPT}\n\n{PLAYWRIGHT_MCP_HINT}"
+        builder = PromptBuilder(spec, tools, context=self.context, base=base)
         healer = HealingSubagent(self.llm)
 
         # 当前 URL 状态(供 Permission 按环境/URL 判定):初始为 base_url,执行器随观察更新
