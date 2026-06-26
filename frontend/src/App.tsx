@@ -10,6 +10,7 @@ import SuiteRunDetailPage from "./pages/SuiteRunDetailPage";
 import SuiteSettingsPage from "./pages/SuiteSettingsPage";
 import VocabularyPage from "./pages/VocabularyPage";
 import SkillsPage from "./pages/SkillsPage";
+import CaseSpecPage from "./pages/CaseSpecPage";
 import ProjectSettingsPage from "./pages/ProjectSettingsPage";
 
 export default function App() {
@@ -21,6 +22,7 @@ export default function App() {
         <Route path="/tasks" element={<TasksPage />} />
         <Route path="/vocabulary" element={<VocabularyPage />} />
         <Route path="/skills" element={<SkillsPage />} />
+        <Route path="/case-spec" element={<CaseSpecPage />} />
         <Route path="/settings" element={<ProjectSettingsPage />} />
       </Route>
 

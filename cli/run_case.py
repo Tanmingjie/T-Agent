@@ -201,6 +201,22 @@ async def _run(args: argparse.Namespace) -> int:
         tools_registry=tools_registry,
     )  # mcp 稍后注入
 
+    # 查看翻译 prompt(调试):打印实际喂给翻译 LLM 的 system + user 消息(含用例规范注入),
+    # 不调用 LLM。用于核对「用例规范是否进了翻译、长什么样」。
+    if args.dump_spec_prompt:
+        from intelligence.pre_analysis import build_spec_messages
+
+        msgs = build_spec_messages(case, knowledge=translation_knowledge)
+        print("\n" + "═" * 60)
+        print("翻译 Prompt(喂给翻译 LLM 的消息,未调用 LLM):")
+        for m in msgs:
+            print("\n" + "─" * 60)
+            print(f"# role = {m['role']}")
+            print("─" * 60)
+            print(m["content"])
+        print("═" * 60 + "\n")
+        return 0
+
     # 先生成并打印 TestSpec 供审查
     print("正在生成 TestSpec…")
     spec = await agent.generate_spec(case)
@@ -262,6 +278,11 @@ def main(argv: list[str] | None = None) -> int:
         help="翻译知识/操作指南文件(自然语言文本):注入翻译 prompt 助补全流程/对齐术语/写对 expected",
     )
     p.add_argument("--spec-only", action="store_true", help="只生成并打印 TestSpec,不执行")
+    p.add_argument(
+        "--dump-spec-prompt",
+        action="store_true",
+        help="只打印翻译 prompt(喂翻译 LLM 的 system+user,含用例规范注入),不调用 LLM、不执行",
+    )
     p.add_argument("--check-llm", action="store_true", help="只做 LLM 连通性自检,不跑用例")
     p.add_argument("-v", "--verbose", action="store_true", help="输出 DEBUG 日志")
     args = p.parse_args(argv)

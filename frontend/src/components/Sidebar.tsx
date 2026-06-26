@@ -7,6 +7,7 @@ import {
   Zap,
   UserRound,
   BookMarked,
+  BookText,
 } from "lucide-react";
 
 // 项目级导航。作用域分两组:
@@ -25,6 +26,7 @@ const groups = [
     links: [
       { to: "/vocabulary", label: "词汇表", icon: BookOpen, end: false },
       { to: "/skills", label: "Skills", icon: BookMarked, end: false },
+      { to: "/case-spec", label: "用例规范", icon: BookText, end: false },
       { to: "/settings", label: "设置", icon: Settings, end: false },
     ],
   },
