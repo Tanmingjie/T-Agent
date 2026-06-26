@@ -167,6 +167,25 @@ async def test_client_lifecycle_with_fake_session():
     assert fake.calls[-1] == ("browser_click", {})
 
 
+def test_viewport_args_default_and_overrides(monkeypatch):
+    from mcp_client.client import viewport_args
+
+    monkeypatch.delenv("MCP_VIEWPORT", raising=False)
+    assert viewport_args() == ["--viewport-size", "1920,1080"]  # 默认放大
+
+    monkeypatch.setenv("MCP_VIEWPORT", "1366, 768")
+    assert viewport_args() == ["--viewport-size", "1366,768"]  # 去空格
+
+    monkeypatch.setenv("MCP_VIEWPORT", "1280x720")
+    assert viewport_args() == ["--viewport-size", "1280,720"]  # x 分隔归一
+
+    monkeypatch.setenv("MCP_VIEWPORT", "0")
+    assert viewport_args() == []  # 显式关闭 → 回 playwright-mcp 默认
+
+    monkeypatch.setenv("MCP_VIEWPORT", "garbage")
+    assert viewport_args() == []  # 格式非法 → 不传(不污染启动)
+
+
 def test_default_stdio_params_use_npx_not_http():
     # 防回归:默认必须是 npx stdio,绝不能出现 CDP HTTP 连接
     client = MCPClient()

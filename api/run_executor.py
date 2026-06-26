@@ -32,11 +32,14 @@ SSECallback = Callable[[str, dict], Awaitable[None]]
 
 
 def _mcp_args() -> list[str]:
+    from mcp_client.client import viewport_args
+
     args = ["@playwright/mcp@latest"]
     if os.getenv("MCP_ISOLATED", "1") != "0":
         args.append("--isolated")
     if os.getenv("MCP_HEADLESS", "1") != "0":
         args.append("--headless")
+    args += viewport_args()  # 默认 1920×1080,治窄视口藏按钮(env MCP_VIEWPORT 可调)
     return args
 
 

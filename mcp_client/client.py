@@ -14,6 +14,8 @@ playwright-mcp 服务端默认就以 stdio 暴露 MCP 协议,并在本机用 Pla
 from __future__ import annotations
 
 import asyncio
+import os
+import re
 from contextlib import AsyncExitStack
 from typing import Any
 
@@ -23,6 +25,25 @@ from mcp.client.stdio import stdio_client
 # playwright-mcp 的默认启动方式:npx @playwright/mcp(stdio)
 DEFAULT_COMMAND = "npx"
 DEFAULT_ARGS: list[str] = ["@playwright/mcp@latest"]
+
+# 默认视口。不设时 playwright-mcp 默认 1280×720——比常见 1920 屏窄,会让响应式页面把按钮
+# 收进汉堡菜单/隐藏(a11y 树里就没有该元素 → agent 一直找不到),且截图看着像"放大"。
+# 默认放大到 1920×1080;env MCP_VIEWPORT="宽,高" 可调,设 "0"/空 关闭(回 playwright-mcp 默认)。
+DEFAULT_VIEWPORT = "1920,1080"
+_VIEWPORT_RE = re.compile(r"^\s*\d+\s*[,x]\s*\d+\s*$")
+
+
+def viewport_args() -> list[str]:
+    """据 env MCP_VIEWPORT 产出 playwright-mcp 的 ``--viewport-size`` 参数(无则用默认)。
+
+    返回 ``["--viewport-size", "1920,1080"]`` 或空列表(显式关闭/格式非法)。
+    """
+    raw = os.getenv("MCP_VIEWPORT", DEFAULT_VIEWPORT).strip()
+    if not raw or raw == "0":
+        return []
+    if not _VIEWPORT_RE.match(raw):
+        return []
+    return ["--viewport-size", raw.replace("x", ",").replace(" ", "")]
 
 
 # ── 纯函数:MCP ↔ LiteLLM 格式转换(无需 live server,可单测) ────────

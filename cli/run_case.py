@@ -46,7 +46,7 @@ from harness.skills import build_skill_manager  # noqa: E402
 from harness.tools import load_tool_registry_from_yaml  # noqa: E402
 from input.excel_parser import parse_excel  # noqa: E402
 from input.models import TestCase, TestSpec  # noqa: E402
-from mcp_client.client import MCPClient  # noqa: E402
+from mcp_client.client import MCPClient, viewport_args  # noqa: E402
 
 
 def _load_vocab_resolver(path: str | None) -> DictVocabResolver | None:
@@ -211,6 +211,7 @@ async def _run(args: argparse.Namespace) -> int:
         mcp_args.append("--isolated")
     if args.headless:
         mcp_args.append("--headless")
+    mcp_args += viewport_args()  # 默认 1920×1080,治窄视口藏按钮(env MCP_VIEWPORT 可调)
     async with MCPClient(args=mcp_args) as mcp:
         agent.mcp = mcp
         record = await agent.run(case, spec=spec)
