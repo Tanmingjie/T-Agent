@@ -27,7 +27,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 单条用例的执行由 `harness/agent.py::TestCaseAgent.run()` 总装,串起以下模块：
 
-- `intelligence/pre_analysis.py` — TestCase → **阶段化 TestSpec**(纯 LLM 翻译,**只产意图不接地**,2026-06-22 重设计)。产出 `{intent, preconditions:[str], phases:[{steps:[str], expected}]}`:每阶段 = 一组自然语言步骤(驱动)+ 一条组级预期(验证依据)。不写 selector/不锁动作/不猜元素,接地全交运行时。坏输出降级为单阶段无损映射。契约见 `docs/test_spec_v2.md`。
+- `intelligence/pre_analysis.py` — TestCase → **阶段化 TestSpec**(纯 LLM 翻译,**只产意图不接地**,2026-06-22 重设计)。产出 `{intent, preconditions:[str], phases:[{steps:[str], expected}]}`:每阶段 = 一组自然语言步骤(驱动)+ 一条组级预期(验证依据)。不写 selector/不锁动作/不猜元素,接地全交运行时。坏输出降级为单阶段无损映射。契约见 `docs/test_spec_v2.md`。**业务知识接入(2026-06-27)**:`build_spec_messages(case, knowledge=)` 把项目级**「用例规范」**(`project.translation_knowledge`,前端侧栏「用例规范」页维护)作"理解用"背景注入翻译——助补全隐含步骤/对齐术语/写对 expected;两条护栏:①仍不写 selector/不锁动作(知识≠接地);②expected 仍只写页面真实可观察、本阶段直接产生的状态,不把指南理想态当"页面必现"(防脑补→误判)。来源链:CLI `--knowledge <file>` / `run_executor` 读项目字段。看 prompt:CLI `--dump-spec-prompt` 或前端用例抽屉「查看翻译 prompt」(`GET /suites/{id}/cases/{cid}/spec-prompt`)。见 [[translation-knowledge]]。
 - `harness/step_plan.py` — 阶段化 TestSpec 的 `phases.steps` **摊平**成扁平步骤状态机(pending/active/done/...)+ 记每步所属阶段;暴露 `mark_step_done` 工具 + **阶段边界**查询(`is_phase_last_step`/`phase_last_step_no`)。
 - `harness/prompt.py` — System Prompt **分层**(Base+Context+Task+Tools),`PromptBuilder.build(step_plan)` 每轮重算反映进度。Task 层渲染 `intent`/`preconditions`/阶段化步骤清单,**不渲染 expected**(FG01:验证依据绝不进驱动)。
 - `harness/react_loop.py` — **ReAct 主循环**。Reason→Act→Observe;护栏:循环检测、max_steps、哑火续推(`max_idle_nudges`)、tool_call 容错、**过早 mark_done 软护栏 两分支**(E2:没操作 / 操作无效果——后者用页面指纹 URL+ref 集判,无 LLM)、**单步定位失败预算**(`STEP_FAIL_BUDGET` 默认 5 → `STEP_FAILED` 快速失败,E2 由 3→5)、**步级卡住主动提醒**(E2:同步连续 N 轮 fp 未变 → 注入诊断引导 + E3 浮现命中 skill 名催 `load_skill` 甲 / 持续仍卡 → 平台 `auto_load` top1 注入兜底 乙)、**跨 phase 重置**(E2:进新 phase 清零 idle/loop)。**观察以 user 消息文本回灌**(不依赖 tool_call_id 配对)。**阶段边界 Validator**(2026-06-22 取代步骤门控):`on_phase_end(phase_index) -> str|None` 在某阶段**最后一步** mark_step_done 落定时触发,核验该阶段 expected——返回非空原因 = 未达成 → `PHASE_FAILED` **阶段失败即失败**(不 replan/重试)。**哑火可观测(2026-06-24)**:`ReActResult.idle_outputs` 记每个哑火轮 `{iteration,step_no,kind,rechecked,text}`——`kind` 三态 narration_only(纯叙述放弃)/ malformed_tool_call(调了但格式坏)/ premature_result;透到 `metrics.execution.idle_outputs` 落库 + CLI 打印,供"卡死类"失败事后定性(模型放弃 vs 流式丢采)。**参数归一(2026-06-24)**:`_normalize_ref_target` 在 dispatch 前给 browser_* 工具把 `ref`/`element_ref`/`ref_id` 补进 `target`(本版 playwright-mcp 用 `target` 装 ref,模型先验是 `ref`、会抖动),消白烧步骤。
@@ -116,6 +116,36 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 功能点拆分单独 commit/push,每点单测 + saucedemo live 冒烟)**。
 
 ### 重大 redesign 实施记录
+
+- **内网验证批次(2026-06-27,一串落地)** — 围绕"内网真实跑"暴露的一组修,均单测 + saucedemo
+  TC101 live 冒烟绿:
+  - **用户「停止」功能(协作式优雅停)** — `run_record.cancel_requested` 标志,执行链协作式轮询:
+    orchestrator 每用例前 / ReActLoop 每轮顶部(新停因 `StopReason.ABORTED`)见标志即优雅退出
+    (正在飞的那步 MCP/LLM 跑完即停,不强杀、不留僵尸浏览器),未触达用例补「已中止」占位,run
+    终态记 `aborted`。端点 `POST /suites/{id}/runs/{run_id}/stop`(置标志 + 落 `aborting` run_event);
+    embedded/queue 统一(`execute_run` 内 `_should_abort` 轮询 repo.is_cancel_requested);前端用例页
+    「停止」按钮 + `aborting` 态。`should_abort` 从 execute_run 一路穿到 ReActLoop(orchestrator
+    只在非 None 时传,保 agent.run 最小契约)。
+  - **执行 prompt 清化石(`harness/prompt.py`+`agent.py`)** — review 真实拼装的执行 System Prompt
+    暴露三处并修:① `PLAYWRIGHT_MCP_HINT` 末尾残留"输出 TEST_RESULT"与 BASE【结束】"不要输出
+    TEST_RESULT"自相矛盾 → 删化石段;② 该 hint 是工具机制却经 context 渲染进「## 业务背景」→
+    并入 base 层(自带【浏览器操作】小标题),context 只放真正用户业务背景,无则不渲染空标题;
+    ③ BASE 常驻【动手前主动加载 Skill】在默认配置(DEFAULT_SKILLS 全 preload、无项目 skill)下指向
+    空清单=死指令 → 移除,引导折进 `SkillManager.render()` 的「可按需加载」分支(仅有待加载 skill 时出现)。
+  - **A11y 快照截断治本(`harness/context.py`)** ★ — 内网实证(用户确认"已按相关度截断"):驱动侧
+    L2 `truncate_snapshot` 按**中文步骤关键词**筛,内网元素常英文/图标/自定义组件名 → 关键词命不中 →
+    旧逻辑只留开头噪声行、把后面带 ref 的目标按钮整段丢 → 模型没 ref → 转 `document.querySelector`
+    又穿不透 shadow DOM → 卡死("a11y 找不到 + JS 也找不到")。修:改**保留优先级**——头部 > 命中
+    关键词 > **可交互元素行(button/textbox/web component 带 ref,命不中也保)** > 其余补结构;
+    `OBS_MAX_CHARS`/`SNAPSHOT_MAX_LINES` 接 env 作安全阀。注:这与裁决侧 `_snapshot_for_judge`
+    (按 expected 锚点、`JUDGE_SNAPSHOT_LIMIT=9000`)是**两条独立截断路径**。见 [[snapshot-truncation]]。
+  - **默认视口放大 1920×1080(`mcp_client.client.viewport_args`,env `MCP_VIEWPORT`)** — 治窄视口
+    (playwright-mcp 默认 1280×720)把按钮收进汉堡菜单/隐藏(a11y 树里就没该元素)。
+  - **「用例规范」(业务知识接入翻译)** — 见上 `pre_analysis.py` 模块说明 + [[translation-knowledge]]。
+    第一步 CLI `--knowledge`(最小闭环验证)→ 第二步项目级持久字段 `project.translation_knowledge` +
+    `run_executor` 接入 + 前端独立页(侧栏「用例规范」,与 Skills 同级;后端标识符不改)→ 看 prompt
+    入口(CLI `--dump-spec-prompt` / 抽屉「查看翻译 prompt」)。**注:这是"领域知识"非"翻译期接地"**
+    (不产 selector、不需看页面,只在 NL 层提升 intent/步骤/expected),不违反 2026-06-22 重设计。
 
 - **SSE 进度统一到 run_event 表 + 前端重连(2026-06-26,已落地)** ★ — 治"执行中退出执行页/
   回首页再进来 → 看不到执行过程、空白卡执行中"(用户报,RUN_MODE 默认 embedded)。根因**前后端两层**:
@@ -647,6 +677,9 @@ cd frontend && npm run preview    # 本地预览生产构建
 #   MCP_SETTLE=0                                   → 关「交互类动作后等页面稳定」(默认开;导航类已不 settle,Playwright 自动等 load)
 #   MCP_SETTLE_TIMEOUT_MS=8000 / MCP_SETTLE_INTERVAL_MS=400 → settle 超时/轮询间隔
 #   PHASE_SETTLE_TIMEOUT_MS=2000                   → 阶段末尾 Validator 判前 settle 短超时(默认 2s,防动态页白烧 8s)
+#   MCP_VIEWPORT=1920,1080                         → 浏览器视口(默认放大 1920×1080,治窄视口把按钮收进汉堡菜单;设 0/空 回 playwright-mcp 默认 1280×720)
+#   OBS_MAX_CHARS=2000 / SNAPSHOT_MAX_LINES=40     → 驱动侧(喂模型)A11y 快照截断旋钮(超字符触发/保留行数);截断优先保留可交互元素行,内网长页面藏元素时调大
+#   JUDGE_SNAPSHOT_LIMIT=9000                      → 喂【裁判】的 A11y 快照字符上限(按期望锚点窗口截断,与驱动侧两条独立路径)
 #   WAIT_MAX_SECONDS=300 / WAIT_CHUNK_SECONDS=20   → browser_wait_for 按时长等待:上限(默认 5min)/ 分段时长(<内部 ~30s 上限)
 #   HEAL_VISUAL=0                                  → 关视觉自愈截图双通道(默认开,需多模态模型)
 #   AGENT_MAX_STEPS=40                             → API 执行的 ReAct 最大步数(长流程如结算需调大)
