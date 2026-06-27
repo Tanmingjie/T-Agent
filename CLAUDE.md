@@ -117,6 +117,39 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ### 重大 redesign 实施记录
 
+- **SVG/HMI 工控加固 + 执行选 skill + prompt review 批次(2026-06-27 周末收尾)** ★ — 用户内网
+  「工艺模拟器(主要 SVG 画)」用例一条都没完整跑通、各类失败。约束:**内网数据不可外泄**。改用
+  **公开/本地替身复现失败类**(见 [[public-analogue-debugging]] + 工程经验条),在替身上挖出并修
+  两个真根因 + 配套特性/清理。**关键认知:用户内网模型是 qwen3.5-397B(强模型),失败大概率是
+  页面可观测性而非模型能力。**
+  - **SVG 可点元素纳入快照截断保留(`025309e`)** — 内网 SVG 工艺图的泵/阀,playwright-mcp 表达成
+    `generic [ref] [cursor=pointer]`(role 非 button),旧 `context._is_interactive` 按 role 判 →
+    长页面截断时当噪声丢 → 模型拿不到 ref → "找不到元素"。改:带 `[cursor=pointer]` 的行一律保留。
+    本地 SVG HMI live 复现验证。见 [[snapshot-truncation]]。
+  - **页面指纹纳入文本内容摘要(`4f2e3ab`)** — 工艺/HMI 核心变化常是 `<text>` 原地改值(液位
+    72%→80%),DOM 结构/ref 集都不变 → 旧「URL+ref 集」指纹无感 → 误报「操作没生效」软护栏 →
+    模型反复 snapshot 空转。`react_loop._fingerprint` 加一维:剥 ref/cursor 等易变标记后的可见
+    文本哈希。本地 HMI live 实测该用例 **27 步→13 步**。
+  - **执行时多选指定 skill 强制加载(`5f3954e`+`5c7602a`)** — 点「执行」弹框选项目 skill,勾选的
+    本次**强制常驻 prompt**(preload=True,不等弱模型自己 load_skill),未勾仍渐进披露;一次性随
+    本次 run。后端 `execute_run(force_skill_names=)` + `trigger_run` 收 `RunOptions.skill_names`,
+    embedded 透传 / queue 落 `run_queue.skill_names`(迁移 `0003`)+ worker 透传;前端弹框
+    (z-[60] 盖抽屉)。无项目 skill 则直跑不弹。
+  - **执行 prompt review(`081647b`)** — BASE_PROMPT 加正例锚点(INTENT+真发调用的正确形状)+
+    收紧三反例(没真发调用的三种长相)+ 去重(已满足别多疑/诊断清单/[观察]回灌各 2→1);docstring
+    清 load_skill 化石(早移到 SkillManager.render)。react_loop/assertion 清「证据接地」化石注释
+    (该层 2026-06-24 已撤)。saucedemo TC101 live PASS。
+  - **翻译 expected 去歧义(`cd2ce18`)** — 示例「Products 标题」歧义(裁判误当文档 `<title>`=Swag
+    Labs 判 FAIL)→ 改「页面出现文案 Products」+ 明确禁用"标题"二字;正例收到 2 锚点(合规铁律②)。
+  - **复现工具入库(`1185a8d`)** — `scripts/diag_svg_snapshot.py`(并排 dump a11y 快照 vs DOM
+    遍历,看"元素在 DOM 却没进快照"gap)+ `storage/diag_svg_hmi.html/.xlsx`(最小 SVG 工艺图样例
+    + live 用例);`storage/*.log` 加忽略。
+  - **下周继续(接力点)**:① **用户内网拉最新代码验证** SVG 工艺用例(上两个根因应缓解"找不到/
+    点不动");按非敏感信号(停因+死在第几步+那步目标)反馈,继续挖第三个根因。② **纯颜色状态灯**
+    (无文字)a11y 永远表达不了 → 裁决层需 `JUDGE_VISUAL=1` 多模态(qwen3.5 若支持图像)或用例规范
+    里别拿颜色当 expected——这是已定位未做的下一个点。③ 可选:对 `demo.thingsboard.io` 写真用例继续
+    挖(登录+表单+仪表盘 widget)。④ CLAUDE 工作约定新增「编码行为准则」(Karpathy 4 原则)已落地,
+    后续编码遵循。
 - **内网验证批次(2026-06-27,一串落地)** — 围绕"内网真实跑"暴露的一组修,均单测 + saucedemo
   TC101 live 冒烟绿:
   - **用户「停止」功能(协作式优雅停)** — `run_record.cancel_requested` 标志,执行链协作式轮询:
