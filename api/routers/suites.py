@@ -149,5 +149,33 @@ async def get_case(
     return tc.model_dump()
 
 
+@router.get("/suites/{suite_id}/cases/{case_id}/spec-prompt")
+async def get_case_spec_prompt(
+    suite_id: str,
+    case_id: str,
+    suite=Depends(require_suite_access),
+    repo=Depends(get_repo),
+    store=Depends(get_store),
+):
+    """只读预览:这条用例**实际喂给翻译 LLM 的 prompt**(system + user),含项目「用例规范」注入。
+
+    用于在前端核对"用例规范是否进了翻译、prompt 长什么样"。仅组装消息,不调用 LLM。
+    """
+    from intelligence.pre_analysis import build_spec_messages
+
+    tc = await repo.get_case(case_id)
+    if tc is None:
+        raise HTTPException(404, "Case not found")
+    knowledge = ""
+    if suite.project_id:
+        project = await store.get_project(suite.project_id)
+        if project is not None:
+            knowledge = project.translation_knowledge or ""
+    msgs = build_spec_messages(tc, knowledge=knowledge)
+    system = next((m["content"] for m in msgs if m["role"] == "system"), "")
+    user = next((m["content"] for m in msgs if m["role"] == "user"), "")
+    return {"system": system, "user": user, "knowledge_used": bool(knowledge.strip())}
+
+
 # 〔2026-06-22 翻译阶段化重设计:预置条件不再分类/确认(纯背景),原
 #   /precondition 与 /precondition-item 标黄确认端点随分类器一并退役。〕

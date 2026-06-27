@@ -56,6 +56,48 @@ async def test_delete_suite(client):
     assert r.status_code == 404
 
 
+@pytest.mark.asyncio
+async def test_case_spec_prompt_includes_case_and_knowledge(client):
+    """翻译 prompt 预览:返回 system+user,user 含用例步骤;项目有用例规范则注入 + 标记。"""
+    import api.server as srv
+    from input.models import Project
+
+    await srv._store.save_project(
+        Project(id="p1", name="P", translation_knowledge="提交前必须先选审批人。")
+    )
+    r = await client.post(
+        "/api/suites",
+        json={"name": "S", "base_url": "https://x.com", "project_id": "p1"},
+    )
+    sid = r.json()["id"]
+    await srv._repo.bulk_insert(
+        [
+            TestCase(
+                id="tc1",
+                name="下单",
+                steps=["填写订单", "点击提交"],
+                base_url="https://x.com",
+                suite_id=sid,
+            )
+        ]
+    )
+    r = await client.get(f"/api/suites/{sid}/cases/tc1/spec-prompt")
+    assert r.status_code == 200
+    body = r.json()
+    assert "测试规格翻译器" in body["system"]  # 翻译 system prompt
+    assert "点击提交" in body["user"]  # 用例步骤进了 user
+    assert body["knowledge_used"] is True
+    assert "提交前必须先选审批人" in body["user"]  # 用例规范注入
+
+
+@pytest.mark.asyncio
+async def test_case_spec_prompt_404_unknown_case(client):
+    r = await client.post("/api/suites", json={"name": "S", "base_url": "https://x.com"})
+    sid = r.json()["id"]
+    r = await client.get(f"/api/suites/{sid}/cases/nope/spec-prompt")
+    assert r.status_code == 404
+
+
 # 〔2026-06-22 预置条件分类/确认端点随分类器退役,相关端点测试删除。〕
 
 

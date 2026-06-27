@@ -369,7 +369,92 @@ function InfoView({
           </div>
         )}
       </section>
+
+      <TranslationPromptBlock suiteId={suiteId} caseId={caseInfo.id} />
     </div>
+  );
+}
+
+/** 只读预览:这条用例实际喂给翻译 LLM 的 prompt(system+user,含项目「用例规范」注入)。
+ * 按需拉取 /suites/{id}/cases/{cid}/spec-prompt;用于核对用例规范是否进了翻译、prompt 长什么样。 */
+function TranslationPromptBlock({
+  suiteId,
+  caseId,
+}: {
+  suiteId: string;
+  caseId: string;
+}) {
+  const [open, setOpen] = useState(false);
+  const [data, setData] = useState<{
+    system: string;
+    user: string;
+    knowledge_used: boolean;
+  } | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [err, setErr] = useState("");
+
+  async function toggle() {
+    if (open) {
+      setOpen(false);
+      return;
+    }
+    setOpen(true);
+    if (data || loading) return;
+    setLoading(true);
+    setErr("");
+    try {
+      setData(
+        await apiGet(`/suites/${suiteId}/cases/${caseId}/spec-prompt`),
+      );
+    } catch (e) {
+      setErr(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoading(false);
+    }
+  }
+
+  return (
+    <section className="border-t border-gray-200 pt-5">
+      <button
+        onClick={toggle}
+        className="inline-flex items-center gap-1.5 text-sm font-medium text-brand-700 hover:text-brand-800"
+      >
+        <FileText size={15} />
+        {open ? "收起翻译 prompt" : "查看翻译 prompt"}
+      </button>
+      <p className="text-xs text-gray-400 mt-1">
+        翻译这条用例时实际喂给 LLM 的消息(含项目「用例规范」注入)。仅组装,不调用 LLM。
+      </p>
+      {open && (
+        <div className="mt-3 space-y-3">
+          {loading && <p className="text-sm text-gray-400">加载中…</p>}
+          {err && <p className="text-sm text-red-600">加载失败:{err}</p>}
+          {data && (
+            <>
+              <p className="text-xs text-gray-500">
+                用例规范注入:{data.knowledge_used ? "✅ 已注入" : "—（本项目未填用例规范）"}
+              </p>
+              <div>
+                <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+                  System
+                </h4>
+                <pre className="text-xs leading-relaxed font-mono whitespace-pre-wrap bg-gray-50 border border-gray-200 rounded-md p-3 max-h-72 overflow-auto">
+                  {data.system}
+                </pre>
+              </div>
+              <div>
+                <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+                  User(用例 + 用例规范)
+                </h4>
+                <pre className="text-xs leading-relaxed font-mono whitespace-pre-wrap bg-gray-50 border border-gray-200 rounded-md p-3 max-h-72 overflow-auto">
+                  {data.user}
+                </pre>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </section>
   );
 }
 
