@@ -51,6 +51,22 @@ def test_truncate_keeps_interactive_even_when_keywords_miss():
     assert len(out.splitlines()) <= 21
 
 
+def test_truncate_keeps_svg_cursor_pointer_clickables():
+    """内网 SVG 工艺图:可点元素 role=generic 但带 [cursor=pointer]+ref。关键词命不中(图形
+    无英文/中文名匹配)时,截断仍须保留这些可点工艺元素行,否则模型拿不到 ref → 点不动。"""
+    rows = "\n".join(f'  - generic [ref=e{i}]: "noise {i}"' for i in range(2, 60))
+    text = (
+        "### Page URL: http://intranet/hmi\n### Page Title: 反应釜\n"
+        f"{rows}\n"
+        "  - generic [ref=e120] [cursor=pointer]: 泵P1\n"
+        "  - generic [ref=e121] [cursor=pointer]: 进料阀"
+    )
+    out = truncate_snapshot(text, keywords=["启动循环泵", "打开进料"], max_lines=20)
+    assert "已按相关度截断" in out  # 确实截断了
+    assert "ref=e120" in out  # 可点 SVG 泵被保留
+    assert "ref=e121" in out  # 可点 SVG 阀被保留
+
+
 def test_truncate_noop_when_short():
     text = '### Page\n- Page URL: x\n- button "a"'
     assert truncate_snapshot(text, [], max_lines=40) == text

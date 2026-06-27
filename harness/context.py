@@ -74,9 +74,18 @@ def _line_role(line: str) -> str:
 
 
 def _is_interactive(line: str) -> bool:
-    """带 ref 的可交互元素行:标准可交互角色,或 web component(角色名含连字符,如 sl-button)。"""
+    """带 ref 的可交互元素行:标准可交互角色,或 web component(角色名含连字符,如 sl-button),
+    或带 ``[cursor=pointer]`` 的可点元素。
+
+    末者治 **SVG 工艺图/自定义可点组件**:playwright-mcp 把这类元素表达成
+    ``generic [ref=eN] [cursor=pointer]: 泵P1``——role 是 generic(不在可交互集),但它确实可点
+    且有 ref。长页面截断时若按 role 丢掉,模型就拿不到这些工艺元素的 ref → 点不动(内网 SVG
+    工控界面高发,scripts/diag_svg_snapshot.py 复现)。
+    """
     if "[ref=" not in line:
         return False
+    if "[cursor=pointer]" in line:
+        return True
     role = _line_role(line)
     return role in _INTERACTIVE_ROLES or "-" in role
 
