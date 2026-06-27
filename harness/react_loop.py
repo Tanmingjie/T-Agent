@@ -138,6 +138,7 @@ class StopReason(str, Enum):
     STEP_FAILED = "step_failed"  # 单步连续定位失败超预算(快速失败,疑似点错前序元素)
     PHASE_FAILED = "phase_failed"  # 阶段边界 Validator 判该阶段 expected 未达成(阶段失败即失败)
     ABORTED = "aborted"  # 用户请求停止(协作式优雅退出,正在飞的那步跑完即停)
+    LLM_ERROR = "llm_error"  # LLM 调用异常(超时/连接/服务端错)— 优雅停而非把半截进度丢弃
 
 
 @dataclass
@@ -156,6 +157,7 @@ class ReActResult:
     failed_step_target: str = ""  # STEP_FAILED 时:该步的目标语义(诊断"点错哪个")
     failed_phase_index: int = -1  # PHASE_FAILED 时:未达成的阶段(0-based;-1=无)
     failed_phase_reason: str = ""  # PHASE_FAILED 时:Validator 给的未达成原因
+    error_message: str = ""  # LLM_ERROR 时:LLM 调用异常的明细(超时/连接/服务端错原文)
 
 
 def _signature(tool_calls: list[ToolCall]) -> str:
@@ -404,6 +406,15 @@ class ReActLoop:
                     }
                 )
                 continue
+            except Exception as e:  # noqa: BLE001 — LLM 传输层异常(超时/连接/服务端错)
+                # 不让一次 LLM 调用异常炸穿整个 agent.run 把跑了一半的进度全丢:优雅停 →
+                # 记停因 + 错误明细,带着已完成的 action_steps 正常 break,由 agent.run 落库
+                # (半截步骤/token/停因全保留,前端可定位"跑到第几步、因 LLM 超时停")。
+                # 注:asyncio.CancelledError 是 BaseException 不被这里捕获,中止/取消仍正常传播。
+                logger.warning("LLM 调用异常,优雅终止 ReAct 循环:%s", e)
+                result.stop_reason = StopReason.LLM_ERROR
+                result.error_message = str(e) or e.__class__.__name__
+                break
 
             # 流式偶发丢 tool_call(stream_chunk_builder 重建有概率漏采)→ 无调用且仍有
             # 未完成步骤时,**非流式复核一次**把漏采的调用捞回来,避免把「其实模型调了工具」
@@ -417,8 +428,10 @@ class ReActLoop:
                 rechecked = True
                 try:
                     resp = await self.llm.chat(messages, tools=self.tools)
-                except LLMToolCallError:
-                    pass  # 复核也失败 → 维持原结果,走下面哑火逻辑
+                except Exception:  # noqa: BLE001 — 复核是「捞回漏采调用」的额外尝试,
+                    # 它本身失败(坏调用 / 超时 / 连接错)不该炸循环:维持原 resp(无 tool_call)
+                    # 走下面哑火逻辑。真·LLM 异常会在下一轮主调用处以 LLM_ERROR 优雅停。
+                    pass
 
             reasoning = resp.content or ""
             maybe_result = parse_test_result(reasoning)

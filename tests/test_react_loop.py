@@ -595,6 +595,33 @@ async def test_tool_call_error_persistent_stops():
     assert result.stop_reason == StopReason.TOOL_CALL_ERROR
 
 
+async def test_llm_exception_stops_gracefully_preserving_progress():
+    """LLM 调用异常(如超时)不得炸穿循环把半截进度丢掉:优雅停 LLM_ERROR,
+    保留已完成步骤 + 错误明细(供 agent.run 落库,前端可定位"跑到第几步、因 LLM 超时停")。"""
+    plan = _plan(2)  # 2 步:第 1 轮跑一个真操作,第 2 轮 LLM 调用超时
+    err = TimeoutError("Request timed out")
+    llm = _ScriptedLLM(
+        [
+            _resp(calls=[("browser_click", {"element": "按钮1", "ref": "e1"})]),  # idx0:真操作
+            _resp(),  # idx1 槽:被超时异常占用
+        ],
+        raise_on={1: err},
+    )
+    loop = ReActLoop(
+        llm,
+        tools=[],
+        execute=_make_executor(plan),
+        step_plan=plan,
+        build_system=_build_system,
+    )
+    result = await loop.run()
+    assert result.stop_reason == StopReason.LLM_ERROR
+    assert "timed out" in result.error_message.lower()
+    # 半截进度保留:第 1 轮的 click 已记入 action_steps(不因超时被整体丢弃)
+    assert any(s.tool_name == "browser_click" for s in result.action_steps)
+    assert not plan.all_done()
+
+
 async def test_tool_call_error_transient_recovers():
     """铁律3:偶发 tool_call 错误不得搞崩循环——纠偏续推后仍能完成剩余步骤。"""
     plan = _plan(1)

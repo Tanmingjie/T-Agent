@@ -707,6 +707,12 @@ class TestCaseAgent:
                     f"「{result.failed_step_target}」反复定位失败(快速失败),"
                     f"疑似前序步骤点错元素致此步找不到目标;仅完成 {done_steps}/{total_steps} 步。"
                 )
+            elif result.stop_reason == ReActStopReason.LLM_ERROR:
+                incomplete_reason = (
+                    f"[FAIL] 执行中断:LLM 调用异常(超时/连接/服务端错)——"
+                    f"{result.error_message or '(无详情)'};仅完成 {done_steps}/{total_steps} 步,"
+                    f"后续步骤未执行。"
+                )
             elif not execution_complete:
                 incomplete_reason = (
                     f"[FAIL] 执行未完成:仅完成 {done_steps}/{total_steps} 步"
