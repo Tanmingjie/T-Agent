@@ -51,6 +51,10 @@ storage/ui_research/
 scripts/*
 !scripts/serve.py
 !scripts/seed_demo.py
+!scripts/diag_svg_snapshot.py
+
+# 运行时日志(worker/queue 冒烟等),不入库
+storage/*.log
 
 # eval_fg 快照是可经 capture.py 重新抓取的 fixture 数据,不入库
 eval_fg/snapshots.json

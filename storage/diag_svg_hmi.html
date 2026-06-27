@@ -1,0 +1,34 @@
+<!doctype html>
+<html lang="zh">
+<head><meta charset="utf-8"><title>SVG 工艺 HMI 诊断样例</title></head>
+<body>
+<h1>反应釜监控</h1>
+<!-- 典型 SVG 工艺图:泵/阀门是可点击的 <g>,数值是 <text>,状态是颜色 -->
+<svg width="600" height="300" viewBox="0 0 600 300">
+  <!-- 储罐 -->
+  <rect x="40" y="60" width="120" height="160" fill="#cde" stroke="#358"/>
+  <text x="100" y="50" text-anchor="middle">原料罐</text>
+  <!-- 液位数值读数(纯 <text>,无 aria) -->
+  <text id="level" x="100" y="150" text-anchor="middle" font-size="22">液位 72%</text>
+
+  <!-- 泵:可点击的 g,内含图形 + 文字标签,但没有 role/aria-label -->
+  <g id="pump1" onclick="document.getElementById('level').textContent='液位 80%'" style="cursor:pointer">
+    <circle cx="300" cy="140" r="34" fill="#6c6" stroke="#262"/>
+    <text x="300" y="145" text-anchor="middle">泵P1</text>
+  </g>
+
+  <!-- 进料阀:可点击的 g,只有图形 + 文字,无可访问名;点开后出现「进料中」文字 -->
+  <g id="valveA" onclick="this.querySelector('rect').setAttribute('fill','#e55');document.getElementById('flow').textContent='进料中'" style="cursor:pointer">
+    <rect x="440" y="120" width="44" height="44" fill="#888" stroke="#333"/>
+    <text x="462" y="180" text-anchor="middle">进料阀</text>
+  </g>
+  <text id="flow" x="300" y="240" text-anchor="middle" font-size="18" fill="#a30"></text>
+
+  <!-- 状态灯:纯颜色,无任何文字(canvas 同理无法被 a11y 表达) -->
+  <circle cx="540" cy="80" r="14" fill="#2c2"/>
+</svg>
+
+<!-- 对照:一个普通 HTML 按钮(a11y 一定能抓到) -->
+<button id="htmlbtn" onclick="alert('ok')">普通HTML按钮(对照)</button>
+</body>
+</html>

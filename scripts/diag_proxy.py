@@ -1,7 +1,9 @@
 """诊断:Python 这次请求到底走没走代理,以及直连能否成功。
 用法:在出问题的同一个 cmd 里:py -3.11 scripts\diag_proxy.py
 """
-import os, sys, json
+import json
+import os
+import sys
 
 # 你的内网 LLM base(按需改;留 None 则读 env LLM_API_BASE)
 BASE = os.getenv("LLM_API_BASE") or "http://你的内网LLM主机/v1"
