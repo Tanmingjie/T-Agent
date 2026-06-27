@@ -49,20 +49,26 @@ _REF_RE = re.compile(r"^e\d+$")
 _EXEC_LOCATOR_RE = re.compile(r"page\.(?:locator|getBy[A-Za-z]+)\([^()]*\)")
 # E2 轻量页面指纹:从快照里抽所有 ref id 形成 ref 集,配合 URL 当指纹。
 _REF_ALL_RE = re.compile(r"\[ref=(e\d+)\]")
+# 指纹文本摘要:剥掉易变的标记 token(ref/cursor/active/level)后,留可见文本作内容摘要。
+# 治「原地文本变化」漏判——SVG/HMI 数值读数(液位 72%→80%、温度刷新)只改 <text> 值,
+# DOM 结构与 ref 集都不变 → 旧「URL+ref 集」指纹无感 → 误报"操作没生效"致模型空转。
+_FP_NOISE_RE = re.compile(r"\[(?:ref=e\d+|cursor=[^\]]*|active|level=\d+)\]")
 
 
 def _fingerprint(snapshot_text: str) -> str:
-    """页面指纹(URL + ref 集)。无快照/无 ref 返回空串。
+    """页面指纹(URL + ref 集 + 文本内容摘要)。无快照返回空串。
 
     E2 用以判「操作有没有让页面变」——比单看 URL 准(URL 不变但 DOM 变了:打开弹窗、
-    加购角标);比看整段文本省(纯确定性、无 LLM)。同一页两次抓取应得相同指纹;
-    切页/弹窗/任何 ref 变化都会改指纹。
+    加购角标);比看整段文本省(纯确定性、无 LLM)。同一页两次抓取应得相同指纹;切页/弹窗/
+    ref 变化/**任何可见文本变化**都会改指纹。文本摘要这一维专治 HMI 数值读数原地刷新——
+    旧版只看 URL+ref 集,对「液位 72%→80%」这类原地改值无感,会误报"操作没生效"。
     """
     if not snapshot_text:
         return ""
     refs = frozenset(_REF_ALL_RE.findall(snapshot_text))
     url = parse_snapshot(snapshot_text).url
-    return f"{url}|{len(refs)}|{hash(refs)}"
+    text_only = _FP_NOISE_RE.sub("", snapshot_text)  # 剥易变标记,留可见文本作内容摘要
+    return f"{url}|{len(refs)}|{hash(refs)}|{hash(text_only)}"
 
 
 def _ref_alias(arguments: dict) -> str | None:

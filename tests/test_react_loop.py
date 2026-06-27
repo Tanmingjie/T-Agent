@@ -889,6 +889,16 @@ def test_fingerprint_url_and_refs():
     assert _fingerprint("") == ""
 
 
+def test_fingerprint_detects_inplace_text_change():
+    """HMI 数值读数原地刷新(液位 72%→80%):DOM 结构/ref 集不变,只 <text> 值变。
+    指纹必须能识别为「页面变了」,否则「操作没生效」软护栏会误报 → 模型空转(SVG 工控高发)。"""
+    from harness.react_loop import _fingerprint
+
+    before = "Page URL: http://x/hmi\n- generic [ref=e6]: 液位 72%\n- generic [ref=e9] [cursor=pointer]: 泵P1"
+    after = "Page URL: http://x/hmi\n- generic [ref=e6]: 液位 80%\n- generic [ref=e9] [cursor=pointer]: 泵P1"
+    assert _fingerprint(before) != _fingerprint(after)  # 原地文本变化被识别
+
+
 async def test_fp_guard_operation_with_no_effect_triggers_soft_nudge():
     """E2 分支 B:做了操作但页面指纹未变 → 软拦,提示「操作似乎没生效」。"""
     plan = _plan(1)
