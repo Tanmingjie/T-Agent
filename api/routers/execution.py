@@ -64,14 +64,24 @@ def _mcp_args() -> list[str]:
     return args
 
 
+class RunOptions(BaseModel):
+    # 本次执行强制加载的项目 skill 名(一次性,随本次 run;空=全走渐进披露)。
+    skill_names: list[str] = []
+
+
 @router.post("/suites/{suite_id}/run", dependencies=_suite_guard)
 async def trigger_run(
     suite_id: str,
     case_id: str | None = None,
+    options: RunOptions | None = None,
     repo=Depends(get_repo),
     store=Depends(get_store),
 ):
-    """触发执行。``case_id`` 给定时只跑该单条用例(抽屉里的「执行」按钮),否则跑整套件。"""
+    """触发执行。``case_id`` 给定时只跑该单条用例(抽屉里的「执行」按钮),否则跑整套件。
+
+    ``options.skill_names``:执行前勾选的项目 skill → 本次强制加载(详见 execute_run)。
+    """
+    skill_names = options.skill_names if options is not None else []
     suite = await repo.get_suite(suite_id)
     if suite is None:
         raise HTTPException(404, "Suite not found")
@@ -104,7 +114,7 @@ async def trigger_run(
     # 默认 embedded:进程内守护线程执行(单机)。两模式进度都落 run_event 表,/stream 统一
     # 从表重放+尾随 → 退出执行页再进来可看全程。
     if os.getenv("RUN_MODE") == "queue":
-        await store.enqueue_run(run_id, suite_id, suite.project_id, case_id)
+        await store.enqueue_run(run_id, suite_id, suite.project_id, case_id, skill_names)
         return {"run_id": run_id, "status": "queued"}
 
     api_loop = asyncio.get_running_loop()
@@ -152,6 +162,7 @@ async def trigger_run(
                 case_id=case_id,
                 sse_cb=None,
                 perm_approver_factory=_perm_approver_factory,
+                force_skill_names=skill_names,
             )
         finally:
             api_loop.call_soon_threadsafe(_live_runs.discard, run_id)

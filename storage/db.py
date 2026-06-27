@@ -174,6 +174,9 @@ class RunQueueRow(SQLModel, table=True):
     claimed_at: float = 0.0  # 心跳时间(超时回收依据);0=未领取
     attempts: int = 0
     created_at: float = 0.0
+    # 本次执行强制加载的项目 skill 名(一次性、随 run;空=全走渐进披露)。queue 模式下
+    # 触发时落库,worker 领取后透传给 execute_run(embedded 模式直接走函数参数不经此列)。
+    skill_names: list = Field(default_factory=list, sa_column=Column(JSON))
 
 
 class RunEventRow(SQLModel, table=True):
@@ -815,7 +818,12 @@ class Store:
     # —— 执行任务队列(T-P08:API 入队,worker 领取)——
 
     async def enqueue_run(
-        self, run_id: str, suite_id: str, project_id: str = "", case_id: str | None = None
+        self,
+        run_id: str,
+        suite_id: str,
+        project_id: str = "",
+        case_id: str | None = None,
+        skill_names: list[str] | None = None,
     ) -> None:
         async with self._sf() as s:
             s.add(
@@ -826,6 +834,7 @@ class Store:
                     case_id=case_id,
                     status="queued",
                     created_at=time.time(),
+                    skill_names=skill_names or [],
                 )
             )
             await s.commit()

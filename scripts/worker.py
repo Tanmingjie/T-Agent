@@ -101,6 +101,7 @@ async def _run_one(db_url: str, claimed) -> None:
             case_id=claimed.case_id,
             sse_cb=None,  # 事件由 execute_run 统一落 run_event 表
             perm_approver_factory=_make_approver,
+            force_skill_names=list(claimed.skill_names or []),
         )
         status = "done"
     except Exception:  # noqa: BLE001

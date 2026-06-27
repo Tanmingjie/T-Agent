@@ -90,6 +90,33 @@ async def test_run_single_case_filters_to_one(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_queue_mode_persists_skill_names(client, monkeypatch):
+    """queue 模式:执行触发带 skill_names → 落 run_queue,worker 领取后透传强制加载。"""
+    monkeypatch.setenv("RUN_MODE", "queue")
+    r = await client.post("/api/suites/sx/run", json={"skill_names": ["登录流程", "下单校验"]})
+    assert r.status_code == 200
+    assert r.json()["status"] == "queued"
+    run_id = r.json()["run_id"]
+
+    import api.server as srv
+
+    queued = await srv._store.get_queued_run(run_id)
+    assert queued is not None
+    assert queued.skill_names == ["登录流程", "下单校验"]
+
+
+@pytest.mark.asyncio
+async def test_run_embedded_no_skill_names_defaults_empty(client, monkeypatch):
+    """embedded 不带 options.skill_names 时按空走(全渐进披露),不报错。"""
+    monkeypatch.setenv("RUN_MODE", "embedded")
+    import api.routers.execution as execmod
+
+    monkeypatch.setattr(execmod, "spawn_run", lambda run_id, main: None)
+    r = await client.post("/api/suites/sx/run")
+    assert r.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_stream_queue_mode_uses_repo_get_run(client):
     """queue 模式 SSE(run 不在内存 _sse_queues)走 repo.get_run,不再 AttributeError。
 

@@ -51,8 +51,14 @@ async def execute_run(
     case_id: str | None = None,
     sse_cb: SSECallback | None = None,
     perm_approver_factory: Callable[[SSECallback], object] | None = None,
+    force_skill_names: list[str] | None = None,
 ) -> None:
-    """执行一个 run 到完成(自带独立 Store/loop 资源)。失败不抛,落 failed 状态。"""
+    """执行一个 run 到完成(自带独立 Store/loop 资源)。失败不抛,落 failed 状态。
+
+    ``force_skill_names``:本次执行**强制加载**的项目 skill 名(一次性,随本次 run):命中的
+    skill 正文直接常驻 prompt(preload=True),不等模型自己 load_skill;未命中仍走渐进披露。
+    治弱模型不主动加载 skill —— 用户在执行前明确指定本条/本批用例需要的业务知识。
+    """
     from api.repository import SQLModelRepository, get_suite_settings
     from harness.agent import TestCaseAgent
     from harness.llm import build_llm_client
@@ -133,6 +139,8 @@ async def execute_run(
         # 主路靠 prompt 让模型动手前主动加载(BASE_PROMPT 已写明);弱模型不主动 → ReAct
         # 卡住时由 SkillManager.relevant 浮现催加载(甲)、再不加载则 auto_load 兜底注入(乙)。
         # 这条三层路径在 ReActLoop 里实现,run_executor 只负责"按渐进披露注册"。
+        # 用户执行前勾选的 skill → 本次强制加载(preload=True),其余仍渐进披露。
+        force_set = {n for n in (force_skill_names or []) if n}
         extra_skills = []
         if suite.project_id:
             from harness.skills import Skill
@@ -144,7 +152,7 @@ async def execute_run(
                             name=sk.name,
                             content=sk.content.strip(),
                             description=(sk.description or "").strip(),
-                            preload=False,
+                            preload=sk.name in force_set,
                         )
                     )
 

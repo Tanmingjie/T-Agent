@@ -12,6 +12,8 @@ import {
   XCircle,
   Clock,
   Square,
+  Sparkles,
+  Check,
 } from "lucide-react";
 import Drawer from "../components/Drawer";
 import CaseDrawerBody from "../components/CaseDrawerBody";
@@ -44,8 +46,14 @@ interface RunOverview {
 interface SuiteResp {
   name: string;
   base_url: string;
+  project_id?: string;
   cases: Case[];
   runs: RunLite[];
+}
+
+interface ProjectSkill {
+  name: string;
+  description: string;
 }
 
 const STATUS_META: Record<
@@ -108,6 +116,12 @@ export default function SuiteCasesPage() {
   const [selected, setSelected] = useState<Case | null>(null);
   // 最近一次历史 run 的逐用例裁决(caseId → passed),供未实时执行时回填状态列
   const [pastStatus, setPastStatus] = useState<Record<string, CaseRunStatus>>({});
+  // 项目 skill + 执行前勾选(强制加载,一次性随本次 run)
+  const [skills, setSkills] = useState<ProjectSkill[]>([]);
+  const [forceSkills, setForceSkills] = useState<string[]>([]);
+  // 执行确认弹框:点「执行」后弹出,选 skill 再确认开始。记录本次要跑的目标
+  // (caseId 给定=单用例,否则整套件)。null=未打开。
+  const [runModal, setRunModal] = useState<{ caseId?: string } | null>(null);
 
   // 执行状态来自布局层的 RunProvider(切 tab 不丢失;高频更新只重渲染本页消费者,
   // 不带动侧栏/面包屑)。不再由本页持有 SSE。
@@ -119,6 +133,18 @@ export default function SuiteCasesPage() {
   useEffect(() => {
     load();
   }, [id]);
+
+  // 项目 skill 清单(供执行前勾选强制加载)。无项目/无 skill → 不显示选择入口。
+  useEffect(() => {
+    const pid = suite?.project_id;
+    if (!pid) {
+      setSkills([]);
+      return;
+    }
+    apiGet<ProjectSkill[]>(`/projects/${pid}/skills`)
+      .then((sk) => setSkills(sk))
+      .catch(() => setSkills([]));
+  }, [suite?.project_id]);
 
   // 拉最近一次 run 的逐用例结果,使列表状态与抽屉(同一 run)保持一致
   useEffect(() => {
@@ -180,14 +206,36 @@ export default function SuiteCasesPage() {
   const activeCount = tracked.filter((c) => c.status === "running").length;
   const showProgress = run.running || run.done;
 
+  // 点「执行」:有项目 skill → 先弹框选;无则直接跑整套件。
   function startRun() {
+    if (skills.length > 0) {
+      setRunModal({});
+      return;
+    }
     setSelected(null);
     run.start(cases.map((c) => c.id));
   }
 
-  // 单用例执行(抽屉右上角「执行」按钮):只跑这一条,保持抽屉打开看实时进度
+  // 单用例执行(抽屉右上角「执行」按钮):有项目 skill → 弹框选;无则直接跑这一条。
   function runOne(caseId: string) {
+    if (skills.length > 0) {
+      setRunModal({ caseId });
+      return;
+    }
     run.start([caseId], caseId);
+  }
+
+  // 弹框「开始执行」确认:按选中的目标 + 勾选的 skill 触发。
+  function confirmRun() {
+    const target = runModal;
+    setRunModal(null);
+    if (!target) return;
+    if (target.caseId) {
+      run.start([target.caseId], target.caseId, forceSkills);
+    } else {
+      setSelected(null);
+      run.start(cases.map((c) => c.id), undefined, forceSkills);
+    }
   }
 
   // 抽屉数据源:本次会话刚跑的 run 优先,否则取套件最近一次 run
@@ -393,6 +441,90 @@ export default function SuiteCasesPage() {
           suiteId={id!}
           onResolved={run.clearPermission}
         />
+      )}
+
+      {/* 执行确认弹框:选 skill 强制加载,再开始 */}
+      {runModal !== null && (
+        <div
+          className="fixed inset-0 z-30 bg-black/30 flex items-center justify-center p-4"
+          onClick={() => setRunModal(null)}
+        >
+          <div
+            className="bg-white rounded-xl shadow-elevated w-full max-w-md max-h-[80vh] flex flex-col"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div className="px-5 pt-5 pb-3 border-b border-gray-100">
+              <h3 className="text-base font-semibold text-surface-900 flex items-center gap-2">
+                <Sparkles size={16} className="text-brand-600" />
+                选择本次执行加载的 Skill
+              </h3>
+              <p className="text-xs text-gray-500 mt-1">
+                {runModal.caseId
+                  ? "只执行当前用例。"
+                  : `执行全部 ${cases.length} 条用例。`}
+                勾选的 Skill 将强制常驻 prompt(不等模型自己加载);未勾的仍按需加载。
+              </p>
+            </div>
+            <div className="flex-1 overflow-auto p-3">
+              {skills.map((sk) => {
+                const on = forceSkills.includes(sk.name);
+                return (
+                  <button
+                    key={sk.name}
+                    onClick={() =>
+                      setForceSkills((prev) =>
+                        on
+                          ? prev.filter((n) => n !== sk.name)
+                          : [...prev, sk.name],
+                      )
+                    }
+                    className="w-full flex items-start gap-2.5 px-2.5 py-2 rounded-md hover:bg-gray-50 text-left"
+                  >
+                    <span
+                      className={`mt-0.5 w-4 h-4 shrink-0 rounded border flex items-center justify-center ${
+                        on
+                          ? "bg-brand-600 border-brand-600 text-white"
+                          : "border-gray-300"
+                      }`}
+                    >
+                      {on && <Check size={12} />}
+                    </span>
+                    <span className="min-w-0">
+                      <span className="block text-sm text-surface-900">
+                        {sk.name}
+                      </span>
+                      {sk.description && (
+                        <span className="block text-xs text-gray-400">
+                          {sk.description}
+                        </span>
+                      )}
+                    </span>
+                  </button>
+                );
+              })}
+            </div>
+            <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
+              <span className="text-xs text-gray-400">
+                已选 {forceSkills.length} 个
+              </span>
+              <div className="flex gap-2">
+                <button
+                  onClick={() => setRunModal(null)}
+                  className="px-3.5 py-2 rounded-md text-sm font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={confirmRun}
+                  className="inline-flex items-center gap-1.5 bg-brand-600 text-white px-3.5 py-2 rounded-md text-sm font-medium hover:bg-brand-700 transition-colors"
+                >
+                  <Play size={15} />
+                  开始执行
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
