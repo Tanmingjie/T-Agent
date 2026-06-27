@@ -10,8 +10,9 @@ Reason → Act → Observe 循环:
 - 循环检测:连续 ``loop_window`` 轮(默认 4)相同 tool_call 签名 → 终止(防本地 LLM 卡死)。
 - max_steps 上限 / 哑火续推 / 单步定位失败预算(STEP_FAILED 快速失败)。
 - **阶段边界 Validator**(2026-06-22 阶段化重设计):某阶段最后一步 mark_step_done 落定时,
-  在【当时所处页面】用偏-FAIL 证据接地裁判核验该阶段 expected,未达成 → PHASE_FAILED
-  阶段失败即失败。〔取代旧的「步骤门控 + 终态断言」三处验证。〕
+  在【当时所处页面】用偏-FAIL 裁判核验该阶段 expected,未达成 → PHASE_FAILED 阶段失败即
+  失败。〔取代旧的「步骤门控 + 终态断言」三处验证。证据接地推翻层已于 2026-06-24 撤销,
+  裁决权交回模型,evidence 仅作可审计依据(见 assertion.py)。〕
 - 仍解析 LLM 自报的 ``TEST_RESULT: PASS/FAIL``,但**仅供参考**——最终 PASS/FAIL 完全由
   阶段 Validator + 执行完整性闸门裁决,不取模型自报。
 
@@ -270,7 +271,8 @@ class ReActLoop:
         # "词汇表第一优先查询")。无则自愈退回纯快照启发式。
         self.vocab_resolver = vocab_resolver
         # 阶段边界 Validator 回调(可选):async (phase_index) -> str | None。某阶段**最后一步**
-        # mark_step_done 落定后触发,在【当时所处页面】用偏-FAIL 证据接地裁判核验该阶段 expected。
+        # mark_step_done 落定后触发,在【当时所处页面】用偏-FAIL 裁判核验该阶段 expected
+        # (证据接地推翻层 2026-06-24 已撤,evidence 仅作可审计依据)。
         # 返回 None/空 = 该阶段通过、继续;返回**非空原因串** = 未达成 → 用例直接失败(阶段失败
         # 即失败,本轮不做 replan/重试),停因 PHASE_FAILED。expected 只在此核验,不进驱动(FG01)。
         self.on_phase_end = on_phase_end
@@ -669,7 +671,7 @@ class ReActLoop:
                     break
 
                 # 阶段边界 Validator:mark_step_done 让某【阶段最后一步】落定 DONE → 在当时所处
-                # 页面用偏-FAIL 证据接地裁判核验该阶段 expected。通过 → 继续;未达成 → 用例直接
+                # 页面用偏-FAIL 裁判核验该阶段 expected。通过 → 继续;未达成 → 用例直接
                 # 失败(阶段失败即失败,不做 replan/重试),停因 PHASE_FAILED。回调由外层提供。
                 if (
                     tc.name == MARK_STEP_DONE_TOOL

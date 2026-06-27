@@ -196,7 +196,7 @@ class PageProbe(Protocol):
 class AssertionStatus(str, Enum):
     PASS = "pass"
     FAIL = "fail"
-    SKIPPED = "skipped"  # 无法确定性验证(custom_tool 未接 / llm_judge 未接 LLM)
+    SKIPPED = "skipped"  # 无法确定性验证(custom_tool 未接)。〔G1 后 llm_judge 主裁决缺失=FAIL,不再 skipped〕
 
 
 @dataclass
@@ -373,7 +373,7 @@ class AssertionEngine:
             ]
         try:
             resp = await self.llm.chat(messages)
-        except Exception as e:  # noqa: BLE001 — 调用失败 → skipped(fail-closed,不默认绿)
+        except Exception as e:  # noqa: BLE001 — 调用失败 → FAIL(G1 fail-closed,主裁决缺失不默认绿)
             # E6:多模态首次失败 → 标记不支持图像,**本次直接退回纯文本重试**(贴 healing 同款)
             if screenshot_b64:
                 self._vision_unsupported = True
