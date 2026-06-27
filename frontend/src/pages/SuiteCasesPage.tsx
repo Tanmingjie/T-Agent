@@ -446,7 +446,7 @@ export default function SuiteCasesPage() {
       {/* 执行确认弹框:选 skill 强制加载,再开始 */}
       {runModal !== null && (
         <div
-          className="fixed inset-0 z-30 bg-black/30 flex items-center justify-center p-4"
+          className="fixed inset-0 z-[60] bg-black/30 flex items-center justify-center p-4"
           onClick={() => setRunModal(null)}
         >
           <div
