@@ -147,16 +147,18 @@ async def _chunked_wait(mcp, requested: float) -> ToolOutcome:
     capped = min(requested, _WAIT_MAX_SECONDS)
     remaining = capped
     last_text = ""
+    last_err = False
     while remaining > 0.5:
         seg = min(_WAIT_CHUNK_SECONDS, remaining)
         result = await mcp.call_tool(_WAIT_TOOL, {"time": seg}, timeout=seg + 30.0)
         last_text = mcp.result_to_text(result)
+        last_err = bool(getattr(result, "isError", False))
         remaining -= seg
     note = f"\n### 平台说明\n已实际等待约 {capped:.0f}s(分段累积)"
     if requested > capped:
         note += f";请求 {requested:.0f}s 超过上限 {_WAIT_MAX_SECONDS:.0f}s,已截断"
     url = parse_snapshot(last_text).url
-    return ToolOutcome(text=last_text + note, url=url)
+    return ToolOutcome(text=last_text + note, url=url, is_error=last_err)
 
 
 def _build_metrics(
@@ -249,7 +251,9 @@ def make_executor(step_plan: StepPlan, mcp) -> ToolExecutor:
         result = await mcp.call_tool(name, arguments)
         text = mcp.result_to_text(result)
         url = parse_snapshot(text).url  # 结果里若含 Page URL 则提取
-        return ToolOutcome(text=text, url=url)
+        # isError = MCP 结构化失败标志(权威);用于失败判定,避免页面快照内容里的
+        # error/timeout 等词被字符串 marker 误伤(见 react_loop._outcome_failed)。
+        return ToolOutcome(text=text, url=url, is_error=bool(getattr(result, "isError", False)))
 
     return execute
 

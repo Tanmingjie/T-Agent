@@ -16,6 +16,7 @@ from harness.react_loop import (
     StopReason,
     ToolOutcome,
     _is_tool_failure,
+    _outcome_failed,
     parse_test_result,
 )
 from harness.step_plan import StepPlan
@@ -692,6 +693,40 @@ def test_is_tool_failure_markers():
         "### Result\nWaited for 180\n### Ran Playwright code\n"
         "await new Promise(f => setTimeout(f, 180 * 1000));\n### Page\n- Page URL: x"
     )
+
+
+def test_is_tool_failure_ignores_page_snapshot_content():
+    """页面快照(```yaml 围栏)里出现 error/timeout/not found 等词,不得误判为工具失败。
+
+    根因:内网工艺模拟器页面常含报警/状态文本("Timeout"/"Error"/"Not Found"),旧实现
+    扫整段(含快照)→ 每帧观察被误判失败 → 自愈回灌 → 模型反复重试 browser_wait_for。
+    """
+    snap_with_alarm = (
+        "### Result\nWaited for 60\n### Page\n- Page URL: https://hmi/sim\n"
+        "### Snapshot\n```yaml\n"
+        "- generic [ref=e1]:\n"
+        '  - text: "传感器状态: Timeout"\n'
+        '  - text: "报警: Error - sensor not found"\n'
+        "```\n"
+    )
+    assert not _is_tool_failure(snap_with_alarm)
+    # 真正的错误信封(围栏外)仍被识别
+    assert _is_tool_failure(
+        "### Error\nlocator.click: TimeoutError\n### Snapshot\n```yaml\n- text: ok\n```"
+    )
+
+
+def test_outcome_failed_prefers_is_error_flag():
+    # 结构化 isError=True → 失败(即使文本看着像成功快照)
+    assert _outcome_failed(ToolOutcome(text="### Page\n- Page URL: x", is_error=True))
+    # isError=False + 快照含 timeout 文本 → 不失败(信结构化标志)
+    assert not _outcome_failed(
+        ToolOutcome(
+            text="### Page\n### Snapshot\n```yaml\n- text: Timeout 状态\n```", is_error=False
+        )
+    )
+    # isError 缺省 False 但文本是 custom tool 异常 → 兜底仍判失败
+    assert _outcome_failed(ToolOutcome(text="[工具执行异常] boom"))
 
 
 async def test_action_healing_records_attempt_and_hints():

@@ -127,6 +127,9 @@ class ToolOutcome:
     screenshot: str | None = None
     is_custom_tool: bool = False
     is_hook_action: bool = False
+    # MCP 工具是否真失败的**结构化**标志(CallToolResult.isError),由执行器透传。
+    # 优先于字符串 marker 匹配——后者会被页面快照内容里的 error/timeout 等词误伤。
+    is_error: bool = False
 
 
 # 执行器:把 (name, arguments) 执行掉,返回 ToolOutcome 或纯文本
@@ -220,15 +223,36 @@ _FAILURE_MARKERS = (
 # 预算 → 5 次后 STEP_FAILED,使「等待观察 N 分钟」这类步骤必死)。用负向后瞻排除 setTimeout,
 # 只认真正的超时报错(`Timeout 30000ms exceeded` / `TimeoutError` 等)。
 _TIMEOUT_FAIL_RE = re.compile(r"(?<!set)timeout", re.IGNORECASE)
+# playwright-mcp 把整页 a11y 快照放进 ```yaml 围栏里随成功结果返回。失败 marker(error/
+# not found/timeout)必须只扫**错误信封**、不扫页面快照内容——否则页面上出现报警/状态文本
+# (内网工艺模拟器高发:"Timeout"/"Error"/"Not Found")会让每一帧观察都被误判成工具失败,
+# 触发自愈回灌 → 模型以为调用失败反复重试 → 死循环 + STEP_FAILED。
+_YAML_FENCE_RE = re.compile(r"```ya?ml\b.*?```", re.IGNORECASE | re.DOTALL)
+
+
+def _strip_snapshot(text: str) -> str:
+    """剥掉 ```yaml 围栏里的页面快照,只留错误信封文本供 marker 匹配。"""
+    return _YAML_FENCE_RE.sub("", text)
 
 
 def _is_tool_failure(text: str | None) -> bool:
+    """字符串 marker 兜底判定(仅扫错误信封,不扫页面快照内容)。
+
+    结构化的 ``CallToolResult.isError`` 是主信号(见 ``_outcome_failed``);本函数覆盖
+    custom tool 的 ``[工具执行异常]`` 文本 + isError 缺失时的兜底。
+    """
     if not text:
         return False
-    low = text.lower()
+    envelope = _strip_snapshot(text)
+    low = envelope.lower()
     if any(m.lower() in low for m in _FAILURE_MARKERS):
         return True
-    return bool(_TIMEOUT_FAIL_RE.search(text))
+    return bool(_TIMEOUT_FAIL_RE.search(envelope))
+
+
+def _outcome_failed(outcome: "ToolOutcome") -> bool:
+    """工具是否失败:优先信 MCP 结构化 ``is_error``,再字符串 marker 兜底。"""
+    return bool(outcome.is_error) or _is_tool_failure(outcome.text)
 
 
 class ReActLoop:
@@ -586,7 +610,7 @@ class ReActLoop:
                 duration_ms = int((time.monotonic() - started) * 1000)
 
                 # 每步进度(便于失败时回看执行轨迹):工具 + 参数摘要 + 成功/失败 + 耗时。
-                failed = _is_tool_failure(outcome.text)
+                failed = _outcome_failed(outcome)
                 logger.log(
                     logging.WARNING if failed else logging.INFO,
                     "步骤 %d: %s(%s)%s %dms%s",
@@ -601,12 +625,12 @@ class ReActLoop:
                 # 操作侧自愈:工具报错/找不到元素时重定位,回灌建议引导重试
                 heal_attempts: list[dict] = []
                 obs_suffix = ""
-                if self.healer is not None and _is_tool_failure(outcome.text):
+                if self.healer is not None and failed:
                     heal_attempts, obs_suffix = await self._heal_action(tc, intent)
 
                 # 截图落盘(可选):每步执行后抓当前页面,回调决定是否截(非浏览器工具跳过)
                 shot = outcome.screenshot
-                if self.capture_screenshot is not None and not _is_tool_failure(outcome.text):
+                if self.capture_screenshot is not None and not failed:
                     try:
                         shot = await self.capture_screenshot(step_no, tc.name) or shot
                     except Exception as e:  # noqa: BLE001 — 截图失败不影响执行
@@ -962,7 +986,7 @@ class ReActLoop:
             raw = await self.execute(tc.name, tc.arguments)
         except Exception as e:  # noqa: BLE001 — 单个工具失败不应炸掉循环
             logger.warning("工具 %s 执行异常:%s", tc.name, e)
-            return ToolOutcome(text=f"[工具执行异常] {e}")
+            return ToolOutcome(text=f"[工具执行异常] {e}", is_error=True)
         if isinstance(raw, ToolOutcome):
             return raw
         return ToolOutcome(text=str(raw))
