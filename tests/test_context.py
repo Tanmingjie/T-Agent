@@ -72,6 +72,41 @@ def test_truncate_noop_when_short():
     assert truncate_snapshot(text, [], max_lines=40) == text
 
 
+def test_truncate_caps_single_line_megablob():
+    """#3 回归:压缩 JS/巨型 JSON 整坨一行(行数=1 绕过行截断)→ 必须被硬字符上限砍短。
+
+    根因:browser_network_request 拉回 MB 级单行响应体 → 单条观察撑爆上下文窗口致崩溃。
+    """
+    blob = "import{" + "x" * 200000 + "}"  # 单行 20 万字符
+    out = truncate_snapshot(blob, ["密码"], max_lines=40, max_chars=12000)
+    assert len(out) < len(blob)
+    assert len(out) <= 12000 + 80  # 硬上限 + 截断标记余量
+    assert "单行截断" in out or "观察总长截断" in out
+
+
+def test_truncate_total_cap_across_many_lines():
+    """多行但总量超标也要被总字符上限兜住(末位安全阀)。"""
+    text = "### Page\n- Page URL: x\n" + "\n".join(
+        f"- text: 行{i} " + "y" * 200 for i in range(200)
+    )
+    out = truncate_snapshot(text, [], max_lines=300, max_chars=5000)
+    assert len(out) <= 5000 + 80
+    assert "观察总长截断" in out
+
+
+def test_compactor_hard_caps_megablob_observation():
+    """端到端:ContextCompactor 对保留的近期观察里的单行 megablob 施加硬上限。"""
+    blob = "x" * 500000  # 半 MB 单行
+    msgs = [
+        {"role": "system", "content": "SYS"},
+        {"role": "user", "content": "开始执行测试"},
+        {"role": "user", "content": f"{OBS_PREFIX} {blob}"},
+    ]
+    comp = ContextCompactor(keep_recent_observations=2, hard_char_cap=12000)
+    comp.compact_inplace(msgs, keywords=[])
+    assert len(msgs[2]["content"]) <= 12000 + 120
+
+
 # ── compact_inplace ──────────────────────────────────────────
 
 

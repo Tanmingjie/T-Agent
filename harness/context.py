@@ -90,7 +90,9 @@ def _is_interactive(line: str) -> bool:
     return role in _INTERACTIVE_ROLES or "-" in role
 
 
-def truncate_snapshot(text: str, keywords: list[str], *, max_lines: int = 40) -> str:
+def truncate_snapshot(
+    text: str, keywords: list[str], *, max_lines: int = 40, max_chars: int | None = None
+) -> str:
     """按相关度截断一段 A11y 快照文本(L2),**保留优先级**:
 
     1. Page 头部元信息(URL/Title);
@@ -99,11 +101,18 @@ def truncate_snapshot(text: str, keywords: list[str], *, max_lines: int = 40) ->
        否则跨语言/图标场景下目标元素的 ref 会被丢掉,模型拿不到 ref 就找不到元素;
     4. 其余行按文档顺序补足结构,直到 max_lines。
 
-    总行数不超过 max_lines。≤max_lines 原样返回。
+    总行数不超过 max_lines。``max_chars`` 给定时再加一道**硬字符上限**(防单行巨块绕过行截断):
+    - 先把任何**单行**超 ``max_chars`` 的内容硬切(治压缩 JS/巨型 JSON 响应体——整坨一行没换行,
+      行数=1 ≤ max_lines 会原样穿过,实测可达数 MB → 单条观察撑爆上下文窗口、整条 run 崩溃);
+    - 最后对拼好的结果再兜一道总字符上限。
     """
+    # 硬上限优先:先把超长单行就地砍短,避免「1 行 = 数 MB」绕过下面的行数截断。
+    if max_chars is not None:
+        text = _cap_long_lines(text, max_chars)
+
     lines = text.splitlines()
     if len(lines) <= max_lines:
-        return text
+        return _cap_total(text, max_chars)
 
     kws = [k.lower() for k in (keywords or []) if k]
     keep = [False] * len(lines)
@@ -143,7 +152,30 @@ def truncate_snapshot(text: str, keywords: list[str], *, max_lines: int = 40) ->
             omitted += 1
     if omitted > 0:
         out.append(f"... [已按相关度截断 {omitted} 行]")
+    return _cap_total("\n".join(out), max_chars)
+
+
+def _cap_long_lines(text: str, max_chars: int) -> str:
+    """把任何长度超过 ``max_chars`` 的**单行**硬切到 ``max_chars`` 并加标记。
+
+    治压缩 JS / 巨型 JSON 响应体:整坨一行没换行,行数截断对它无效。
+    """
+    out = []
+    for ln in text.splitlines():
+        if len(ln) > max_chars:
+            cut = len(ln) - max_chars
+            out.append(ln[:max_chars] + f"…[单行截断 {cut} 字符]")
+        else:
+            out.append(ln)
     return "\n".join(out)
+
+
+def _cap_total(text: str, max_chars: int | None) -> str:
+    """对整段结果兜一道总字符硬上限(末位安全阀,不依赖行结构)。"""
+    if max_chars is None or len(text) <= max_chars:
+        return text
+    cut = len(text) - max_chars
+    return text[:max_chars] + f"\n…[观察总长截断 {cut} 字符]"
 
 
 # 驱动侧快照截断旋钮的默认值(env 可调,作内网长页面/藏元素的安全阀)。
@@ -152,6 +184,10 @@ def truncate_snapshot(text: str, keywords: list[str], *, max_lines: int = 40) ->
 # 内网页面元素特别多、目标常被截掉时调大;但越大每轮 token 越多。
 _DEFAULT_MAX_OBS_CHARS = int(os.getenv("OBS_MAX_CHARS", "2000"))
 _DEFAULT_SNAPSHOT_MAX_LINES = int(os.getenv("SNAPSHOT_MAX_LINES", "40"))
+# 单条保留观察的**硬字符上限**(末位安全阀):行截断后若仍超此值(典型成因=压缩 JS/巨型
+# JSON 响应体整坨一行,绕过行数截断)按字符硬切。防单条观察撑爆 LLM 上下文窗口致整条 run 崩溃。
+# 应明显大于 OBS_MAX_CHARS(触发阈值),给真实长页面留余量,但封住 MB 级 megablob。
+_DEFAULT_OBS_HARD_CHAR_CAP = int(os.getenv("OBS_HARD_CHAR_CAP", "12000"))
 
 
 class ContextCompactor:
@@ -165,6 +201,7 @@ class ContextCompactor:
         snapshot_max_lines: int | None = None,
         protect_head: int = 2,
         keep_recent_assistant: int = 3,
+        hard_char_cap: int | None = None,
     ) -> None:
         # 保留最近 N 条观察的(相对)完整内容,更早的折叠为一行
         self.keep_recent_observations = keep_recent_observations
@@ -173,6 +210,8 @@ class ContextCompactor:
         self.snapshot_max_lines = (
             _DEFAULT_SNAPSHOT_MAX_LINES if snapshot_max_lines is None else snapshot_max_lines
         )
+        # 单条保留观察的硬字符上限(末位安全阀,封 megablob 撑爆上下文)
+        self.hard_char_cap = _DEFAULT_OBS_HARD_CHAR_CAP if hard_char_cap is None else hard_char_cap
         self.protect_head = protect_head  # 永远保护的前缀消息数(system + task)
         # 保留最近 N 条 assistant 叙述的完整内容,更早的折叠为一行(B:治叙述通道无限累积——
         # narration churn 时每轮都 append 一大段思考且从不压缩,是 token 爆炸的主因之一)。
@@ -205,7 +244,12 @@ class ContextCompactor:
                         if content.startswith(OBS_PREFIX)
                         else content
                     )
-                    new_body = truncate_snapshot(body, keywords, max_lines=self.snapshot_max_lines)
+                    new_body = truncate_snapshot(
+                        body,
+                        keywords,
+                        max_lines=self.snapshot_max_lines,
+                        max_chars=self.hard_char_cap,
+                    )
                     new = f"{OBS_PREFIX} {new_body}"
                     saved += len(content) - len(new)
                     messages[i]["content"] = new
