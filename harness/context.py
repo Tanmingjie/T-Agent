@@ -182,12 +182,16 @@ def _cap_total(text: str, max_chars: int | None) -> str:
 #   OBS_MAX_CHARS:近观察超过此字符数才触发 L2 截断(默认 2000)。
 #   SNAPSHOT_MAX_LINES:L2 截断后保留的最大行数(默认 40)。
 # 内网页面元素特别多、目标常被截掉时调大;但越大每轮 token 越多。
-_DEFAULT_MAX_OBS_CHARS = int(os.getenv("OBS_MAX_CHARS", "2000"))
-_DEFAULT_SNAPSHOT_MAX_LINES = int(os.getenv("SNAPSHOT_MAX_LINES", "80"))
+# 2026-06-29:OBS_MAX_CHARS 2000→4000、SNAPSHOT_MAX_LINES 80→150——thingsboard.cloud 替身实测,
+# 企业级**密集**页(设备详情=表格+过滤面板+详情标签+遥测键值表+左侧导航 同屏)80 行仍装不下,
+# 目标行/详情被截 → 模型反复「快照被截断」看不到元素;200 行实测可跑通硬交互(点行开详情),
+# 150 为中庸默认。成本只在密集页付(干净短页 < 触发阈值、不受影响);超密集页可再经 env 调大。
+_DEFAULT_MAX_OBS_CHARS = int(os.getenv("OBS_MAX_CHARS", "4000"))
+_DEFAULT_SNAPSHOT_MAX_LINES = int(os.getenv("SNAPSHOT_MAX_LINES", "150"))
 # 单条保留观察的**硬字符上限**(末位安全阀):行截断后若仍超此值(典型成因=压缩 JS/巨型
 # JSON 响应体整坨一行,绕过行数截断)按字符硬切。防单条观察撑爆 LLM 上下文窗口致整条 run 崩溃。
 # 应明显大于 OBS_MAX_CHARS(触发阈值),给真实长页面留余量,但封住 MB 级 megablob。
-_DEFAULT_OBS_HARD_CHAR_CAP = int(os.getenv("OBS_HARD_CHAR_CAP", "12000"))
+_DEFAULT_OBS_HARD_CHAR_CAP = int(os.getenv("OBS_HARD_CHAR_CAP", "16000"))
 
 
 class ContextCompactor:

@@ -125,7 +125,8 @@ def _msgs():
 
 def test_old_observations_archived_recent_kept():
     msgs = _msgs()
-    comp = ContextCompactor(keep_recent_observations=1, max_obs_chars=500)
+    # snapshot_max_lines 显式给 20(_big_snapshot(80) 有 ~84 行),不依赖默认值
+    comp = ContextCompactor(keep_recent_observations=1, max_obs_chars=500, snapshot_max_lines=20)
     saved = comp.compact_inplace(msgs, keywords=["提交"])
     assert saved > 0
     # 前两条观察(索引 3、5)折叠成一行归档

@@ -97,10 +97,11 @@ _PHASE_SETTLE_TIMEOUT = float(os.getenv("PHASE_SETTLE_TIMEOUT_MS", "2000")) / 10
 # 单步定位失败预算(#1 快速失败):同一业务步累计定位失败(自愈也没救回)达此数 →
 # 快速判 STEP_FAILED 终止(疑似点错前序元素致后续找不到目标)。env STEP_FAIL_BUDGET 可调。
 # E2(2026-06-23):3→5,给「诊断换法」自适应留空间(像 Claude 一样多试几招),仍兜底真卡死。
-# 2026-06-29:5→8——内网脏 live SPA(持续重渲染→nav 链接 ref 秒级失效→click-by-ref 超时)上,
-# 模型靠「改用 URL 直达」恢复需要更多尝试,默认 5 会在合法恢复前掐断(thingsboard.cloud 替身
-# 实测:复杂用例需 ≥8 才跑通,曾用 10 验证)。8 为中庸默认;极脏页可经 env 调到 10+。
-_STEP_FAIL_BUDGET = int(os.getenv("STEP_FAIL_BUDGET", "8"))
+# 2026-06-29:5→10——内网脏 live SPA(持续重渲染→nav 链接 ref 秒级失效→click-by-ref 5s 超时)上,
+# 模型靠「改用 URL 直达 / 重抓快照」恢复需要更多尝试,默认 5 会在合法恢复前掐断。先试 8 仍偶尔
+# 在 nav-click 上被掐(thingsboard.cloud 替身实测),10 才稳(复杂用例 TB04/设备详情 TB05 均需)。
+# 10 为脏 SPA 默认;干净站点几乎不触达此预算(成本只在真卡步上),很干净的场景可经 env 调小。
+_STEP_FAIL_BUDGET = int(os.getenv("STEP_FAIL_BUDGET", "10"))
 
 # 步级卡住主动提醒预算(E2):同一业务步连续 N 轮**页面指纹未变化且未推进** → 主动注入
 # 诊断引导(滚动/换思路/查 skill 名册)。默认 2;env STUCK_ROUND_BUDGET 可调。
