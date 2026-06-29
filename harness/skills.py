@@ -204,6 +204,17 @@ DEFAULT_SKILLS: list[Skill] = [
         "(c) 名字不同——同义词/英文/图标按钮(如「加购物车」实际叫 'Add to cart' 或纯图标);"
         "(d) 还在错的页面——先做前置(进入正确模块/打开弹窗)再找。",
     ),
+    Skill(
+        name="先关挡住点击的浮层",
+        description="点击报错/点不动,或有欢迎弹窗·引导浮层·遮罩(backdrop)挡在前面时怎么办",
+        preload=True,
+        content="登录后或进入新页面时常弹出欢迎弹窗、引导浮层、cookie 横幅、通知遮罩"
+        "(快照里多表现为 dialog/modal,或一层覆盖全屏的 backdrop/overlay),它会**拦截所有点击**——"
+        "表象是点目标元素报错、点了没反应、或快照被浮层内容占满看不到正常导航。处理顺序:"
+        "(1) 在浮层里找关闭类控件并点它——「×」「关闭」「Close」「Skip」「跳过」「知道了」"
+        '「Got it」「No thanks」「稍后」等;(2) 找不到关闭控件就 browser_press_key(key="Escape");'
+        "(3) 关掉后**重新 browser_snapshot** 再操作目标。不要对被挡住的目标反复重试点击。",
+    ),
 ]
 
 
