@@ -59,4 +59,7 @@ storage/*.log
 # eval_fg 快照是可经 capture.py 重新抓取的 fixture 数据,不入库
 eval_fg/snapshots.json
 
+# thingsboard 用例 xlsx 含真实账号明文凭据(由 make_thingsboard_xlsx.py + TB_EMAIL/TB_PASSWORD 生成),不入库
+examples/thingsboard_cases.xlsx
+
 .idea/
