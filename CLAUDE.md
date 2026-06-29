@@ -361,7 +361,8 @@ cd frontend && npm run preview    # 本地预览生产构建
 #   MCP_SETTLE_TIMEOUT_MS=8000 / MCP_SETTLE_INTERVAL_MS=400 → settle 超时/轮询间隔
 #   PHASE_SETTLE_TIMEOUT_MS=2000                   → 阶段末尾 Validator 判前 settle 短超时(默认 2s,防动态页白烧 8s)
 #   MCP_VIEWPORT=1920,1080                         → 浏览器视口(默认放大 1920×1080,治窄视口把按钮收进汉堡菜单;设 0/空 回 playwright-mcp 默认 1280×720)
-#   OBS_MAX_CHARS=2000 / SNAPSHOT_MAX_LINES=40     → 驱动侧(喂模型)A11y 快照截断旋钮(超字符触发/保留行数);截断优先保留可交互元素行,内网长页面藏元素时调大
+#   OBS_MAX_CHARS=2000 / SNAPSHOT_MAX_LINES=80     → 驱动侧(喂模型)A11y 快照截断旋钮(超字符触发/保留行数);截断优先保留可交互元素行,内网密集 SPA 藏元素时调更大(默认 80 治企业级首页导航被截)
+#   OBS_HARD_CHAR_CAP=12000                        → 单条观察硬字符上限(末位安全阀,封压缩 JS/巨型 JSON 单行 megablob 撑爆上下文)
 #   JUDGE_SNAPSHOT_LIMIT=9000                      → 喂【裁判】的 A11y 快照字符上限(按期望锚点窗口截断,与驱动侧两条独立路径)
 #   WAIT_MAX_SECONDS=300 / WAIT_CHUNK_SECONDS=20   → browser_wait_for 按时长等待:上限(默认 5min)/ 分段时长(<内部 ~30s 上限)
 #   HEAL_VISUAL=0                                  → 关视觉自愈截图双通道(默认开,需多模态模型)

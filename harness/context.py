@@ -183,7 +183,7 @@ def _cap_total(text: str, max_chars: int | None) -> str:
 #   SNAPSHOT_MAX_LINES:L2 截断后保留的最大行数(默认 40)。
 # 内网页面元素特别多、目标常被截掉时调大;但越大每轮 token 越多。
 _DEFAULT_MAX_OBS_CHARS = int(os.getenv("OBS_MAX_CHARS", "2000"))
-_DEFAULT_SNAPSHOT_MAX_LINES = int(os.getenv("SNAPSHOT_MAX_LINES", "40"))
+_DEFAULT_SNAPSHOT_MAX_LINES = int(os.getenv("SNAPSHOT_MAX_LINES", "80"))
 # 单条保留观察的**硬字符上限**(末位安全阀):行截断后若仍超此值(典型成因=压缩 JS/巨型
 # JSON 响应体整坨一行,绕过行数截断)按字符硬切。防单条观察撑爆 LLM 上下文窗口致整条 run 崩溃。
 # 应明显大于 OBS_MAX_CHARS(触发阈值),给真实长页面留余量,但封住 MB 级 megablob。
