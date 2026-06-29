@@ -91,7 +91,10 @@ _JUDGE_VISION_SUFFIX = """
 
 # 喂裁判的快照字符上限。超过则**按期望锚点做相关度窗口截断**(而非头部硬切)——治长页面
 # (IoT 仪表盘等)证据(状态/数值)排在 6000 字之后被切掉、裁判"找不到证据"误判 FAIL。
-_JUDGE_SNAPSHOT_LIMIT = int(os.getenv("JUDGE_SNAPSHOT_LIMIT", "9000"))
+# 默认 20000(企业级密集页:thingsboard 设备表实测,expected 是中文「设备/记录」但表格数据行
+# 是英文「Thermostat T1」→ 中文锚点只命中导航/标题 chrome、英文数据行不含锚点被截掉 → 裁判
+# 看不到证据误判 FAIL。调大让整页基本进裁判视野、绕开跨语言锚点失配。内网更密集页可再调大)。
+_JUDGE_SNAPSHOT_LIMIT = int(os.getenv("JUDGE_SNAPSHOT_LIMIT", "20000"))
 
 # 从期望抽强锚点:引号字面 / 数字(含小数,如 32.00)/ 较长英文词(≥3)/ CJK 串(≥2)。
 # 刻意不取超短英文(如 "On"),其子串("on")会命中 console/button 等噪声行。
