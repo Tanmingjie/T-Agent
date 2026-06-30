@@ -322,6 +322,25 @@ async def test_llm_judge_pass_counts_but_flagged_ai_judged():
     assert llm.calls == 1
 
 
+async def test_llm_judge_calls_with_streaming_keepalive():
+    # judge 必须走流式(传 on_delta)对内网代理保活,否则慢模型非流式调用被 idle-timeout 切断。
+    captured: dict = {}
+
+    class _CapLLM:
+        async def chat(self, messages, tools=None, **kwargs):
+            captured["on_delta"] = kwargs.get("on_delta")
+
+            class _R:
+                content = '{"verdict":"PASS","reason":"ok"}'
+
+            return _R()
+
+    eng = AssertionEngine(DictProbe(), llm=_CapLLM())
+    await eng.verify(Assertion(type="llm_judge", target="x"))
+    assert captured.get("on_delta") is not None  # 流式保活回调已传入
+    assert callable(captured["on_delta"])
+
+
 async def test_llm_judge_fail_counts():
     llm = _JudgeLLM('{"verdict":"FAIL","reason":"未见成功提示"}')
     eng = AssertionEngine(DictProbe(), llm=llm)

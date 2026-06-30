@@ -49,6 +49,15 @@ _JUDGE_VISUAL_DEFAULT = os.getenv("JUDGE_VISUAL", "0") not in ("0", "false", "Fa
 
 logger = logging.getLogger(__name__)
 
+
+async def _judge_keepalive(_delta: str) -> None:
+    """裁判调用的 no-op 流式回调:仅为让 ``LLMClient.chat`` 走**流式**路径,使网关/内网
+    代理见到持续字节流、不被空闲超时切断(慢 397B/v4 模型「闷头想」数分钟一字节不吐 →
+    内网代理 idle-timeout 掐断 → litellm.Timeout → fail-closed 误判 FAIL)。与 ReAct/翻译
+    同款保活,judge 此前是全项目唯一漏掉的非流式 LLM 路径。不显示思考过程,只吞增量。"""
+    return None
+
+
 # llm_judge 裁判的 system prompt。偏向 FAIL + **强制逐字引证证据**(2026-06-17 Fix 3):据真实
 # 公网评测,偏-FAIL、引证页面证据的 LLM 裁判 false-green=0/15(≈96% 正确),已是默认主裁决
 # (非"降级兜底")。**判 PASS 必须在 evidence 字段里逐字摘录页面/URL 实证**——作可审计依据写入
@@ -375,7 +384,8 @@ class AssertionEngine:
                 {"role": "user", "content": user_text},
             ]
         try:
-            resp = await self.llm.chat(messages)
+            # 走流式(no-op on_delta)对内网代理保活,治慢模型非流式 judge 被 idle-timeout 切断。
+            resp = await self.llm.chat(messages, on_delta=_judge_keepalive)
         except Exception as e:  # noqa: BLE001 — 调用失败 → FAIL(G1 fail-closed,主裁决缺失不默认绿)
             # E6:多模态首次失败 → 标记不支持图像,**本次直接退回纯文本重试**(贴 healing 同款)
             if screenshot_b64:
@@ -386,7 +396,8 @@ class AssertionEngine:
                         [
                             {"role": "system", "content": _JUDGE_SYSTEM},
                             {"role": "user", "content": user_text},
-                        ]
+                        ],
+                        on_delta=_judge_keepalive,
                     )
                 except Exception as e2:  # noqa: BLE001
                     logger.warning("llm_judge 退回纯文本仍失败:%s", e2)
