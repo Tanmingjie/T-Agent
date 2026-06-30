@@ -159,6 +159,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **历史批次索引(全文见 `docs/实施记录.md`,倒序)**
 
+- ThingsBoard 工业 SPA 替身战役(2026-06-28→30,一串落地) ★
 - 内网验证批次(2026-06-27,一串落地)
 - SSE 进度统一到 run_event 表 + 前端重连(2026-06-26,已落地) ★
 - 健壮化批次(2026-06-25,一串落地)
@@ -334,6 +335,14 @@ python cli/run_case.py --excel <用例.xlsx> --case-id <ID> --tools examples/cus
 python examples/make_automation_exercise_xlsx.py                         # 生成 xlsx(首次)
 python cli/run_case.py --excel examples/automation_exercise_cases.xlsx \
     --case-id AE01 --base-url https://automationexercise.com --isolated --headless
+
+# ThingsBoard 工业 SPA 替身(脏 dirty-SPA 失败类挖掘;凭据走 env、xlsx 不入库)
+#   先注册一个 thingsboard.cloud 租户账号(公网服务,用一次性密码),再生成 xlsx:
+$env:TB_EMAIL="<你的邮箱>"; $env:TB_PASSWORD="<你的密码>"; python examples/make_thingsboard_xlsx.py
+python cli/run_case.py --excel examples/thingsboard_cases.xlsx \
+    --case-id TB04 --base-url https://thingsboard.cloud --isolated --headless --max-steps 100
+#   TB04=综合复杂流程(登录→设备表→HVAC 行钻取详情+遥测→仪表盘列表→等待 3 分钟→存活,13 步);
+#   TB05=硬交互探针(点 mat-table 行)。canvas/SVG widget 内部值是 a11y 盲区,expected 只写可观察证据。
 
 # 启动 API 服务(dev 启动器:--reload 只监视源码目录)
 python scripts/serve.py
