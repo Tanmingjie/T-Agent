@@ -177,6 +177,7 @@ class RunQueueRow(SQLModel, table=True):
     # 本次执行强制加载的项目 skill 名(一次性、随 run;空=全走渐进披露)。queue 模式下
     # 触发时落库,worker 领取后透传给 execute_run(embedded 模式直接走函数参数不经此列)。
     skill_names: list = Field(default_factory=list, sa_column=Column(JSON))
+    executor_backend: str = Field(default="react")
 
 
 class RunEventRow(SQLModel, table=True):
@@ -824,6 +825,7 @@ class Store:
         project_id: str = "",
         case_id: str | None = None,
         skill_names: list[str] | None = None,
+        executor_backend: str = "react",
     ) -> None:
         async with self._sf() as s:
             s.add(
@@ -835,6 +837,7 @@ class Store:
                     status="queued",
                     created_at=time.time(),
                     skill_names=skill_names or [],
+                    executor_backend=executor_backend or "react",
                 )
             )
             await s.commit()

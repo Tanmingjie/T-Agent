@@ -1,4 +1,4 @@
-﻿# Python
+# Python
 __pycache__/
 *.py[cod]
 .venv/
@@ -58,6 +58,7 @@ scripts/*
 !scripts/serve.py
 !scripts/seed_demo.py
 !scripts/diag_svg_snapshot.py
+!scripts/midscene_runner.js
 
 # 运行时日志(worker/queue 冒烟等),不入库
 storage/*.log

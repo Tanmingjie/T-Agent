@@ -52,6 +52,7 @@ async def execute_run(
     sse_cb: SSECallback | None = None,
     perm_approver_factory: Callable[[SSECallback], object] | None = None,
     force_skill_names: list[str] | None = None,
+    executor_backend: str = "react",
 ) -> None:
     """执行一个 run 到完成(自带独立 Store/loop 资源)。失败不抛,落 failed 状态。
 
@@ -62,6 +63,7 @@ async def execute_run(
     from api.repository import SQLModelRepository, get_suite_settings
     from harness.agent import TestCaseAgent
     from harness.llm import build_llm_client
+    from harness.midscene_agent import MidsceneCaseAgent
     from harness.orchestrator import Orchestrator
     from harness.skills import build_skill_manager
     from input.models import ExecutionRecord
@@ -76,6 +78,9 @@ async def execute_run(
     saved_ids: set[str] = set()  # 本 run 已落库的 case_id(_save_record 累加)
     fail_reason = ""
     completed = False
+    executor_backend = (executor_backend or "react").strip().lower()
+    if executor_backend not in {"react", "midscene"}:
+        raise ValueError("executor_backend must be react or midscene")
 
     async def _emit(event: str, data: dict) -> None:
         """唯一事件落库点:写 run_event 表(供 /stream 从 seq 0 重放)+ 转发 live 通道。
@@ -165,6 +170,16 @@ async def execute_run(
 
         @asynccontextmanager
         async def make_agent():
+            llm_client = build_llm_client(llm_config)
+            if executor_backend == "midscene":
+                agent = MidsceneCaseAgent(
+                    llm=llm_client,
+                    hooks=None,
+                    translation_knowledge=translation_knowledge,
+                )
+                yield agent
+                return
+
             skills = build_skill_manager(
                 custom_prompt=suite.custom_prompt, extra=extra_skills or None
             )
@@ -172,7 +187,7 @@ async def execute_run(
                 # Hook 是通用扩展点(harness/hooks.py);默认不预填登录,登录态复用交由
                 # 后续「环境管理」主线维护。需要时由调用方装配 HookManager 传入。
                 agent = TestCaseAgent(
-                    llm=build_llm_client(llm_config),
+                    llm=llm_client,
                     mcp=mcp,
                     vocab_resolver=vocab_resolver,
                     hooks=None,
