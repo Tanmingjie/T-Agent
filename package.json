@@ -1,0 +1,12 @@
+{
+  "name": "t-agent-midscene-runner",
+  "private": true,
+  "type": "commonjs",
+  "scripts": {
+    "midscene:check": "node --check scripts/midscene_runner.js"
+  },
+  "dependencies": {
+    "@midscene/web": "^1.10.2",
+    "playwright": "1.61.1"
+  }
+}
