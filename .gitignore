@@ -1,4 +1,4 @@
-# Python
+﻿# Python
 __pycache__/
 *.py[cod]
 .venv/
@@ -30,6 +30,12 @@ frontend/.env.local
 # 前端
 frontend/node_modules/
 frontend/dist/
+
+# npm 本地缓存
+.npm-cache/
+
+# Midscene 本地试验目录
+.midscene-poc/
 
 # playwright-mcp 运行产物
 .playwright-mcp/
