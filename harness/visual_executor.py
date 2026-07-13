@@ -69,11 +69,11 @@ class VisualExecutor:
         spec: TestSpec,
         execution_context: str = "",
     ) -> VisualExecutionResult:
-        if os.getenv("MIDSCENE_ENABLED", "0") != "1":
+        if os.getenv("MIDSCENE_ENABLED", "1") == "0":
             return VisualExecutionResult(
                 passed=False,
                 stop_reason="midscene_disabled",
-                error="MIDSCENE_ENABLED != 1, Midscene 执行未启用",
+                error="MIDSCENE_ENABLED=0, Midscene 执行未启用",
             )
 
         artifact_dir = self.artifact_root / "midscene" / run_id / case.id

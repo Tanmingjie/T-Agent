@@ -90,3 +90,23 @@ async def test_midscene_agent_fills_missing_phase_as_fail():
     assert [a["phase_index"] for a in record.case_assertions] == [0, 1]
     assert record.case_assertions[1]["status"] == "fail"
     assert "未触达" in record.case_assertions[1]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_midscene_agent_surfaces_runner_startup_error_as_step_and_assertion_reason():
+    visual = _FakeVisualExecutor(
+        VisualExecutionResult(
+            passed=False,
+            stop_reason="runner_exception",
+            error="Missing Midscene model config: MIDSCENE_MODEL_NAME",
+            phase_results=[],
+        )
+    )
+    agent = MidsceneCaseAgent(llm=_NoopLLM(), visual_executor=visual)
+
+    record = await agent.run(_case(), spec=_spec(), run_id="run1")
+
+    assert record.passed is False
+    assert record.steps[0].tool_name == "midscene_runner"
+    assert "Missing Midscene model config" in record.steps[0].tool_result
+    assert "Missing Midscene model config" in record.case_assertions[0]["reason"]

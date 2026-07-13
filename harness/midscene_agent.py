@@ -164,6 +164,18 @@ class MidsceneCaseAgent:
                 )
             return steps
 
+        if not result.phase_results:
+            return [
+                ActionStep(
+                    step_no=1,
+                    tool_name="midscene_runner",
+                    tool_input={},
+                    intent="启动 Midscene 视觉执行",
+                    tool_result=result.error or result.stop_reason or "Midscene 未返回执行步骤",
+                    duration_ms=0,
+                )
+            ]
+
         return [
             ActionStep(
                 step_no=max(1, r.phase_index + 1),
@@ -188,7 +200,7 @@ class MidsceneCaseAgent:
                         phase_index=pi,
                         expected=phase.expected,
                         status="fail",
-                        reason="该阶段未触达,Midscene 执行已早停",
+                        reason=result.error or "该阶段未触达,Midscene 执行已早停",
                     )
                 )
                 continue
