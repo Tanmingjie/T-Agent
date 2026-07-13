@@ -58,28 +58,29 @@ function readStdin() {
 }
 
 function pickModelConfig(payloadConfig = {}) {
+  const reuseLLMConfig = process.env.MIDSCENE_REUSE_LLM_CONFIG === '1';
   const name =
     process.env.MIDSCENE_MODEL_NAME ||
     payloadConfig.MIDSCENE_MODEL_NAME ||
     payloadConfig.modelName ||
-    (process.env.LLM_MODEL || '').replace(/^openai\//, '');
+    (reuseLLMConfig ? (process.env.LLM_MODEL || '').replace(/^openai\//, '') : '');
   const baseURL =
     process.env.MIDSCENE_MODEL_BASE_URL ||
     payloadConfig.MIDSCENE_MODEL_BASE_URL ||
     payloadConfig.baseURL ||
-    process.env.LLM_API_BASE ||
+    (reuseLLMConfig ? process.env.LLM_API_BASE : '') ||
     '';
   const apiKey =
     process.env.MIDSCENE_MODEL_API_KEY ||
     payloadConfig.MIDSCENE_MODEL_API_KEY ||
     payloadConfig.apiKey ||
-    process.env.LLM_API_KEY ||
+    (reuseLLMConfig ? process.env.LLM_API_KEY : '') ||
     '';
   const family =
     process.env.MIDSCENE_MODEL_FAMILY ||
     payloadConfig.MIDSCENE_MODEL_FAMILY ||
     payloadConfig.family ||
-    (name.includes('qwen3') ? 'qwen3' : '');
+    inferModelFamily(name);
 
   return {
     MIDSCENE_MODEL_NAME: name,
@@ -87,6 +88,26 @@ function pickModelConfig(payloadConfig = {}) {
     MIDSCENE_MODEL_API_KEY: apiKey,
     MIDSCENE_MODEL_FAMILY: family,
   };
+}
+
+function inferModelFamily(modelName = '') {
+  const name = String(modelName).toLowerCase();
+  if (name.includes('qwen3.6')) return 'qwen3.6';
+  if (name.includes('qwen3.5')) return 'qwen3.5';
+  if (name.includes('qwen3-vl') || name.includes('qwen3vl')) return 'qwen3-vl';
+  if (name.includes('qwen3')) return 'qwen3';
+  if (name.includes('qwen2.5-vl') || name.includes('qwen2_5_vl')) return 'qwen2.5-vl';
+  if (name.includes('doubao')) return 'doubao-vision';
+  if (name.includes('gemini')) return 'gemini';
+  if (name.includes('glm')) return 'glm-v';
+  if (name.includes('kimi')) return 'kimi';
+  return '';
+}
+
+function applyModelConfigToEnv(modelConfig) {
+  for (const [key, value] of Object.entries(modelConfig)) {
+    if (value) process.env[key] = String(value);
+  }
 }
 
 function browserExecutablePath() {
@@ -110,7 +131,7 @@ async function run() {
   loadDotEnv(path.join(repoRoot, '.env'));
   loadDotEnv(path.join(repoRoot, '.midscene-poc', '.env'));
 
-  const input = await readStdin();
+  const input = (await readStdin()).replace(/^\uFEFF/, '');
   const payload = JSON.parse(input || '{}');
   const artifactDir = path.resolve(payload.artifact_dir || path.join(repoRoot, 'storage', 'midscene'));
   fs.mkdirSync(artifactDir, { recursive: true });
@@ -118,8 +139,9 @@ async function run() {
     process.env.MIDSCENE_RUN_DIR || path.join(artifactDir, 'midscene_run');
 
   const modelConfig = pickModelConfig(payload.model_config || {});
+  applyModelConfigToEnv(modelConfig);
   const missing = Object.entries(modelConfig)
-    .filter(([key, value]) => key !== 'MIDSCENE_MODEL_FAMILY' && !value)
+    .filter(([, value]) => !value)
     .map(([key]) => key);
   if (missing.length > 0) {
     throw new Error(`Missing Midscene model config: ${missing.join(', ')}`);
