@@ -114,6 +114,8 @@ async function run() {
   const payload = JSON.parse(input || '{}');
   const artifactDir = path.resolve(payload.artifact_dir || path.join(repoRoot, 'storage', 'midscene'));
   fs.mkdirSync(artifactDir, { recursive: true });
+  process.env.MIDSCENE_RUN_DIR =
+    process.env.MIDSCENE_RUN_DIR || path.join(artifactDir, 'midscene_run');
 
   const modelConfig = pickModelConfig(payload.model_config || {});
   const missing = Object.entries(modelConfig)
@@ -154,7 +156,7 @@ async function run() {
       await page.goto(payload.base_url, { waitUntil: 'domcontentloaded' });
     }
 
-    const reportFileName = path.join(artifactDir, 'midscene-report.html');
+    const reportFileName = 'midscene-report.html';
     agent = new PlaywrightAgent(page, {
       modelConfig,
       reportFileName,
@@ -167,7 +169,7 @@ async function run() {
         process.env.MIDSCENE_AI_ACT_CONTEXT ||
         [payload.spec?.intent || '', payload.execution_context || ''].filter(Boolean).join('\n\n'),
     });
-    artifacts.report = reportFileName;
+    artifacts.report = path.join(process.env.MIDSCENE_RUN_DIR, 'report', reportFileName);
     artifacts.initial_screenshot = await screenshot(page, artifactDir, 'initial.png');
 
     const phases = payload.spec?.phases || [];
