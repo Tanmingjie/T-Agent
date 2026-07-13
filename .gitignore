@@ -15,6 +15,7 @@ node_modules/
 *.sqlite3
 storage/screenshots/*
 storage/generated/*
+storage/midscene/
 !storage/screenshots/.gitkeep
 !storage/generated/.gitkeep
 
