@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { apiGet, apiText } from "../api/client";
+import { apiGet } from "../api/client";
 import {
   CheckCircle,
   XCircle,
@@ -248,37 +248,8 @@ function AssertionVerdict({ assertions }: { assertions: AssertionResult[] }) {
   );
 }
 
-function formatBytes(size: number): string {
-  if (size < 1024) return `${size} B`;
-  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
-  return `${(size / 1024 / 1024).toFixed(1)} MB`;
-}
-
 function MidsceneArtifactsPanel({ artifacts }: { artifacts?: MidsceneArtifacts | null }) {
-  const [openLog, setOpenLog] = useState<string | null>(null);
-  const [logText, setLogText] = useState("");
-  const [loadingLog, setLoadingLog] = useState(false);
   const files = artifacts?.files ?? [];
-  const images = files.filter((f) => f.kind === "image");
-  const logs = files.filter((f) => f.kind === "log");
-  const others = files.filter((f) => f.kind !== "image" && f.kind !== "log" && f.kind !== "report");
-
-  async function toggleLog(file: MidsceneArtifactFile) {
-    if (openLog === file.path) {
-      setOpenLog(null);
-      return;
-    }
-    setOpenLog(file.path);
-    setLoadingLog(true);
-    setLogText("");
-    try {
-      setLogText(await apiText(file.url.replace(/^\/api/, "")));
-    } catch (e) {
-      setLogText(e instanceof Error ? e.message : String(e));
-    } finally {
-      setLoadingLog(false);
-    }
-  }
 
   if (!artifacts?.available) {
     return (
@@ -297,6 +268,7 @@ function MidsceneArtifactsPanel({ artifacts }: { artifacts?: MidsceneArtifacts |
             <p className="text-sm font-semibold text-surface-900">Midscene 原生报告</p>
             <p className="text-xs text-gray-400 mt-0.5">
               优先使用 Midscene 自带报告查看执行细节、截图和模型推理轨迹。
+              {files.length > 0 && ` 已归档 ${files.length} 个产物。`}
             </p>
           </div>
           {artifacts.report_url && (
@@ -312,66 +284,6 @@ function MidsceneArtifactsPanel({ artifacts }: { artifacts?: MidsceneArtifacts |
           )}
         </div>
       </div>
-
-      {images.length > 0 && (
-        <div className="px-4 py-3 border-b border-gray-100">
-          <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2">
-            截图
-          </p>
-          <div className="grid grid-cols-2 gap-3">
-            {images.map((file) => (
-              <a
-                key={file.path}
-                href={file.url}
-                target="_blank"
-                rel="noreferrer"
-                className="group block rounded-md border border-gray-200 overflow-hidden bg-gray-50 hover:border-brand-300"
-              >
-                <img src={file.url} alt={file.name} className="aspect-video w-full object-cover" />
-                <div className="px-2 py-1.5 text-xs text-gray-500 truncate bg-white">
-                  {file.name}
-                </div>
-              </a>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {(logs.length > 0 || others.length > 0) && (
-        <div className="px-4 py-3 space-y-2">
-          <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
-            日志与文件
-          </p>
-          {logs.map((file) => (
-            <div key={file.path} className="rounded-md border border-gray-100">
-              <button
-                onClick={() => toggleLog(file)}
-                className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left text-xs hover:bg-gray-50"
-              >
-                <span className="font-mono text-gray-600 truncate">{file.path}</span>
-                <span className="shrink-0 text-gray-400">{formatBytes(file.size)}</span>
-              </button>
-              {openLog === file.path && (
-                <pre className="max-h-72 overflow-auto border-t border-gray-100 bg-surface-900 p-3 text-[11px] leading-relaxed text-gray-100 whitespace-pre-wrap">
-                  {loadingLog ? "加载中..." : logText || "(空)"}
-                </pre>
-              )}
-            </div>
-          ))}
-          {others.map((file) => (
-            <a
-              key={file.path}
-              href={file.url}
-              target="_blank"
-              rel="noreferrer"
-              className="flex items-center justify-between gap-3 rounded-md border border-gray-100 px-3 py-2 text-xs hover:bg-gray-50"
-            >
-              <span className="font-mono text-gray-600 truncate">{file.path}</span>
-              <span className="shrink-0 text-gray-400">{formatBytes(file.size)}</span>
-            </a>
-          ))}
-        </div>
-      )}
     </div>
   );
 }

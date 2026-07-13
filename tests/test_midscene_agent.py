@@ -110,3 +110,32 @@ async def test_midscene_agent_surfaces_runner_startup_error_as_step_and_assertio
     assert record.steps[0].tool_name == "midscene_runner"
     assert "Missing Midscene model config" in record.steps[0].tool_result
     assert "Missing Midscene model config" in record.case_assertions[0]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_midscene_agent_uses_business_instruction_as_step_intent():
+    visual = _FakeVisualExecutor(
+        VisualExecutionResult(
+            passed=True,
+            stop_reason="completed",
+            phase_results=[
+                VisualPhaseResult(phase_index=0, status="pass", expected="阀门变红"),
+                VisualPhaseResult(phase_index=1, status="pass", expected="液位显示 80%"),
+            ],
+            actions=[
+                {
+                    "phase_index": 0,
+                    "step_index": 0,
+                    "instruction": "点击阀门开关",
+                    "status": "done",
+                }
+            ],
+        )
+    )
+    agent = MidsceneCaseAgent(llm=_NoopLLM(), visual_executor=visual)
+
+    record = await agent.run(_case(), spec=_spec(), run_id="run1")
+
+    assert record.steps[0].tool_name == "midscene_aiAct"
+    assert record.steps[0].intent == "点击阀门开关"
+    assert record.steps[0].tool_input["instruction"] == "点击阀门开关"

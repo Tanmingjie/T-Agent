@@ -63,28 +63,6 @@ export async function apiDelete(path: string): Promise<void> {
   await request<void>(path, { method: "DELETE" });
 }
 
-export async function apiText(
-  path: string,
-  signal?: AbortSignal,
-): Promise<string> {
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
-  if (signal) {
-    if (signal.aborted) controller.abort();
-    else signal.addEventListener("abort", () => controller.abort());
-  }
-  try {
-    const r = await fetch(`${BASE}${path}`, {
-      headers: { ...authHeaders() },
-      signal: controller.signal,
-    });
-    if (!r.ok) throw new Error(await r.text());
-    return r.text();
-  } finally {
-    clearTimeout(timeout);
-  }
-}
-
 export function sseUrl(path: string): string {
   return `${BASE}${path}`;
 }

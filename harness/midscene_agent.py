@@ -148,13 +148,25 @@ class MidsceneCaseAgent:
         if result.actions:
             steps: list[ActionStep] = []
             for i, action in enumerate(result.actions, start=1):
+                instruction = str(
+                    action.get("instruction")
+                    or action.get("intent")
+                    or action.get("text")
+                    or action.get("prompt")
+                    or ""
+                )
                 steps.append(
                     ActionStep(
                         step_no=i,
                         tool_name=str(action.get("tool_name") or "midscene_aiAct"),
-                        tool_input=dict(action.get("tool_input") or {}),
+                        tool_input={
+                            **dict(action.get("tool_input") or {}),
+                            "phase_index": action.get("phase_index"),
+                            "step_index": action.get("step_index"),
+                            "instruction": instruction,
+                        },
                         reasoning=str(action.get("reasoning") or ""),
-                        intent=str(action.get("intent") or action.get("text") or ""),
+                        intent=instruction,
                         prompt=str(action.get("prompt") or ""),
                         tool_result=str(action.get("result") or action.get("summary") or ""),
                         screenshot=action.get("screenshot"),
