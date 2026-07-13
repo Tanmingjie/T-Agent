@@ -680,6 +680,7 @@ const TimelineStep = memo(function TimelineStep({
 }) {
   const running = step.state === "running";
   const thinking = step.reasoning;
+  const hasDetails = Boolean(thinking || step.url || step.hasShot || step.prompt);
   return (
     <li className="relative ml-5">
       <span className="absolute -left-[1.42rem] top-1.5">
@@ -689,22 +690,27 @@ const TimelineStep = memo(function TimelineStep({
           <CheckCircle size={14} className="text-brand-600" />
         )}
       </span>
-      <button
-        onClick={() => onToggle(step.no)}
-        className="w-full text-left flex items-center gap-2"
-      >
+      <div className="w-full flex items-center gap-2">
         <span className="text-sm text-surface-900 font-medium">{step.label}</span>
         {!!step.healCount && step.healCount > 0 && (
           <span className="inline-flex items-center gap-0.5 text-[10px] text-blue-700 bg-blue-50 border border-blue-200 rounded px-1">
             <Wrench size={10} /> 自愈{step.healCount}
           </span>
         )}
-        <ChevronDown
-          size={14}
-          className={`ml-auto text-gray-400 transition-transform ${open ? "rotate-180" : ""}`}
-        />
-      </button>
-      {open && (
+        {hasDetails && (
+          <button
+            onClick={() => onToggle(step.no)}
+            className="ml-auto inline-flex h-6 w-6 items-center justify-center rounded text-gray-400 hover:bg-gray-100 hover:text-gray-600"
+            title={open ? "收起详情" : "查看详情"}
+          >
+            <ChevronDown
+              size={14}
+              className={`transition-transform ${open ? "rotate-180" : ""}`}
+            />
+          </button>
+        )}
+      </div>
+      {hasDetails && open && (
         <div className="mt-1.5 space-y-2">
           {thinking && (
             <div>
