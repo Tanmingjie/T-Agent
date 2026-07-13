@@ -200,14 +200,21 @@ async function run() {
       const expected = phase.expected || '';
       const startedAt = Date.now();
       try {
-        for (const [stepIndex, step] of steps.entries()) {
-          log(`phase ${phaseIndex + 1}, step ${stepIndex + 1}: ${step}`);
-          await agent.aiAct(step);
-          actions.push({ phase_index: phaseIndex, step_index: stepIndex, instruction: step, status: 'done' });
+        const instruction = buildPhaseInstruction(phaseIndex, steps, expected);
+        if (instruction) {
+          log(`phase ${phaseIndex + 1}, act: ${instruction}`);
+          await agent.aiAct(instruction);
+          actions.push({
+            phase_index: phaseIndex,
+            step_index: 0,
+            instruction,
+            status: 'done',
+          });
         }
         if (expected) {
-          log(`phase ${phaseIndex + 1}, assert: ${expected}`);
-          await agent.aiAssert(expected);
+          const assertInstruction = buildAssertInstruction(expected, page.url());
+          log(`phase ${phaseIndex + 1}, assert: ${assertInstruction}`);
+          await agent.aiAssert(assertInstruction);
         }
         const shot = await screenshot(page, artifactDir, `phase-${phaseIndex + 1}.png`);
         phaseResults.push({
@@ -216,7 +223,7 @@ async function run() {
           expected,
           reason: 'Midscene aiAct/aiAssert completed',
           evidence: shot,
-          query: { duration_ms: Date.now() - startedAt },
+          query: { duration_ms: Date.now() - startedAt, url: page.url() },
         });
       } catch (error) {
         stopReason = 'phase_failed';
@@ -227,7 +234,7 @@ async function run() {
           expected,
           reason: error && error.message ? error.message : String(error),
           evidence: shot,
-          query: { duration_ms: Date.now() - startedAt },
+          query: { duration_ms: Date.now() - startedAt, url: page.url() },
         });
         break;
       }
@@ -246,6 +253,22 @@ async function run() {
     }
     await browser.close();
   }
+}
+
+function buildPhaseInstruction(phaseIndex, steps, expected) {
+  const normalizedSteps = (steps || []).map((step) => String(step || '').trim()).filter(Boolean);
+  if (normalizedSteps.length === 0) return '';
+  const lines = normalizedSteps.map((step, index) => `${index + 1}. ${step}`);
+  const expectedLine = expected ? `\n阶段目标: ${expected}` : '';
+  return `执行阶段 ${phaseIndex + 1}:\n${lines.join('\n')}${expectedLine}`;
+}
+
+function buildAssertInstruction(expected, currentUrl) {
+  return [
+    `当前页面 URL: ${currentUrl || '(unknown)'}`,
+    `请验证以下阶段预期是否成立: ${expected}`,
+    '如果预期包含 URL 条件,请以上面的当前页面 URL 作为判断依据。',
+  ].join('\n');
 }
 
 run()
