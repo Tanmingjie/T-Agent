@@ -1,243 +1,262 @@
 # AI 自动化测试平台
 
-内网 Web 业务测试自动化执行平台。核心链路：
+内网 Web 业务测试自动化执行平台。当前主链路已切换为 Midscene 视觉执行:
 
-```
+```text
 业务测试用例(Excel)
-  → 生成 TestSpec(结构化执行规格 + 断言)
-  → AI Agent 驱动浏览器执行(playwright-mcp / ReAct)
-  → 结构化断言验证(规则引擎,非 LLM 眼判)
-  → 产出可维护的 pytest-bdd Playwright 代码
+  -> 生成 TestSpec(阶段化执行规格 + 阶段预期)
+  -> Midscene 视觉执行(aiAct / aiAssert)
+  -> 结构化执行记录 + Midscene report / 截图 / runner 日志
+  -> 前端执行过程与结果可视化
 ```
 
-## 项目状态
+旧 ReAct / playwright-mcp 执行链路仍有部分代码和测试遗留,但不再作为产品主路径。
 
-| 阶段 | 范围 | 状态 |
-|------|------|------|
-| 一: 主干跑通 | T-01~T-10(TestSpec/ReAct/断言引擎/MCP) | ✅ 完成 |
-| 二: Harness 能力 | T-11~T-19(自愈/Context Compact/Hooks/Session/Skill/Permission/Orchestrator/Custom Tool) | ✅ 完成 |
-| 三: 输出层 | T-20~T-22(BDDGenerator/SQLModel 持久化/词汇表+Scanner) | ✅ 完成 |
-| 四: 工程化界面 | T-23~T-27(FastAPI 后端/React 前端/SSE/Repository 抽象层) | ✅ 完成 |
-| 五: 用例管理集成 | 预留 `external_id` | 🔜 待定 |
+## 环境要求
 
-**测试: 334 passed / 1 skipped**(另 2 个 Windows 平台预存在失败:截图目录 / 命令替换)
+- Python 3.11+
+- Node.js 18+
+- 翻译模型: 通过 `LLM_*` 配置,可用 DeepSeek / Qwen / Ollama / OpenAI-compatible 网关
+- 视觉模型: 通过 `MIDSCENE_MODEL_*` 配置,必须是 Midscene 支持的多模态视觉模型
 
-## 实现原则(务必遵守)
+## 安装
 
-1. **前后端彻底分离** — 功能通过 HTTP API 暴露,前端只调 API。React ↔ FastAPI,即使单机运行也视为独立两端。
-2. **数据层抽象** — 用 SQLModel,业务代码不直接写 SQL(SQLite → PostgreSQL 只改连接串)。
-3. **输入/输出抽象** — 所有来源产出同一个 `TestCase`,所有执行结果落 `ExecutionRecord`。
-4. **数据预留同步字段** — 核心表预留 `updated_at` / `owner` / `external_id`。
-5. **分阶段、可验证** — 严格按实施计划推进,跑通一阶段再进下一阶段。
-
-## 关键约束
-
-- 浏览器层 **必须用 `playwright-mcp` 的 stdio 模式**,绝不用 CDP HTTP 连接(内网代理会拦截 → 504)。
-- 断言 **必须由规则引擎确定性验证**,不让 LLM 眼判 PASS/FAIL。
-- 本地 LLM(Qwen3 via Ollama/LiteLLM)的 `tool_call` 需做 **格式容错**,偶发格式错误不得搞崩执行循环。
-
-## 环境
-
-- Python **3.11+**(下限,无上限;已含 3.14。`uv` 可选,亦支持标准 `venv` + `pip`)
-  - 3.14 上若个别依赖(如 pydantic / uvicorn[standard])无预编译 wheel,**上调该依赖版本**即可,无需降 Python
-- Node.js **18+**(前端 + `npx @playwright/mcp` 浏览器层,stdio)
-- LLM: 本地 Qwen3 / DeepSeek 等,经 Ollama / LiteLLM 接入(可用 `.env` 配置)
-
-> 下面分 **Windows(PowerShell)** 与 **macOS/Linux(bash)** 两套命令;每套又分
-> **uv** 与 **标准 venv + pip(非 uv)** 两种安装方式,按需任选一条路径。
-
-### 安装
-
-#### Windows(PowerShell)
+### Windows PowerShell
 
 ```powershell
-# ── 方式 A:标准 venv + pip(非 uv,推荐内网/无 uv 环境)──
-py -3.11 -m venv .venv            # 或 python -m venv .venv(需确保是 3.11)
+py -3.11 -m venv .venv
 .venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 
-# ── 方式 B:uv ──
-uv venv --python 3.11
-.venv\Scripts\Activate.ps1
-uv pip install -r requirements.txt
+# 根目录 Node 依赖:Midscene runner
+npm install --ignore-scripts --cache .npm-cache
 
-# 前端(两种方式相同)
-cd frontend; npm install; cd ..
+# 前端依赖
+cd frontend
+npm install
+cd ..
 ```
 
-> PowerShell 若禁止运行脚本,先放开当前用户策略:
-> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
-
-#### Windows(cmd / 命令提示符)
+### Windows cmd
 
 ```bat
-:: ── 方式 A:标准 venv + pip(非 uv,推荐内网/无 uv 环境)──
-py -3.11 -m venv .venv            :: 或 python -m venv .venv(需确保是 3.11)
+py -3.11 -m venv .venv
 .venv\Scripts\activate.bat
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 
-:: ── 方式 B:uv ──
-uv venv --python 3.11
-.venv\Scripts\activate.bat
-uv pip install -r requirements.txt
-
-:: ── 方式 C:无 venv,直接全局安装(代理只放行某个 shell 时省事)──
-:: 在能联网的 cmd 里装到全局 site-packages,之后一律用 py -3.11 运行,无需激活
-py -3.11 -m pip install -r requirements.txt
-:: 运行示例:py -3.11 -m pytest -q  /  py -3.11 cli\run_case.py ...
-:: 注意:须是正常 CPython(py -3.11 -m pip --version 能用),embeddable 版不行
-
-:: 前端(三种方式相同)
+npm install --ignore-scripts --cache .npm-cache
 cd frontend && npm install && cd ..
 ```
 
-#### macOS / Linux(bash)
+### macOS / Linux
 
 ```bash
-# ── 方式 A:标准 venv + pip(非 uv)──
-python3.11 -m venv .venv && source .venv/bin/activate
+python3.11 -m venv .venv
+source .venv/bin/activate
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 
-# ── 方式 B:uv ──
-uv venv --python 3.11 && source .venv/bin/activate
-uv pip install -r requirements.txt
-
-# 前端(两种方式相同)
+npm install --ignore-scripts --cache .npm-cache
 cd frontend && npm install && cd ..
 ```
 
-### LLM 配置
+## 配置
 
-在项目根创建 `.env`(自动加载),或用环境变量 / CLI flag:
+在项目根创建 `.env`。
+
+### 翻译模型
 
 ```dotenv
-LLM_MODEL=openai/qwen3          # 模型名需带 provider 前缀(openai/xxx、ollama/xxx)
+LLM_MODEL=openai/qwen3
 LLM_API_BASE=http://127.0.0.1:11434/v1
 LLM_API_KEY=sk-xxx
-# 内网直连 LLM、需绕过代理时(见下「故障排查」),加一行:
+
+# 内网直连 LLM、需绕过代理时:
 # NO_PROXY=localhost,127.0.0.1,your-internal-llm-host
 ```
 
-> **故障排查:同一 cmd 里 `curl` 能连 LLM,本项目却报「代理异常 / Content Filter -
-> Access Denied(504)」**——Windows 下 Python(httpx)会读取**系统/注册表代理(WinINET)**
-> 把内网请求也发给代理,而 `curl` 不读注册表代理、直连成功,故同一 shell 两者表现不同
-> (与是否设了 `HTTP_PROXY` 环境变量无关)。解法:把内网 LLM 主机(`LLM_API_BASE` 里的
-> 主机名/IP,不带 `http://` 和端口)写进 `.env` 的 `NO_PROXY`,httpx 即对该主机直连、
-> 公网仍走代理;全部走内网可用 `NO_PROXY=*`。诊断脚本:`python scripts/diag_proxy.py`。
+### Midscene 视觉模型
 
-### 运行测试
+Midscene 执行阶段必须配置视觉模型。不要默认复用 `LLM_*`,避免把 DeepSeek 等文本模型误用于视觉定位。
 
-```powershell
-# Windows(PowerShell)
-.venv\Scripts\Activate.ps1
-python -m pytest -q
+```dotenv
+MIDSCENE_MODEL_NAME=your-vision-model
+MIDSCENE_MODEL_BASE_URL=https://your-internal-vision-gateway/v1
+MIDSCENE_MODEL_API_KEY=sk-xxx
+MIDSCENE_MODEL_FAMILY=qwen3.5
 ```
 
-```bat
-:: Windows(cmd)
-.venv\Scripts\activate.bat
-python -m pytest -q
+`MIDSCENE_MODEL_FAMILY` 是 Midscene 用来解析视觉定位坐标的模型族,必须填写。常见值:
+
+```text
+qwen3.5
+qwen3
+qwen3-vl
+qwen2.5-vl
+doubao-vision
+gemini
+glm-v
+kimi
 ```
+
+如果 `LLM_*` 本身就是视觉模型,可以显式复用:
+
+```dotenv
+MIDSCENE_REUSE_LLM_CONFIG=1
+```
+
+## 启动
 
 ```bash
-# macOS / Linux
-source .venv/bin/activate
-python -m pytest -q
-```
-
-> Windows 上有 2 个平台预存在失败(截图目录 / 命令替换),不影响主干。
-
-### 启动服务
-
-激活虚拟环境后(Windows PowerShell: `.venv\Scripts\Activate.ps1`;Windows cmd: `.venv\Scripts\activate.bat`;
-*nix: `source .venv/bin/activate`),以下命令两平台通用:
-
-```bash
-# API 服务(:8000,纯 API)
-# 用 dev 启动器(--reload 只监视源码;直接 uvicorn --reload 会因 codegen 写
-# storage/generated/*.py 触发重启、打断正在跑的 run)
+# API 服务(:8000)
 python scripts/serve.py
 
 # 前端开发服务器(:5173)
 cd frontend && npm run dev
-
-# CLI 运行单条用例
-python cli/run_case.py --excel examples/saucedemo_cases.xlsx --case-id TC101 --base-url https://www.saucedemo.com
-python cli/run_case.py --excel <用例.xlsx> --case-id <ID> --spec-only   # 只生成并打印 TestSpec
-python cli/run_case.py --check-llm                                       # LLM 连通性自检
-
-# 更复杂的开源验证用例(Automation Exercise:注册/下单/搜索,含多字段表单与结算流程)
-python examples/make_automation_exercise_xlsx.py                          # 生成 xlsx(首次)
-python cli/run_case.py --excel examples/automation_exercise_cases.xlsx \
-    --case-id AE01 --base-url https://automationexercise.com --isolated --headless
-
-# saucedemo 完整结算流程(多页表单 + 终态断言,已 live 绿)
-python cli/run_case.py --excel examples/saucedemo_checkout.xlsx --case-id TC201 \
-    --base-url https://www.saucedemo.com --isolated --headless
-
-# 接入 Custom Tool(LLM 按需调用 + custom_tool 数据断言)
-python cli/run_case.py --excel <用例.xlsx> --case-id <ID> --tools examples/custom_tools.yaml \
-    --base-url <url> --isolated --headless
-# (API 路径用环境变量:CUSTOM_TOOLS_YAML=examples/custom_tools.yaml)
 ```
 
-> Windows 提示:多行命令的续行符 `\` 是 bash 写法;PowerShell 请改用反引号 `` ` ``,
-> 或直接把参数写在一行。
+打开 `http://localhost:5173`,进入测试任务后点击「执行」。确认弹框会显示 Midscene 视觉执行,可选择本次加载的项目 Skill。
+
+## 执行前检查
+
+在项目根执行:
+
+```powershell
+node -e "console.log(require.resolve('@midscene/web/playwright')); console.log(require.resolve('@playwright/test'))"
+npm run midscene:check
+python cli/run_case.py --check-llm
+```
+
+期望:
+
+- 第一条命令能打印 `@midscene/web/playwright` 和 `@playwright/test` 的本地路径
+- `npm run midscene:check` 通过
+- `python cli/run_case.py --check-llm` 能连通翻译模型
+
+## 运行测试
+
+```powershell
+python -m pytest tests/test_visual_executor.py tests/test_midscene_agent.py tests/test_midscene_runner.py tests/test_api_execution.py tests/test_run_executor.py -q
+```
+
+前端构建:
+
+```powershell
+cd frontend
+npm run build
+```
+
+## 产物位置
+
+Midscene artifacts 默认落在:
+
+```text
+storage/midscene/<run_id>/<case_id>/
+```
+
+常见文件:
+
+- `initial.png`
+- `phase-1.png` / `phase-1-failed.png`
+- `runner-stdout.log`
+- `runner-stderr.log`
+- `midscene_run/report/midscene-report.html`
+- `midscene_run/log/*.log`
+
+这些产物已被 `.gitignore` 忽略。
+
+## 常见问题
+
+### Cannot find module '@playwright/test'
+
+在项目根目录执行:
+
+```powershell
+npm install --ignore-scripts --cache .npm-cache
+```
+
+不要在 `frontend/` 目录执行这条命令。`frontend` 只安装前端依赖,根目录才安装 Midscene runner 依赖。
+
+### Missing Midscene model config
+
+说明 `.env` 缺少视觉模型配置。至少需要:
+
+```dotenv
+MIDSCENE_MODEL_NAME=
+MIDSCENE_MODEL_BASE_URL=
+MIDSCENE_MODEL_API_KEY=
+MIDSCENE_MODEL_FAMILY=
+```
+
+### Default model family is required
+
+说明 `MIDSCENE_MODEL_FAMILY` 未配置,或配置值不是 Midscene 支持的模型族。内网 qwen3.5 视觉模型可先试:
+
+```dotenv
+MIDSCENE_MODEL_FAMILY=qwen3.5
+```
+
+### reportFileName must not contain path separators
+
+已在 runner 中修复。若仍出现,请确认后端已重启并运行最新代码。
+
+### curl 能连模型,项目里报代理异常
+
+Windows 下 Python/httpx 会读取系统代理。把内网模型主机写进 `.env`:
+
+```dotenv
+NO_PROXY=localhost,127.0.0.1,your-internal-llm-host
+```
+
+全部走内网可用:
+
+```dotenv
+NO_PROXY=*
+```
+
+诊断脚本:
+
+```powershell
+python scripts/diag_proxy.py
+```
 
 ## 目录结构
 
-```
-T-agent/
-├── harness/          # Agent 核心(ReAct/断言/自愈/Prompt/LLM/录制…)
-├── mcp_client/       # MCP 官方 SDK 封装(stdio 连 playwright-mcp)
-├── intelligence/     # Page Intelligence(词汇表 / 用例预解析 / TestSpec 生成)
-├── input/            # 输入层(models 结构体 + Excel 解析)
-├── codegen/          # 输出层(代码生成)
-│   ├── base.py       #   CodeGenerator 抽象 + GeneratedCode 落盘
-│   ├── locators.py   #   框架无关的稳健定位器解析层(语义 target→Locator)
-│   └── bdd.py        #   BDDGenerator(渲染 Locator→pytest-bdd Playwright)
-├── api/              # FastAPI 后端(纯 API,:8000;不挂前端静态构建)
-│   ├── routers/      #   suites/execution/permission/results/vocabulary
-│   └── repository.py #   抽象层 + SQLModel 实现
-├── storage/          # SQLModel 模型 + SQLite 持久化(screenshots/ + generated/)
-├── frontend/         # React + Vite + Tailwind 控制台(:5173)
-│   └── src/
-│       ├── pages/    #   SuiteList/SuiteCases/SuiteHistory/SuiteRunDetail/SuiteSettings/Vocabulary
-│       ├── components/ # RootLayout/SuiteLayout/IconRail/Drawer/CaseDrawerBody/Sidebar/...
-│       └── api/      #   client.ts(API 封装)
-├── cli/              # 命令行入口
-├── tests/            # 单元测试(334 passed)
-├── examples/         # 验收入口 + saucedemo 用例
-├── 实现规格说明书.md  # 唯一真相源:所有模块详细规格
-└── 产品设计文档_v2.0.md # 产品设计原文
+```text
+T-Agent/
+├── api/                         FastAPI 后端
+├── frontend/                    React + Vite 前端
+├── harness/
+│   ├── midscene_agent.py        Midscene 执行适配器
+│   ├── visual_executor.py       Python <-> Node runner 边界
+│   ├── llm.py                   LiteLLM 封装
+│   └── orchestrator.py          Suite/Case 调度
+├── scripts/
+│   ├── serve.py                 API dev 启动器
+│   └── midscene_runner.js       Midscene Node runner
+├── intelligence/pre_analysis.py TestSpec 翻译
+├── input/models.py              核心数据模型
+├── storage/                     DB / artifacts
+├── tests/                       单元测试
+└── docs/midscene集成方案.md      Midscene 整体集成方案
 ```
 
-## 核心模块速查
+## 核心模块
 
 | 模块 | 入口 | 职责 |
 |------|------|------|
-| Agent 总装 | `harness/agent.py` | TestCaseAgent.run() 串起整条执行链路 |
-| ReAct 循环 | `harness/react_loop.py` | Reason→Act→Observe 主循环 + 护栏 |
-| 断言引擎 | `harness/assertion.py` | 规则引擎确定性验证,裁决 PASS/FAIL |
-| 自愈 | `harness/healing.py` | 断言侧目标重定位 + 操作侧回灌 |
-| Prompt 构建 | `harness/prompt.py` | 分层 System Prompt(Base+Context+Task+Tools) |
-| 上下文压缩 | `harness/context.py` | L1 旧观察折叠 + L2 快照截断 |
-| LLM 封装 | `harness/llm.py` | LiteLLM + tool_call 容错 + token 统计 |
-| MCP 客户端 | `mcp_client/client.py` | stdio 连 playwright-mcp, 工具格式转换 |
-| 页面探测 | `harness/page_probe.py` | 解析 A11y 树, 语义匹配 |
-| Suite 调度 | `harness/orchestrator.py` | 串行执行 + 用例间隔离 + 结果汇总 |
-| 权限管控 | `harness/permission.py` | 高危词+prod 锁, API 侧审批 |
-| FastAPI 入口 | `api/server.py` | 纯 API(5 路由子模块 + SSE 推送),不挂前端 |
-| Repository 层 | `api/repository.py` | 抽象基类 + SQLModel 实现 |
-| 定位器解析层 | `codegen/locators.py` | 框架无关:语义 target→稳健 Locator(词汇表来源) |
-| BDD 代码生成 | `codegen/bdd.py` | 渲染 Locator → pytest-bdd Playwright 代码 |
-| Page Intelligence | `intelligence/` | 词汇表 + Scanner + 用例预解析 |
+| 执行总装 | `api/run_executor.py` | 构造 MidsceneCaseAgent,跑 Orchestrator,落 run_event / ExecutionRecord |
+| Midscene Agent | `harness/midscene_agent.py` | 复用 TestSpec/ExecutionRecord 契约,归一 Midscene 阶段结果 |
+| Visual Executor | `harness/visual_executor.py` | 调用 Node runner,保存 stdout/stderr |
+| Node Runner | `scripts/midscene_runner.js` | PlaywrightAgent + aiAct/aiAssert + report/screenshot artifacts |
+| TestSpec 翻译 | `intelligence/pre_analysis.py` | Excel 用例 -> 阶段化 TestSpec |
+| 前端执行视图 | `frontend/src/pages/SuiteCasesPage.tsx` | 执行入口、过程和结果展示 |
 
-## 格式化
+## 当前边界
 
-```bash
-isort harness mcp_client input intelligence cli api storage tests && black harness mcp_client input intelligence cli api storage tests
-```
+- Midscene 是唯一执行主链路。
+- 真实内网 live 需要可用视觉模型配置。
+- 执行中 progress 目前主要在 runner 返回后归一展示;后续可接 Midscene 原生 progress/report 实时事件。
+- 旧 ReAct / playwright-mcp 相关模块后续会分批物理清理。
