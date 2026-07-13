@@ -163,7 +163,9 @@ async function run() {
       waitAfterAction: Number(process.env.MIDSCENE_WAIT_AFTER_ACTION_MS || 500),
       waitForNetworkIdleTimeout: Number(process.env.MIDSCENE_NETWORK_IDLE_TIMEOUT_MS || 1000),
       waitForNavigationTimeout: Number(process.env.MIDSCENE_NAVIGATION_TIMEOUT_MS || 3000),
-      aiActContext: process.env.MIDSCENE_AI_ACT_CONTEXT || payload.spec?.intent || '',
+      aiActContext:
+        process.env.MIDSCENE_AI_ACT_CONTEXT ||
+        [payload.spec?.intent || '', payload.execution_context || ''].filter(Boolean).join('\n\n'),
     });
     artifacts.report = reportFileName;
     artifacts.initial_screenshot = await screenshot(page, artifactDir, 'initial.png');

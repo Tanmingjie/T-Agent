@@ -108,7 +108,7 @@ class Orchestrator:
         async def _run_case(case: TestCase, case_idx: int) -> ExecutionRecord:
             async with sem:  # 并发上限:同时最多 parallelism 条用例在跑
                 # 协作式停止:已请求停止则跳过尚未开跑的用例(给一条「已中止」占位记录,
-                # 不进浏览器)。正在跑的用例由 ReActLoop 在其循环里优雅退出。
+                # 不进浏览器)。正在跑的用例由当前执行内核在检查点里优雅退出。
                 if should_abort is not None and await should_abort():
                     return ExecutionRecord(
                         exec_id=f"aborted-{case.id}",

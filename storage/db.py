@@ -137,7 +137,7 @@ class RunRecordRow(SQLModel, table=True):
     project_id: str = Field(default="", index=True)  # 多租户(T-P04b)
     version_id: str = Field(default="", index=True)
     status: str = "running"  # running | completed | aborted | failed
-    # 用户「停止」请求标志:执行链(orchestrator/ReAct)协作式轮询,见检查点即优雅退出。
+    # 用户「停止」请求标志:执行链(orchestrator/Midscene 启动前)协作式轮询。
     # 跨 embedded(进程内线程)/ queue(独立 worker 进程)统一——两者都各自有 Store 能读到。
     cancel_requested: bool = False
     total_cases: int = 0
@@ -177,7 +177,6 @@ class RunQueueRow(SQLModel, table=True):
     # 本次执行强制加载的项目 skill 名(一次性、随 run;空=全走渐进披露)。queue 模式下
     # 触发时落库,worker 领取后透传给 execute_run(embedded 模式直接走函数参数不经此列)。
     skill_names: list = Field(default_factory=list, sa_column=Column(JSON))
-    executor_backend: str = Field(default="react")
 
 
 class RunEventRow(SQLModel, table=True):
@@ -825,7 +824,6 @@ class Store:
         project_id: str = "",
         case_id: str | None = None,
         skill_names: list[str] | None = None,
-        executor_backend: str = "react",
     ) -> None:
         async with self._sf() as s:
             s.add(
@@ -837,7 +835,6 @@ class Store:
                     status="queued",
                     created_at=time.time(),
                     skill_names=skill_names or [],
-                    executor_backend=executor_backend or "react",
                 )
             )
             await s.commit()

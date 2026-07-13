@@ -102,7 +102,6 @@ async def _run_one(db_url: str, claimed) -> None:
             sse_cb=None,  # 事件由 execute_run 统一落 run_event 表
             perm_approver_factory=_make_approver,
             force_skill_names=list(claimed.skill_names or []),
-            executor_backend=getattr(claimed, "executor_backend", "react") or "react",
         )
         status = "done"
     except Exception:  # noqa: BLE001

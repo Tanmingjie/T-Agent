@@ -96,6 +96,7 @@ class MidsceneCaseAgent:
             run_id=run_id or "norun",
             case=case,
             spec=spec,
+            execution_context=self.translation_knowledge,
         )
 
         for step in self._action_steps(result):
@@ -122,7 +123,7 @@ class MidsceneCaseAgent:
         recorder.set_stop_reason(result.stop_reason)
         recorder.set_metrics(
             {
-                "executor_backend": "midscene",
+                "execution_kernel": "midscene",
                 "midscene": {
                     "stop_reason": result.stop_reason,
                     "artifacts": result.artifacts,

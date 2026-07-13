@@ -119,9 +119,6 @@ export default function SuiteCasesPage() {
   // 项目 skill + 执行前勾选(强制加载,一次性随本次 run)
   const [skills, setSkills] = useState<ProjectSkill[]>([]);
   const [forceSkills, setForceSkills] = useState<string[]>([]);
-  const [executorBackend, setExecutorBackend] = useState<"react" | "midscene">(
-    "react",
-  );
   // 执行确认弹框:点「执行」后弹出,选 skill 再确认开始。记录本次要跑的目标
   // (caseId 给定=单用例,否则整套件)。null=未打开。
   const [runModal, setRunModal] = useState<{ caseId?: string } | null>(null);
@@ -209,31 +206,26 @@ export default function SuiteCasesPage() {
   const activeCount = tracked.filter((c) => c.status === "running").length;
   const showProgress = run.running || run.done;
 
-  // 点「执行」:先弹框选择执行内核 + 可选 skill,再跑整套件。
+  // 点「执行」:先弹框确认 Midscene 执行 + 可选 skill,再跑整套件。
   function startRun() {
     setRunModal({});
   }
 
-  // 单用例执行(抽屉右上角「执行」按钮):先弹框选择执行内核 + 可选 skill。
+  // 单用例执行(抽屉右上角「执行」按钮):先弹框确认 Midscene 执行 + 可选 skill。
   function runOne(caseId: string) {
     setRunModal({ caseId });
   }
 
-  // 弹框「开始执行」确认:按选中的目标 + 执行内核 + 勾选的 skill 触发。
+  // 弹框「开始执行」确认:按选中的目标 + 勾选的 skill 触发。
   function confirmRun() {
     const target = runModal;
     setRunModal(null);
     if (!target) return;
     if (target.caseId) {
-      run.start([target.caseId], target.caseId, forceSkills, executorBackend);
+      run.start([target.caseId], target.caseId, forceSkills);
     } else {
       setSelected(null);
-      run.start(
-        cases.map((c) => c.id),
-        undefined,
-        forceSkills,
-        executorBackend,
-      );
+      run.start(cases.map((c) => c.id), undefined, forceSkills);
     }
   }
 
@@ -461,59 +453,17 @@ export default function SuiteCasesPage() {
                 {runModal.caseId
                   ? "只执行当前用例。"
                   : `执行全部 ${cases.length} 条用例。`}
-                可切换执行内核,并选择本次强制加载的 Skill。
+                当前执行内核为 Midscene 视觉执行。
               </p>
             </div>
             <div className="flex-1 overflow-auto p-3 space-y-4">
-              <div>
-                <div className="text-xs font-medium text-gray-500 px-1 mb-2">
-                  执行内核
+              <div className="rounded-md border border-brand-100 bg-brand-50 px-3 py-2.5">
+                <div className="text-sm font-medium text-surface-900">
+                  Midscene 视觉执行
                 </div>
-                <div className="grid grid-cols-2 gap-2">
-                  {[
-                    {
-                      value: "react" as const,
-                      title: "ReAct",
-                      desc: "现有 Playwright MCP 执行",
-                    },
-                    {
-                      value: "midscene" as const,
-                      title: "Midscene",
-                      desc: "视觉模型 aiAct 执行",
-                    },
-                  ].map((option) => {
-                    const active = executorBackend === option.value;
-                    return (
-                      <button
-                        key={option.value}
-                        type="button"
-                        onClick={() => setExecutorBackend(option.value)}
-                        className={`min-h-20 rounded-md border px-3 py-2 text-left transition-colors ${
-                          active
-                            ? "border-brand-600 bg-brand-50"
-                            : "border-gray-200 hover:bg-gray-50"
-                        }`}
-                      >
-                        <span className="flex items-center justify-between gap-2">
-                          <span className="text-sm font-medium text-surface-900">
-                            {option.title}
-                          </span>
-                          <span
-                            className={`w-4 h-4 rounded-full border flex items-center justify-center ${
-                              active
-                                ? "bg-brand-600 border-brand-600 text-white"
-                                : "border-gray-300"
-                            }`}
-                          >
-                            {active && <Check size={11} />}
-                          </span>
-                        </span>
-                        <span className="block text-xs text-gray-500 mt-1 leading-5">
-                          {option.desc}
-                        </span>
-                      </button>
-                    );
-                  })}
+                <div className="text-xs text-gray-500 mt-1 leading-5">
+                  用阶段化 TestSpec 驱动浏览器,每阶段执行 aiAct 并用 aiAssert
+                  验证预期。
                 </div>
               </div>
 
@@ -569,8 +519,7 @@ export default function SuiteCasesPage() {
             </div>
             <div className="px-5 py-3 border-t border-gray-100 flex items-center justify-between">
               <span className="text-xs text-gray-400">
-                {executorBackend === "midscene" ? "Midscene" : "ReAct"} · 已选{" "}
-                {forceSkills.length} 个 Skill
+                Midscene · 已选 {forceSkills.length} 个 Skill
               </span>
               <div className="flex gap-2">
                 <button

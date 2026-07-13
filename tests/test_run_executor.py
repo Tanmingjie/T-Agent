@@ -10,7 +10,7 @@ import pytest
 
 from api.repository import SQLModelRepository
 from api.run_executor import execute_run
-from input.models import Suite, TestCase
+from input.models import Project, ProjectSkill, Suite, TestCase
 from storage.db import Store
 
 
@@ -151,3 +151,58 @@ async def test_execute_run_persists_events_to_run_event_for_replay(tmp_path, mon
     types = [e.event_type for e in events]
     assert "case_start" in types and "step_change" in types
     assert types[-1] == "suite_done"  # 收尾事件落表 → /stream 尾随能终止
+
+
+@pytest.mark.asyncio
+async def test_execute_run_uses_midscene_agent_with_selected_skill_context(tmp_path, monkeypatch):
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/midscene.db"
+    store = Store(url=db_url)
+    await store.init()
+    repo = SQLModelRepository(store)
+    await store.save_project(Project(id="p1", name="P", translation_knowledge="项目规范"))
+    await store.save_skill(
+        ProjectSkill(
+            project_id="p1",
+            name="登录流程",
+            description="登录相关约束",
+            content="必须使用测试账号登录。",
+        )
+    )
+    await repo.create(Suite(id="sx", name="SX", base_url="https://x.com", project_id="p1"))
+    await repo.bulk_insert(
+        [TestCase(id="t1", name="C1", steps=["a"], base_url="https://x.com", suite_id="sx")]
+    )
+    run_id = "midscene-run"
+    await repo.create_run(run_id, "sx", 1, "p1", None)
+
+    import harness.orchestrator as orch_mod
+
+    captured = {}
+
+    class _InspectingOrch:
+        def __init__(self, *, agent_factory):
+            self.agent_factory = agent_factory
+
+        async def run_suite(self, cases, *, sse_callback=None, **kwargs):
+            async with self.agent_factory() as agent:
+                captured["agent_class"] = agent.__class__.__name__
+                captured["knowledge"] = agent.translation_knowledge
+
+            class _R:
+                passed_count = 0
+                failed_count = 0
+
+            return _R()
+
+    monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
+
+    await execute_run(
+        db_url=db_url,
+        run_id=run_id,
+        suite_id="sx",
+        force_skill_names=["登录流程"],
+    )
+
+    assert captured["agent_class"] == "MidsceneCaseAgent"
+    assert "项目规范" in captured["knowledge"]
+    assert "必须使用测试账号登录" in captured["knowledge"]

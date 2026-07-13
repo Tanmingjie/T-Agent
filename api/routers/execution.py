@@ -16,7 +16,7 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from api.auth import require_suite_access
 from api.execution_worker import spawn_run
@@ -54,29 +54,9 @@ _permission_results: dict[str, dict] = {}
 logger = logging.getLogger(__name__)
 
 
-def _mcp_args() -> list[str]:
-    """playwright-mcp 启动参数:默认 --isolated(规避 Chrome 密码泄露弹框)+ --headless。"""
-    args = ["@playwright/mcp@latest"]
-    if os.getenv("MCP_ISOLATED", "1") != "0":
-        args.append("--isolated")
-    if os.getenv("MCP_HEADLESS", "1") != "0":
-        args.append("--headless")
-    return args
-
-
 class RunOptions(BaseModel):
     # 本次执行强制加载的项目 skill 名(一次性,随本次 run;空=全走渐进披露)。
     skill_names: list[str] = []
-    # 执行内核:默认沿用既有 ReAct;midscene 走视觉执行 POC。
-    executor_backend: str = "react"
-
-    @field_validator("executor_backend")
-    @classmethod
-    def _validate_executor_backend(cls, value: str) -> str:
-        backend = (value or "react").strip().lower()
-        if backend not in {"react", "midscene"}:
-            raise ValueError("executor_backend must be react or midscene")
-        return backend
 
 
 @router.post("/suites/{suite_id}/run", dependencies=_suite_guard)
@@ -92,7 +72,6 @@ async def trigger_run(
     ``options.skill_names``:执行前勾选的项目 skill → 本次强制加载(详见 execute_run)。
     """
     skill_names = options.skill_names if options is not None else []
-    executor_backend = options.executor_backend if options is not None else "react"
     suite = await repo.get_suite(suite_id)
     if suite is None:
         raise HTTPException(404, "Suite not found")
@@ -125,9 +104,7 @@ async def trigger_run(
     # 默认 embedded:进程内守护线程执行(单机)。两模式进度都落 run_event 表,/stream 统一
     # 从表重放+尾随 → 退出执行页再进来可看全程。
     if os.getenv("RUN_MODE") == "queue":
-        await store.enqueue_run(
-            run_id, suite_id, suite.project_id, case_id, skill_names, executor_backend
-        )
+        await store.enqueue_run(run_id, suite_id, suite.project_id, case_id, skill_names)
         return {"run_id": run_id, "status": "queued"}
 
     api_loop = asyncio.get_running_loop()
@@ -176,7 +153,6 @@ async def trigger_run(
                 sse_cb=None,
                 perm_approver_factory=_perm_approver_factory,
                 force_skill_names=skill_names,
-                executor_backend=executor_backend,
             )
         finally:
             api_loop.call_soon_threadsafe(_live_runs.discard, run_id)
@@ -189,7 +165,7 @@ async def trigger_run(
 async def stop_run(suite_id: str, run_id: str, repo=Depends(get_repo), store=Depends(get_store)):
     """请求停止一个正在执行的 run(协作式优雅停)。
 
-    置 run_record.cancel_requested 标志;执行链(orchestrator 每用例前 / ReAct 每轮)轮询到
+    置 run_record.cancel_requested 标志;执行链(orchestrator 每用例前 / Midscene 启动前)轮询到
     后,正在飞的那步 MCP/LLM 调用跑完即优雅退出,未开跑的用例补「已中止」占位,run 终态记
     aborted。embedded / queue 两模式统一(都各自有 Store 读同一标志)。幂等:已结束/不存在
     返回 ok=false。"""

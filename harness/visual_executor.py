@@ -67,6 +67,7 @@ class VisualExecutor:
         run_id: str,
         case: TestCase,
         spec: TestSpec,
+        execution_context: str = "",
     ) -> VisualExecutionResult:
         if os.getenv("MIDSCENE_ENABLED", "0") != "1":
             return VisualExecutionResult(
@@ -84,6 +85,7 @@ class VisualExecutor:
             "spec": spec.model_dump(mode="json"),
             "artifact_dir": str(artifact_dir),
             "model_config": self._model_config(),
+            "execution_context": execution_context,
         }
 
         started = time.time()

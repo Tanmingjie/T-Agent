@@ -269,13 +269,7 @@ export function useSuiteRun(suiteId: string | undefined) {
   const start = useCallback(
     // caseId 给定时只跑该单条用例(抽屉「执行」按钮),否则跑 caseIds 代表的整套件。
     // skillNames:本次执行强制加载的项目 skill 名(一次性;空=全走渐进披露)。
-    // executorBackend:执行内核,默认 react;midscene 走视觉执行 POC。
-    async (
-      caseIds: string[],
-      caseId?: string,
-      skillNames?: string[],
-      executorBackend: "react" | "midscene" = "react",
-    ) => {
+    async (caseIds: string[], caseId?: string, skillNames?: string[]) => {
       if (!suiteId) return;
       stop();
       // 预置所有用例为 pending
@@ -295,7 +289,6 @@ export function useSuiteRun(suiteId: string | undefined) {
           : `/suites/${suiteId}/run`;
         const { run_id } = await apiPost<{ run_id: string }>(runPath, {
           skill_names: skillNames ?? [],
-          executor_backend: executorBackend,
         });
         setRunId(run_id);
         attach(run_id);

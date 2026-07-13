@@ -18,8 +18,8 @@ class _FakeVisualExecutor:
         self.result = result
         self.calls = []
 
-    async def run_case(self, *, run_id, case, spec):
-        self.calls.append((run_id, case.id, len(spec.phases)))
+    async def run_case(self, *, run_id, case, spec, execution_context=""):
+        self.calls.append((run_id, case.id, len(spec.phases), execution_context))
         return self.result
 
 
@@ -61,15 +61,15 @@ async def test_midscene_agent_maps_visual_result_to_execution_record():
     async def cb(ev, data):
         events.append(ev)
 
-    agent = MidsceneCaseAgent(llm=_NoopLLM(), visual_executor=visual)
+    agent = MidsceneCaseAgent(llm=_NoopLLM(), visual_executor=visual, translation_knowledge="规则A")
     record = await agent.run(_case(), spec=_spec(), step_callback=cb, run_id="run1")
 
     assert record.passed is True
     assert record.spec is not None
     assert [a["status"] for a in record.case_assertions] == ["pass", "pass"]
-    assert record.metrics["executor_backend"] == "midscene"
+    assert record.metrics["execution_kernel"] == "midscene"
     assert record.metrics["midscene"]["artifacts"]["report"] == "r.html"
-    assert visual.calls == [("run1", "tc1", 2)]
+    assert visual.calls == [("run1", "tc1", 2, "规则A")]
     assert "spec_ready" in events and "step_change" in events
 
 

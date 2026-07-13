@@ -1,7 +1,7 @@
 """可复用的「执行一个 run」核心(平台化 T-P08)。
 
 从 ``api/routers/execution.py::_worker_main`` 抽出,**与进程无关**:在自己的 loop 里建
-独立 Store、按 suite 所属项目作用域构造 LLM/词汇表/Hooks/Skills/Tools,跑 Orchestrator,
+独立 Store、按 suite 所属项目作用域构造 LLM 和 Midscene Agent,跑 Orchestrator,
 落 ExecutionRecord + 更新 RunRecord。
 
 两处复用:
@@ -13,15 +13,12 @@
 看全程」),再可选转发给调用方传入的 `sse_cb`(live 低延迟通道,可为 None)。embedded /
 queue 两模式都走这条路 → 行为一致、都可重连重放。调用方**不再各自往 run_event 表写**。
 
-权限审批:`perm_approver_factory(emit)` 由调用方注入(API 用 threading.Event 跨线程;
-worker 进程用审批工单表)。工厂收到 execute_run 的 `_emit`,使权限事件也落表可重放。
-不注入则按 suite 的 permission_mode;approve 模式无 approver 时权限层默认拒绝(保守)。
+权限审批曾用于 ReAct tool-call 执行;Midscene 全量替换后不再在执行核里消费。
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import time
 from contextlib import asynccontextmanager
 from typing import Awaitable, Callable
@@ -29,18 +26,6 @@ from typing import Awaitable, Callable
 logger = logging.getLogger(__name__)
 
 SSECallback = Callable[[str, dict], Awaitable[None]]
-
-
-def _mcp_args() -> list[str]:
-    from mcp_client.client import viewport_args
-
-    args = ["@playwright/mcp@latest"]
-    if os.getenv("MCP_ISOLATED", "1") != "0":
-        args.append("--isolated")
-    if os.getenv("MCP_HEADLESS", "1") != "0":
-        args.append("--headless")
-    args += viewport_args()  # 默认 1920×1080,治窄视口藏按钮(env MCP_VIEWPORT 可调)
-    return args
 
 
 async def execute_run(
@@ -52,23 +37,17 @@ async def execute_run(
     sse_cb: SSECallback | None = None,
     perm_approver_factory: Callable[[SSECallback], object] | None = None,
     force_skill_names: list[str] | None = None,
-    executor_backend: str = "react",
 ) -> None:
     """执行一个 run 到完成(自带独立 Store/loop 资源)。失败不抛,落 failed 状态。
 
-    ``force_skill_names``:本次执行**强制加载**的项目 skill 名(一次性,随本次 run):命中的
-    skill 正文直接常驻 prompt(preload=True),不等模型自己 load_skill;未命中仍走渐进披露。
-    治弱模型不主动加载 skill —— 用户在执行前明确指定本条/本批用例需要的业务知识。
+    ``force_skill_names``:本次执行显式选择的项目 skill 名。Midscene 路径下把命中
+    skill 正文合并进翻译/执行上下文,作为业务知识输入。
     """
     from api.repository import SQLModelRepository, get_suite_settings
-    from harness.agent import TestCaseAgent
     from harness.llm import build_llm_client
     from harness.midscene_agent import MidsceneCaseAgent
     from harness.orchestrator import Orchestrator
-    from harness.skills import build_skill_manager
     from input.models import ExecutionRecord
-    from intelligence.vocabulary import VocabularyManager, VocabularyResolver
-    from mcp_client.client import MCPClient
     from storage.db import Store
 
     store = Store(url=db_url)
@@ -78,9 +57,6 @@ async def execute_run(
     saved_ids: set[str] = set()  # 本 run 已落库的 case_id(_save_record 累加)
     fail_reason = ""
     completed = False
-    executor_backend = (executor_backend or "react").strip().lower()
-    if executor_backend not in {"react", "midscene"}:
-        raise ValueError("executor_backend must be react or midscene")
 
     async def _emit(event: str, data: dict) -> None:
         """唯一事件落库点:写 run_event 表(供 /stream 从 seq 0 重放)+ 转发 live 通道。
@@ -106,13 +82,9 @@ async def execute_run(
         if case_id is not None:
             cases = [c for c in cases if c.id == case_id]
 
+        llm_config = await store.get_llm_config(suite.project_id) if suite.project_id else None
         settings_row = await get_suite_settings(store, suite_id)
         parallelism = int(settings_row.get("parallelism", 1))
-        approve_mode = settings_row.get("permission_mode") == "approve"
-
-        vocab_resolver = VocabularyResolver(VocabularyManager(store, project_id=suite.project_id))
-        llm_config = await store.get_llm_config(suite.project_id) if suite.project_id else None
-        mcp_args = _mcp_args()
 
         # 项目级翻译知识/操作指南:注入翻译 prompt(助补全流程/对齐术语/写对 expected)
         translation_knowledge = ""
@@ -121,84 +93,26 @@ async def execute_run(
             if project is not None:
                 translation_knowledge = project.translation_knowledge or ""
 
-        tools_registry = None
-        # 平台:项目级 HTTP 型 Custom Tool(M2)优先;无则回退 env YAML(单机/命令型)。
-        if suite.project_id:
-            http_tools = await store.list_http_tools(suite.project_id)
-            if http_tools:
-                from harness.tools import build_http_tool_registry
-
-                tools_registry = build_http_tool_registry(http_tools)
-        if tools_registry is None:
-            tools_yaml = os.getenv("CUSTOM_TOOLS_YAML")
-            if tools_yaml:
-                try:
-                    from harness.tools import load_tool_registry_from_yaml
-
-                    tools_registry = load_tool_registry_from_yaml(tools_yaml)
-                except Exception as e:  # noqa: BLE001
-                    logger.warning("加载 Custom Tool 配置失败(%s):%s", tools_yaml, e)
-
-        # 项目级 Skill:**渐进披露**(preload=False)——name+description 常驻名册,
-        # 由 LLM/ReAct 主动 load_skill 展开正文。E3(2026-06-23)解掉旧 force-preload TODO:
-        # 主路靠 prompt 让模型动手前主动加载(BASE_PROMPT 已写明);弱模型不主动 → ReAct
-        # 卡住时由 SkillManager.relevant 浮现催加载(甲)、再不加载则 auto_load 兜底注入(乙)。
-        # 这条三层路径在 ReActLoop 里实现,run_executor 只负责"按渐进披露注册"。
-        # 用户执行前勾选的 skill → 本次强制加载(preload=True),其余仍渐进披露。
+        # 用户执行前勾选的 skill → 作为 Midscene 执行上下文补充。未勾选的 skill 不进入
+        # 本次执行,避免再保留 ReAct 时代的渐进披露分支。
         force_set = {n for n in (force_skill_names or []) if n}
-        extra_skills = []
         if suite.project_id:
-            from harness.skills import Skill
-
             for sk in await store.list_skills(suite.project_id):
-                if sk.content.strip():
-                    extra_skills.append(
-                        Skill(
-                            name=sk.name,
-                            content=sk.content.strip(),
-                            description=(sk.description or "").strip(),
-                            preload=sk.name in force_set,
-                        )
+                if sk.name in force_set and sk.content.strip():
+                    translation_knowledge += (
+                        f"\n\n[执行 Skill:{sk.name}]\n"
+                        f"{(sk.description or '').strip()}\n"
+                        f"{sk.content.strip()}"
                     )
-
-        # 审批器:工厂注入 _emit,使权限事件也落 run_event 表(可重放)。
-        approver = (
-            perm_approver_factory(_emit)
-            if (approve_mode and perm_approver_factory is not None)
-            else None
-        )
 
         @asynccontextmanager
         async def make_agent():
-            llm_client = build_llm_client(llm_config)
-            if executor_backend == "midscene":
-                agent = MidsceneCaseAgent(
-                    llm=llm_client,
-                    hooks=None,
-                    translation_knowledge=translation_knowledge,
-                )
-                yield agent
-                return
-
-            skills = build_skill_manager(
-                custom_prompt=suite.custom_prompt, extra=extra_skills or None
+            agent = MidsceneCaseAgent(
+                llm=build_llm_client(llm_config),
+                hooks=None,
+                translation_knowledge=translation_knowledge,
             )
-            async with MCPClient(args=mcp_args) as mcp:
-                # Hook 是通用扩展点(harness/hooks.py);默认不预填登录,登录态复用交由
-                # 后续「环境管理」主线维护。需要时由调用方装配 HookManager 传入。
-                agent = TestCaseAgent(
-                    llm=llm_client,
-                    mcp=mcp,
-                    vocab_resolver=vocab_resolver,
-                    hooks=None,
-                    skills=skills,
-                    tools_registry=tools_registry,
-                    translation_knowledge=translation_knowledge,
-                    max_steps=int(os.getenv("AGENT_MAX_STEPS", "40")),
-                )
-                if approver is not None:
-                    agent.permission_approver = approver
-                yield agent
+            yield agent
 
         _case_by_id = {c.id: c for c in cases}
 
