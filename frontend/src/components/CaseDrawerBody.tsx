@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { apiGet } from "../api/client";
+import { apiGet, apiText } from "../api/client";
 import {
   CheckCircle,
   XCircle,
@@ -23,6 +23,7 @@ import {
   Play,
   AlertTriangle,
   ChevronDown,
+  ExternalLink,
 } from "lucide-react";
 import type { CaseRunState, CaseRunStatus } from "../hooks/useSuiteRun";
 
@@ -81,6 +82,13 @@ interface TestSpec {
 
 interface CaseMetrics {
   tokens?: Record<string, number>;
+  execution_kernel?: string;
+  midscene?: {
+    stop_reason?: string;
+    artifacts?: Record<string, unknown>;
+    phase_count?: number;
+    error?: string;
+  };
   execution?: {
     stop_reason?: string;
     iterations?: number;
@@ -95,6 +103,21 @@ interface CaseMetrics {
   assertions?: { pass?: number; fail?: number; skipped?: number; ai_judged?: number; total?: number };
 }
 
+interface MidsceneArtifactFile {
+  path: string;
+  name: string;
+  kind: "report" | "image" | "log" | "file";
+  size: number;
+  url: string;
+}
+
+interface MidsceneArtifacts {
+  available: boolean;
+  report_path?: string;
+  report_url?: string;
+  files: MidsceneArtifactFile[];
+}
+
 interface CaseResult {
   passed: boolean;
   final_result: string;
@@ -104,6 +127,7 @@ interface CaseResult {
   history: StepDetail[];
   spec?: TestSpec | null;
   metrics?: CaseMetrics | null;
+  midscene_artifacts?: MidsceneArtifacts | null;
 }
 
 interface CodeResp {
@@ -220,6 +244,134 @@ function AssertionVerdict({ assertions }: { assertions: AssertionResult[] }) {
           </ul>
         </div>
       ))}
+    </div>
+  );
+}
+
+function formatBytes(size: number): string {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / 1024 / 1024).toFixed(1)} MB`;
+}
+
+function MidsceneArtifactsPanel({ artifacts }: { artifacts?: MidsceneArtifacts | null }) {
+  const [openLog, setOpenLog] = useState<string | null>(null);
+  const [logText, setLogText] = useState("");
+  const [loadingLog, setLoadingLog] = useState(false);
+  const files = artifacts?.files ?? [];
+  const images = files.filter((f) => f.kind === "image");
+  const logs = files.filter((f) => f.kind === "log");
+  const others = files.filter((f) => f.kind !== "image" && f.kind !== "log" && f.kind !== "report");
+
+  async function toggleLog(file: MidsceneArtifactFile) {
+    if (openLog === file.path) {
+      setOpenLog(null);
+      return;
+    }
+    setOpenLog(file.path);
+    setLoadingLog(true);
+    setLogText("");
+    try {
+      setLogText(await apiText(file.url.replace(/^\/api/, "")));
+    } catch (e) {
+      setLogText(e instanceof Error ? e.message : String(e));
+    } finally {
+      setLoadingLog(false);
+    }
+  }
+
+  if (!artifacts?.available) {
+    return (
+      <div className="rounded-lg border border-gray-200 bg-white p-4">
+        <p className="text-sm font-medium text-surface-900">Midscene 原生报告</p>
+        <p className="text-xs text-gray-400 mt-1">本次执行没有可读取的 Midscene artifacts。</p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="rounded-lg border border-gray-200 bg-white overflow-hidden">
+      <div className="px-4 py-3 border-b border-gray-100">
+        <div className="flex items-center justify-between gap-3">
+          <div>
+            <p className="text-sm font-semibold text-surface-900">Midscene 原生报告</p>
+            <p className="text-xs text-gray-400 mt-0.5">
+              优先使用 Midscene 自带报告查看执行细节、截图和模型推理轨迹。
+            </p>
+          </div>
+          {artifacts.report_url && (
+            <a
+              href={artifacts.report_url}
+              target="_blank"
+              rel="noreferrer"
+              className="shrink-0 inline-flex items-center gap-1.5 rounded-md bg-brand-600 px-3 py-2 text-sm font-medium text-white hover:bg-brand-700"
+            >
+              <ExternalLink size={15} />
+              打开报告
+            </a>
+          )}
+        </div>
+      </div>
+
+      {images.length > 0 && (
+        <div className="px-4 py-3 border-b border-gray-100">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2">
+            截图
+          </p>
+          <div className="grid grid-cols-2 gap-3">
+            {images.map((file) => (
+              <a
+                key={file.path}
+                href={file.url}
+                target="_blank"
+                rel="noreferrer"
+                className="group block rounded-md border border-gray-200 overflow-hidden bg-gray-50 hover:border-brand-300"
+              >
+                <img src={file.url} alt={file.name} className="aspect-video w-full object-cover" />
+                <div className="px-2 py-1.5 text-xs text-gray-500 truncate bg-white">
+                  {file.name}
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {(logs.length > 0 || others.length > 0) && (
+        <div className="px-4 py-3 space-y-2">
+          <p className="text-[11px] font-medium uppercase tracking-wider text-gray-400">
+            日志与文件
+          </p>
+          {logs.map((file) => (
+            <div key={file.path} className="rounded-md border border-gray-100">
+              <button
+                onClick={() => toggleLog(file)}
+                className="w-full flex items-center justify-between gap-3 px-3 py-2 text-left text-xs hover:bg-gray-50"
+              >
+                <span className="font-mono text-gray-600 truncate">{file.path}</span>
+                <span className="shrink-0 text-gray-400">{formatBytes(file.size)}</span>
+              </button>
+              {openLog === file.path && (
+                <pre className="max-h-72 overflow-auto border-t border-gray-100 bg-surface-900 p-3 text-[11px] leading-relaxed text-gray-100 whitespace-pre-wrap">
+                  {loadingLog ? "加载中..." : logText || "(空)"}
+                </pre>
+              )}
+            </div>
+          ))}
+          {others.map((file) => (
+            <a
+              key={file.path}
+              href={file.url}
+              target="_blank"
+              rel="noreferrer"
+              className="flex items-center justify-between gap-3 rounded-md border border-gray-100 px-3 py-2 text-xs hover:bg-gray-50"
+            >
+              <span className="font-mono text-gray-600 truncate">{file.path}</span>
+              <span className="shrink-0 text-gray-400">{formatBytes(file.size)}</span>
+            </a>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -812,11 +964,16 @@ function TimelineView({
       {/* ── 2. 执行过程(逐步) ── */}
       <section>
         <TimelineHeader
-          label="驱动浏览器逐步执行"
+          label="Midscene 视觉执行"
           done={!!result}
           // 在跑、过了翻译、未出结果即视为执行进行中(与下方实时指示器同口径)
           active={executing}
         />
+        {result?.midscene_artifacts && (
+          <div className="ml-6 mt-2">
+            <MidsceneArtifactsPanel artifacts={result.midscene_artifacts} />
+          </div>
+        )}
         <ol className="ml-1 mt-2 border-l border-gray-200 space-y-3">
           {realSteps.length === 0 && !executing && (
             <li className="ml-5 text-xs text-gray-400">
@@ -842,9 +999,11 @@ function TimelineView({
                 <Loader2 size={14} className="text-blue-600 animate-spin" />
               </span>
               <p className="text-[10px] font-medium uppercase tracking-wider text-gray-400 mb-1">
-                思考中
+                Midscene 执行中
               </p>
-              <ThinkStream api={streamApi} caseId={caseId} />
+              <p className="text-xs text-gray-400">
+                正在运行 aiAct / aiAssert。详细过程以执行完成后的 Midscene 原生报告为准。
+              </p>
             </li>
           )}
         </ol>
@@ -887,7 +1046,9 @@ function TimelineView({
               {result.passed ? "测试通过" : "测试失败"}
             </p>
             <p className="text-xs text-gray-400">
-              Token {result.token_usage} · 自愈 {result.heal_count} 次
+              {result.metrics?.execution_kernel === "midscene"
+                ? "Midscene 视觉执行"
+                : `Token ${result.token_usage} · 自愈 ${result.heal_count} 次`}
               {(() => {
                 const m = result.final_result?.match(/停因=([^)]+)/);
                 return m ? ` · 停因 ${m[1]}` : "";
@@ -926,6 +1087,33 @@ const PHASE_LABEL: Record<string, string> = {
 };
 
 function MetricsPanel({ m }: { m: CaseMetrics }) {
+  if (m.execution_kernel === "midscene") {
+    const ms = m.midscene ?? {};
+    const artifacts = ms.artifacts ?? {};
+    const duration = typeof artifacts.duration_ms === "number" ? artifacts.duration_ms : null;
+    return (
+      <details className="text-xs text-gray-500">
+        <summary className="cursor-pointer select-none text-brand-700 hover:text-brand-800">
+          执行指标
+        </summary>
+        <div className="mt-1.5 space-y-1.5 rounded border border-gray-100 bg-gray-50 p-2">
+          <div className="flex flex-wrap gap-x-3 gap-y-0.5">
+            <span className="text-gray-400">内核:</span>
+            <span>Midscene</span>
+            {ms.phase_count != null && (
+              <span>
+                阶段 <b className="text-gray-700">{ms.phase_count}</b>
+              </span>
+            )}
+            {ms.stop_reason && <span>停因 {ms.stop_reason}</span>}
+            {duration != null && <span>耗时 {(duration / 1000).toFixed(1)}s</span>}
+          </div>
+          {ms.error && <div className="text-red-600 break-words">{ms.error}</div>}
+        </div>
+      </details>
+    );
+  }
+
   const tokens = m.tokens ?? {};
   const ex = m.execution ?? {};
   const a = m.assertions ?? {};

@@ -5,9 +5,10 @@ from __future__ import annotations
 import io
 import zipfile
 from pathlib import Path
+from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import Response, StreamingResponse
+from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import FileResponse, Response, StreamingResponse
 
 from api.auth import require_suite_access
 from api.server import get_repo
@@ -60,6 +61,7 @@ async def get_case_result(suite_id: str, run_id: str, case_id: str, repo=Depends
     return {
         **record.model_dump(),
         "history": _build_history(record),
+        "midscene_artifacts": _build_midscene_artifacts(suite_id, run_id, case_id, record),
     }
 
 
@@ -89,6 +91,119 @@ def _build_history(record):
             }
         )
     return history
+
+
+def _build_midscene_artifacts(suite_id: str, run_id: str, case_id: str, record) -> dict:
+    """Expose Midscene native report/log/screenshot artifacts as first-class result data."""
+    root = _midscene_root(record, run_id, case_id)
+    if not root.is_dir():
+        return {"available": False, "files": []}
+
+    files = []
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        rel = path.relative_to(root).as_posix()
+        files.append(
+            {
+                "path": rel,
+                "name": path.name,
+                "kind": _artifact_kind(path),
+                "size": path.stat().st_size,
+                "url": _artifact_url(suite_id, run_id, case_id, rel),
+            }
+        )
+
+    report = _artifact_relpath(root, record.metrics.get("midscene", {}).get("artifacts", {}).get("report"))
+    if report is None:
+        report = next((f["path"] for f in files if f["path"].endswith("midscene-report.html")), None)
+
+    return {
+        "available": bool(files),
+        "report_path": report,
+        "report_url": _artifact_url(suite_id, run_id, case_id, report) if report else "",
+        "files": files,
+    }
+
+
+def _artifact_url(suite_id: str, run_id: str, case_id: str, relpath: str) -> str:
+    encoded = quote(relpath, safe="")
+    return f"/api/suites/{suite_id}/runs/{run_id}/cases/{case_id}/artifact?path={encoded}"
+
+
+def _midscene_root(record, run_id: str, case_id: str) -> Path:
+    artifact_dir = record.metrics.get("midscene", {}).get("artifacts", {}).get("artifact_dir")
+    if artifact_dir:
+        return Path(str(artifact_dir)).resolve()
+    return _artifacts.midscene_dir(run_id, case_id).resolve()
+
+
+def _artifact_relpath(root: Path, value: str | None) -> str | None:
+    if not value:
+        return None
+    path = Path(str(value)).resolve()
+    try:
+        return path.relative_to(root).as_posix()
+    except ValueError:
+        return None
+
+
+def _artifact_path(record, run_id: str, case_id: str, relpath: str) -> Path:
+    root = _midscene_root(record, run_id, case_id)
+    path = (root / relpath).resolve()
+    try:
+        path.relative_to(root)
+    except ValueError as exc:
+        raise HTTPException(400, "Invalid artifact path") from exc
+    if not path.is_file():
+        raise HTTPException(404, "Artifact not found")
+    return path
+
+
+def _artifact_kind(path: Path) -> str:
+    suffix = path.suffix.lower()
+    name = path.name.lower()
+    if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+        return "image"
+    if suffix in {".html", ".htm"}:
+        return "report"
+    if suffix in {".log", ".txt"} or "stdout" in name or "stderr" in name:
+        return "log"
+    return "file"
+
+
+def _artifact_media_type(path: Path) -> str:
+    suffix = path.suffix.lower()
+    if suffix == ".html":
+        return "text/html; charset=utf-8"
+    if suffix == ".png":
+        return "image/png"
+    if suffix in {".jpg", ".jpeg"}:
+        return "image/jpeg"
+    if suffix == ".webp":
+        return "image/webp"
+    if suffix in {".log", ".txt", ".json"}:
+        return "text/plain; charset=utf-8"
+    return "application/octet-stream"
+
+
+@router.get(
+    "/suites/{suite_id}/runs/{run_id}/cases/{case_id}/artifact",
+    dependencies=_suite_guard,
+)
+async def get_case_artifact(
+    suite_id: str,
+    run_id: str,
+    case_id: str,
+    path: str = Query(..., min_length=1),
+    repo=Depends(get_repo),
+):
+    records = await repo.list_records_by_run(run_id)
+    record = next((r for r in records if r.case_id == case_id), None)
+    if record is None:
+        raise HTTPException(404, "Result not found")
+    artifact = _artifact_path(record, run_id, case_id, path)
+    return FileResponse(artifact, media_type=_artifact_media_type(artifact))
 
 
 @router.get("/suites/{suite_id}/runs/{run_id}/cases/{case_id}/code", dependencies=_suite_guard)

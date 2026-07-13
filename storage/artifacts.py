@@ -38,6 +38,10 @@ class ArtifactStore(ABC):
     def read_generated(self, name: str) -> dict[str, str]:
         """读某用例的生成代码文件:{文件名: 文本}(不存在则空 dict)。"""
 
+    @abstractmethod
+    def midscene_dir(self, run_id: str, case_id: str) -> Path:
+        """Midscene 原生产物目录。"""
+
 
 class LocalArtifactStore(ArtifactStore):
     """文件系统实现(单机/开发)。根目录默认 ``storage``,env ``ARTIFACT_ROOT`` 可覆盖。"""
@@ -75,6 +79,9 @@ class LocalArtifactStore(ArtifactStore):
         if steps.is_file():
             out[f"test_{name}.py"] = steps.read_text(encoding="utf-8")
         return out
+
+    def midscene_dir(self, run_id: str, case_id: str) -> Path:
+        return self.root / "midscene" / run_id / case_id
 
 
 _default: ArtifactStore | None = None

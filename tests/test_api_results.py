@@ -6,11 +6,14 @@ from httpx import ASGITransport, AsyncClient
 from api.repository import SQLModelRepository
 from api.server import app
 from input.models import ExecutionRecord, Suite, TestCase
+from storage.artifacts import LocalArtifactStore
 from storage.db import Store
 
 
 @pytest.fixture
-async def client():
+async def client(tmp_path):
+    import api.routers.results as results_router
+
     store = Store(url="sqlite+aiosqlite://")
     await store.init()
     repo = SQLModelRepository(store)
@@ -28,8 +31,31 @@ async def client():
         ]
     )
     await repo.create_run("r1", "sx", 1)
+    artifact_store = LocalArtifactStore(tmp_path)
+    artifact_dir = artifact_store.midscene_dir("r1", "t1")
+    report_dir = artifact_dir / "midscene_run" / "report"
+    report_dir.mkdir(parents=True)
+    (report_dir / "midscene-report.html").write_text("<html>ok</html>", encoding="utf-8")
+    (artifact_dir / "runner-stderr.log").write_text("runner log", encoding="utf-8")
+    old_artifacts = results_router._artifacts
+    results_router._artifacts = artifact_store
     await repo.save_record(
-        ExecutionRecord(exec_id="e1", case_id="t1", suite_id="sx", run_id="r1", passed=True)
+        ExecutionRecord(
+            exec_id="e1",
+            case_id="t1",
+            suite_id="sx",
+            run_id="r1",
+            passed=True,
+            metrics={
+                "execution_kernel": "midscene",
+                "midscene": {
+                    "artifacts": {
+                        "artifact_dir": str(artifact_dir),
+                        "report": str(report_dir / "midscene-report.html"),
+                    }
+                },
+            },
+        )
     )
     import api.server as srv
 
@@ -41,6 +67,7 @@ async def client():
     await store.close()
     srv._repo = None
     srv._store = None
+    results_router._artifacts = old_artifacts
 
 
 @pytest.mark.asyncio
@@ -63,6 +90,17 @@ async def test_get_case_result(client):
     assert r.status_code == 200
     assert r.json()["passed"] is True
     assert "history" in r.json()
+    assert r.json()["midscene_artifacts"]["available"] is True
+    assert r.json()["midscene_artifacts"]["report_path"].endswith("midscene-report.html")
+
+
+@pytest.mark.asyncio
+async def test_get_midscene_artifact(client):
+    r = await client.get(
+        "/api/suites/sx/runs/r1/cases/t1/artifact?path=midscene_run/report/midscene-report.html"
+    )
+    assert r.status_code == 200
+    assert "ok" in r.text
 
 
 @pytest.mark.asyncio

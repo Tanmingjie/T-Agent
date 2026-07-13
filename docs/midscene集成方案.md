@@ -114,9 +114,34 @@ playwright
 ## 当前边界
 
 - 已接通主链路，但真实内网 live 仍需用视觉模型验证。
-- 执行中过程事件目前主要在 runner 结束后归一回传；Midscene 原生 progress/report 的实时桥接是下一步。
+- 执行结果展示优先使用 Midscene 原生 report。平台负责保存、索引、打开 report，并补充展示截图、
+  runner stdout/stderr、阶段裁决摘要。
+- 执行中过程可视化降级为低优先级。当前只展示平台侧状态和执行中提示，不再强行复刻旧 ReAct
+  的逐 token/逐工具时间线；如后续需要，再基于 Midscene 原生 progress/report 事件桥接，而不是自造
+  第二套过程模型。
 - 停止执行当前只在启动前检查，runner 执行中协作式中止待补。
-- Midscene report 已落 artifact，但前端可以进一步提供直接打开入口。
+
+## 结果展示重设计
+
+原则:
+
+1. Midscene 已经产出详细报告，报告是执行过程细节的主视图。
+2. T-Agent 只做“入口 + 索引 + 归档 + 阶段裁决摘要”，避免用旧 ReAct 时间线误导用户。
+3. 截图、日志、report HTML 都作为 artifacts 暴露，便于内网失败排查。
+
+后端:
+
+- `GET /suites/{suite}/runs/{run}/cases/{case}/result` 返回 `midscene_artifacts`:
+  - `report_url`: Midscene report 直达入口。
+  - `files[]`: artifact 清单，含 `path/name/kind/size/url`。
+- `GET /suites/{suite}/runs/{run}/cases/{case}/artifact?path=...` 读取单个 artifact。
+- artifact 读取限制在本次用例的 `storage/midscene/<run>/<case>/` 目录内。
+
+前端:
+
+- 测试结果页优先展示“打开 Midscene 报告”。
+- 同页展示阶段截图缩略图、runner 日志、其他 artifact。
+- 阶段裁决仍展示在平台内，用于快速判断 PASS/FAIL 与失败阶段。
 
 ## 后续清理顺序
 
