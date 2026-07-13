@@ -1,12 +1,11 @@
-"""命令行入口(阶段一验收用,规格 §6 阶段一验收,T-10)。
+"""命令行入口。
 
     python cli/run_case.py --excel cases.xlsx --case-id TC001 --base-url http://intranet
 
-流程:解析 Excel → 选用例 → 生成并打印可读 TestSpec → Agent 执行 → 打印每步操作与
-reasoning → 断言驱动的可信 PASS/FAIL。
+流程:解析 Excel → 选用例 → 生成并打印可读 TestSpec → Midscene 视觉执行 → 打印结果。
 
 LLM 部署配置走环境变量(LLM_MODEL / LLM_API_BASE / LLM_API_KEY),不在此硬编码;
-浏览器层用 playwright-mcp(stdio),绝不用 CDP HTTP。
+Midscene 视觉模型走 MIDSCENE_MODEL_*。
 """
 
 from __future__ import annotations
@@ -39,34 +38,10 @@ def _load_dotenv(path: Path) -> None:
 
 _load_dotenv(_ROOT / ".env")
 
-from harness.agent import TestCaseAgent  # noqa: E402
 from harness.llm import LiteLLMClient  # noqa: E402
-from harness.page_probe import DictVocabResolver  # noqa: E402
-from harness.skills import build_skill_manager  # noqa: E402
-from harness.tools import load_tool_registry_from_yaml  # noqa: E402
+from harness.midscene_agent import MidsceneCaseAgent  # noqa: E402
 from input.excel_parser import parse_excel  # noqa: E402
 from input.models import TestCase, TestSpec  # noqa: E402
-from mcp_client.client import MCPClient, viewport_args  # noqa: E402
-
-
-def _load_vocab_resolver(path: str | None) -> DictVocabResolver | None:
-    """从 JSON 文件加载手动词汇表 {业务词: {role, name}} → DictVocabResolver。
-
-    用于跨语言/图标类断言目标的运行时解析(saucedemo 无 DB 词汇表时手动喂)。
-    """
-    if not path:
-        return None
-    import json
-
-    data = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(data, dict):
-        raise SystemExit(f"--vocab 文件应为 JSON 对象 {{业务词: {{role, name}}}},得到:{type(data)}")
-    bad = [k for k, v in data.items() if not isinstance(v, dict)]
-    if bad:
-        raise SystemExit(
-            f"--vocab 每个词条的值必须是对象 {{role/name/selector}},以下词条不是:{bad}"
-        )
-    return DictVocabResolver(data)
 
 
 def _print_spec(spec: TestSpec) -> None:
@@ -104,22 +79,14 @@ def _print_record(record) -> None:
     verdict = "✅ PASS" if record.passed else "❌ FAIL"
     print(f"\n最终判定(断言驱动): {verdict}")
     print(record.final_result)
-    print(f"\n步数={len(record.steps)}  自愈={record.heal_count}  token={record.token_usage}")
-    # #2 哑火可观测:卡死类失败时,打印哑火轮模型原文 + 性质,定性"模型放弃 vs 平台丢调用"
+    print(f"\n步数={len(record.steps)}")
     metrics = getattr(record, "metrics", None) or {}
-    idle = (metrics.get("execution") or {}).get("idle_outputs") or []
-    if idle:
-        from collections import Counter
-
-        kinds = dict(Counter(o.get("kind") for o in idle))
-        print(f"\n哑火轮 {len(idle)} 次,性质={kinds}")
-        for o in idle:
-            txt = (o.get("text") or "").replace("\n", " ")[:160]
-            print(
-                f"  iter={o.get('iteration')} 步={o.get('step_no')} "
-                f"kind={o.get('kind')} rechecked={o.get('rechecked')}"
-            )
-            print(f"     原文: {txt}")
+    midscene = (metrics.get("midscene") or {}) if isinstance(metrics, dict) else {}
+    artifacts = midscene.get("artifacts") or {}
+    if artifacts.get("report"):
+        print(f"Midscene report: {artifacts['report']}")
+    if artifacts.get("artifact_dir"):
+        print(f"Midscene artifacts: {artifacts['artifact_dir']}")
     print("─" * 60 + "\n")
 
 
@@ -177,29 +144,17 @@ async def _run(args: argparse.Namespace) -> int:
         print("⚠️  未提供 --base-url,TestCase.base_url 为空(Agent 可能无法导航)。")
 
     llm = LiteLLMClient(model=args.model, api_base=args.api_base, api_key=args.api_key)
-    resolver = _load_vocab_resolver(args.vocab)
-    # 内置基线 Skill(可 --no-skills 关闭)。--context 已作为 prompt context 注入,
-    # 这里只注入内置基线常识,避免重复(项目级渐进加载 Skill 走 API 路径)。
-    skills = None if args.no_skills else build_skill_manager()
-    # Custom Tool(--tools <yaml>):LLM 按需调用 + custom_tool 数据断言取业务真值
-    tools_registry = load_tool_registry_from_yaml(args.tools) if args.tools else None
-    if tools_registry is not None:
-        print(f"已加载 Custom Tool:{tools_registry.names}")
     # 翻译知识/操作指南(--knowledge <file>):注入翻译 prompt 助补全流程/对齐术语/写对 expected
     translation_knowledge = ""
     if args.knowledge:
         translation_knowledge = Path(args.knowledge).read_text(encoding="utf-8")
         print(f"已加载翻译知识:{args.knowledge}({len(translation_knowledge)} 字符)")
-    agent = TestCaseAgent(
-        llm,
-        None,
-        context=args.context,
+    if args.context:
+        translation_knowledge = f"{translation_knowledge}\n\n{args.context}".strip()
+    agent = MidsceneCaseAgent(
+        llm=llm,
         translation_knowledge=translation_knowledge,
-        max_steps=args.max_steps,
-        vocab_resolver=resolver,
-        skills=skills,
-        tools_registry=tools_registry,
-    )  # mcp 稍后注入
+    )
 
     # 查看翻译 prompt(调试):打印实际喂给翻译 LLM 的 system + user 消息(含用例规范注入),
     # 不调用 LLM。用于核对「用例规范是否进了翻译、长什么样」。
@@ -225,18 +180,7 @@ async def _run(args: argparse.Namespace) -> int:
         print("(--spec-only:仅生成 TestSpec,不执行)")
         return 0
 
-    # 连 playwright-mcp(stdio)后执行。
-    # --isolated:无持久 profile → 不触发 Chrome「密码泄露」弹框(该弹框是浏览器 UI,
-    #            不在 a11y 快照里,自愈无法识别/关闭,只能靠启动参数规避)。
-    mcp_args = ["@playwright/mcp@latest"]
-    if args.isolated:
-        mcp_args.append("--isolated")
-    if args.headless:
-        mcp_args.append("--headless")
-    mcp_args += viewport_args()  # 默认 1920×1080,治窄视口藏按钮(env MCP_VIEWPORT 可调)
-    async with MCPClient(args=mcp_args) as mcp:
-        agent.mcp = mcp
-        record = await agent.run(case, spec=spec)
+    record = await agent.run(case, spec=spec, run_id="cli")
     _print_record(record)
     return 0 if record.passed else 1
 
@@ -246,34 +190,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--excel", default=None, help="用例 Excel 路径(执行用例时必需)")
     p.add_argument("--case-id", default=None, help="用例 ID(默认取第一条)")
     p.add_argument("--base-url", default=None, help="被测系统地址(注入 TestCase.base_url)")
-    p.add_argument("--max-steps", type=int, default=30, help="ReAct 最大步数")
     p.add_argument("--context", default="", help="附加业务上下文(注入 Prompt)")
     p.add_argument("--model", default=None, help="LLM 模型名(默认读 env LLM_MODEL)")
     p.add_argument(
         "--api-base", default=None, help="LLM API base/base_url(默认读 env LLM_API_BASE)"
     )
     p.add_argument("--api-key", default=None, help="LLM API key(默认读 env LLM_API_KEY)")
-    p.add_argument(
-        "--vocab",
-        default=None,
-        help="手动词汇表 JSON 路径({业务词:{role,name}}),运行时解析跨语言/图标类目标",
-    )
-    p.add_argument(
-        "--isolated",
-        action="store_true",
-        help="playwright-mcp 隔离模式(无持久 profile,规避 Chrome 密码泄露弹框)",
-    )
-    p.add_argument(
-        "--headless", action="store_true", help="playwright-mcp 无头模式(后台运行,不弹窗)"
-    )
-    p.add_argument(
-        "--no-skills", action="store_true", help="不注入内置基线 Skill(DEFAULT_SKILLS,默认注入)"
-    )
-    p.add_argument(
-        "--tools",
-        default=None,
-        help="Custom Tool YAML 配置路径(LLM 按需调用 + custom_tool 数据断言)",
-    )
     p.add_argument(
         "--knowledge",
         default=None,

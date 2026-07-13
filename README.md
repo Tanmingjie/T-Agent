@@ -10,7 +10,7 @@
   -> 前端执行过程与结果可视化
 ```
 
-旧 ReAct / playwright-mcp 执行链路仍有部分代码和测试遗留,但不再作为产品主路径。
+旧 ReAct / playwright-mcp 执行内核已从产品主路径中移除。
 
 ## 环境要求
 
@@ -259,4 +259,4 @@ T-Agent/
 - Midscene 是唯一执行主链路。
 - 真实内网 live 需要可用视觉模型配置。
 - 执行中 progress 目前主要在 runner 返回后归一展示;后续可接 Midscene 原生 progress/report 实时事件。
-- 旧 ReAct / playwright-mcp 相关模块后续会分批物理清理。
+- 旧 ReAct / playwright-mcp 执行模块已物理清理;历史文档中仍可能保留当时的设计记录。

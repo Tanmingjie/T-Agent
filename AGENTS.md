@@ -17,7 +17,7 @@ This file provides guidance to Codex (Codex.ai/code) when working with code in t
 ## 当前状态:Midscene 执行内核全量替换(2026-07-13 起)
 
 当前分支已拍板:执行内核从 ReAct/playwright-mcp 全量替换为 **Midscene 视觉执行**。ReAct 不再作为
-产品级可选后端保留;旧 ReAct 相关模块/测试会分批物理清理。当前主链路是:
+产品级可选后端保留;旧 ReAct 执行模块/测试已物理清理。当前主链路是:
 
 ```text
 api/routers/execution.py → api/run_executor.py → MidsceneCaseAgent
@@ -48,25 +48,17 @@ Custom Tool、词汇表 DOM 定位、旧 healing、旧 codegen 主链路。
 - `harness/visual_executor.py` — Python ↔ Node sidecar 边界。把 `{run_id, case_id, base_url, spec, artifact_dir, model_config}` 经 stdin 送到 runner;保存 stdout/stderr 日志;把 runner JSON 解析成 `VisualExecutionResult`。
 - `scripts/midscene_runner.js` — Midscene Node runner。用 `@midscene/web/playwright` 的 `PlaywrightAgent` 打开页面,逐 phase 执行 `aiAct(step)`,阶段末用 `aiAssert(expected)`,落截图和 Midscene report。
 
-以下是旧 ReAct/playwright-mcp 执行链路模块,当前不再是主执行路径,后续分批物理清理:
-
-- `harness/step_plan.py` — 阶段化 TestSpec 的 `phases.steps` **摊平**成扁平步骤状态机(pending/active/done/...)+ 记每步所属阶段;暴露 `mark_step_done` 工具 + **阶段边界**查询(`is_phase_last_step`/`phase_last_step_no`)。
-- `harness/prompt.py` — System Prompt **分层**(Base+Context+Task+Tools),`PromptBuilder.build(step_plan)` 每轮重算反映进度。Task 层渲染 `intent`/`preconditions`/阶段化步骤清单,**不渲染 expected**(FG01:验证依据绝不进驱动)。
-- `harness/react_loop.py` — **ReAct 主循环**。Reason→Act→Observe;护栏:循环检测、max_steps、哑火续推(`max_idle_nudges`)、tool_call 容错、**过早 mark_done 软护栏 两分支**(E2:没操作 / 操作无效果——后者用页面指纹 URL+ref 集判,无 LLM)、**单步定位失败预算**(`STEP_FAIL_BUDGET` 默认 10 → `STEP_FAILED` 快速失败,E2 由 3→5;2026-06-29 5→10 治内网脏 live SPA nav-click 超时恢复被掐断)、**步级卡住主动提醒**(E2:同步连续 N 轮 fp 未变 → 注入诊断引导 + E3 浮现命中 skill 名催 `load_skill` 甲 / 持续仍卡 → 平台 `auto_load` top1 注入兜底 乙)、**跨 phase 重置**(E2:进新 phase 清零 idle/loop)。**观察以 user 消息文本回灌**(不依赖 tool_call_id 配对)。**阶段边界 Validator**(2026-06-22 取代步骤门控):`on_phase_end(phase_index) -> str|None` 在某阶段**最后一步** mark_step_done 落定时触发,核验该阶段 expected——返回非空原因 = 未达成 → `PHASE_FAILED` **阶段失败即失败**(不 replan/重试)。**哑火可观测(2026-06-24)**:`ReActResult.idle_outputs` 记每个哑火轮 `{iteration,step_no,kind,rechecked,text}`——`kind` 三态 narration_only(纯叙述放弃)/ malformed_tool_call(调了但格式坏)/ premature_result;透到 `metrics.execution.idle_outputs` 落库 + CLI 打印,供"卡死类"失败事后定性(模型放弃 vs 流式丢采)。**参数归一(2026-06-24)**:`_normalize_ref_target` 在 dispatch 前给 browser_* 工具把 `ref`/`element_ref`/`ref_id` 补进 `target`(本版 playwright-mcp 用 `target` 装 ref,模型先验是 `ref`、会抖动),消白烧步骤。
 - `harness/llm.py` — LiteLLM 封装 + tool_call 容错 + token 统计。配置走 env(`LLM_MODEL`/`LLM_API_BASE`/`LLM_API_KEY`)。**tool_call 容错链**:①标准 `tool_calls` 字段 → ②宽松 JSON 修复 → ③从 content 提取(`<tool_call>` 标签 / ```围栏 / 裸 JSON / **`函数名({...})` 文本** ← 2026-06-24 治 deepseek-v4-flash 偶发把调用吐进 content 文本而非 tool_calls 通道,实测 TC201 哑火卡死根因)→ ④纠偏重试 1 次 → 仍失败抛 `LLMToolCallError`。`extract_verdict` 从坏 JSON 正则捞 PASS/FAIL(裁决解析卫生)。**未设 `max_tokens`**(judge 偶发因 provider 默认输出上限截断 → 层1 兜底捞回;已加 prompt 简短约束减少触发)。
-- `mcp_client/client.py` — MCP 官方 SDK(stdio)连 playwright-mcp;工具格式 MCP↔LiteLLM 转换。
-- `harness/page_probe.py` — 解析 playwright-mcp 的 `browser_snapshot`(YAML A11y 树)为节点,按语义 target 双向包含匹配(`MCPPageProbe` 实现断言引擎的 `PageProbe` 协议)。
-- `harness/assertion.py` ★ — **断言引擎 + 阶段 Validator**。`_check_llm_judge`(**偏-FAIL** + 要求模型逐字引证页面 evidence,evidence 仅作**可审计依据**写入 reason)是阶段 Validator 的核心;另留 DOM/文本/URL/custom_tool 确定性检查 + healer 重定位 + `verdict()`(化石,阶段化下不再被 agent.run 调用)。裁决保留两道**与模型独立**的底线:**层(1)解析卫生**(`extract_verdict` 正则捞 verdict / 无 verdict→FAIL,fail-closed)+ **G1 主裁决缺失三态→FAIL**(未接 LLM / 调用失败 / 解析不出 verdict)。**〔2026-06-24 撤销「平台确定性证据接地推翻」(用户拍板①)〕**:eval_fg A/B 扩样(n=63,3 站点,6 轮)实测接地层有益拦截恒为 0、仅偶发误伤 → 净 ≤0,偏-FAIL prompt 自身已扛住全部 false-green;**裁决权交回模型,evidence 不再作推翻闸门**(删 `_norm_evidence`/`_evidence_*`/`_expected_*` + 锚点正则 + E5)。回归基准见 `eval_fg/`。**2026-06-22 阶段化重设计**:`agent.run::on_phase_end` 在某阶段最后一步落定时,于**当时所处页面**对该阶段 `expected` 跑一次 `_check_llm_judge`(实时 URL 作免费锚点喂模型),逐阶段裁决;**取代**旧的「步骤门控 + 终态 verify_all」三处验证。结果按 `phase_index`+`expected` 落库,前端按阶段展示。〔删旧 `_gate_step_done` 偏-PASS 门控、`step.expect` 结构化锚点、终态用例级 assertions。〕
-- `harness/healing.py` — **Healing Subagent**(独立 context)。断言侧:重定位断言目标;操作侧:工具报错时重定位并把建议回灌 ReAct。P1 角色→P5 视觉,防臆造(候选必须落在快照里)。
-- `harness/context.py` — **Context Compact**。发 LLM 前压缩:旧观察折叠成一行(L1)、近期快照按关键词相关度截断(L2),治 token 膨胀。
+- `harness/assertion.py` ★ — 历史断言引擎仍保留给旧记录/部分单测;Midscene 主链路的阶段裁决由 `aiAssert` 结果归一到 `ExecutionRecord.case_assertions`。
+- `harness/context.py` — 历史 Context Compact 工具,当前 Midscene 主链路不消费。
 - `harness/recorder.py` — 汇总 `ExecutionRecord`;`to_history()` 把 model_output / action_result 分离序列化。
-- `harness/hooks.py` — 生命周期 Hook(before_case 失败→用例 FAIL 不进 Agent)+ 共享 `ExecutionContext`。
+- `harness/hooks.py` — 生命周期 HookManager + 共享 `ExecutionContext`;Midscene 主链路默认 `hooks=None`。
 - 〔`harness/session.py` **2026-06-24 删除**:其唯一残留 `make_mcp_credential_login` 仅供已退役的主动扫描登录用,随扫描子系统收缩一并删。早先(2026-06-18)已删 `SessionManager`/`LoginHook`/`CaptureSessionHook`/`make_mcp_cookie_*` + `SessionProfile`(Cookie 复用对 SPA/Token 型登录不对症、TTL 与真实会话寿命脱节);登录态跨用例复用交后续「环境管理」主线。`harness/hook_builder.py` 同期删除,`Suite.session_profile` 及表经 alembic `0002` 降除。〕
 - 〔`harness/precondition.py` 预置条件三分类器 **2026-06-22 删除**:阶段化重设计后预置条件退化为纯背景 `list[str]`(不执行、不 guard、不分类),原 state_hook/action_step/ambiguous 三分类 + 标黄确认端点一并退役。〕
-- `harness/skills.py` — Skill 体系(**2026-06-15 对齐 Anthropic/Codex 标准 Skill**;**E3 2026-06-23 三层加载**):单一 `Skill`(name+description+content),**渐进披露**——System Prompt 常驻 `name—description` 清单,LLM 判断相关时**主动调 `load_skill(name)` 工具**展开正文(主路,由 E1 的 BASE_PROMPT 引导)。`DEFAULT_SKILLS` 内置基线 `preload=True`(表单操作/结果定位 + E3 加的「重新快照拿新 ref」「找不到元素的常见原因」机械套路);项目 Skill `preload=False` 走真渐进加载(E3 停 `api/run_executor.py` 的 `preload=True` force-preload TODO)。E3 加 `SkillManager.relevant(step_text, top_k)` 按 token 重叠挑相关 skill(确定性、无 LLM)+ `auto_load(step_text)` top1 直接加载;ReActLoop 在卡住时按 `stuck_round_budget` 触发**甲层**(浮现命中 skill 名催加载)、`*2` 触发**乙层**(平台 auto_load 注入)。〔删旧 DomainSkill/PageSkill/ToolSkill 三类与 URL/关键词平台侧匹配——加载与否改由 LLM 决策 + 卡住时平台兜底。〕
-- `harness/permission.py` — 高危词 + prod 环境锁;Reason 后 Act 前拦截;trust_mode / 可注入 approver;无 approver 默认拒绝。
-- `harness/orchestrator.py` — Suite 调度:`parallelism` **可配并发**(`asyncio.Semaphore` + `gather`,默认 1=串行;>1 需 `agent_factory` 让每用例自带独立 MCP/浏览器)、用例间隔离(异常→FAIL 不拖垮他人)、suite 级 hooks、结果汇总。
-- `harness/tools.py` — Custom Tool 注册:`@tool` 装饰器 + YAML `command`;LLM 按需调用;Agent 路由(控制→StepPlan / 自定义→Registry / 其余→MCP)。
+- `harness/skills.py` — 项目 Skill 数据结构和渲染工具;Midscene 主链路通过执行前勾选把 Skill 内容合并进翻译/执行上下文。
+- `harness/permission.py` — 历史审批模型仍服务 permission_request/路由;Midscene 执行核不再消费。
+- `harness/orchestrator.py` — Suite 调度:`parallelism` **可配并发**(`asyncio.Semaphore` + `gather`,默认 1=串行;>1 需 `agent_factory` 让每用例自带独立浏览器)、用例间隔离(异常→FAIL 不拖垮他人)、suite 级 hooks、结果汇总。
+- `harness/tools.py` — Custom Tool 注册/YAML/HTTP 工具能力暂保留;Midscene 主链路暂不按需调用。
 
 ### 工程化界面(阶段四)
 

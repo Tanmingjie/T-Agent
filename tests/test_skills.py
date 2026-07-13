@@ -1,7 +1,6 @@
 """Skill 体系单测(标准 Skill 渐进披露,2026-06-15 重构)。
 
-验证:preload 正文常驻 / 非 preload 仅列简述 / load 后正文进 prompt / load_skill 工具
-路由 + 渐进加载与 Agent 集成。
+验证:preload 正文常驻 / 非 preload 仅列简述 / load 后正文进 prompt / load_skill 工具。
 """
 
 from __future__ import annotations
@@ -93,76 +92,13 @@ def test_build_extra_project_skill_is_lazy():
     assert "BODY_X" in mgr.render()
 
 
-# ── 与 Agent 集成:渐进加载 ──────────────────────────────────
-
-
-class _RecordingLLM:
-    """记录每次收到的 system prompt + tools;按序返回预设响应。"""
-
-    def __init__(self, responses):
-        self._r = responses
-        self._i = 0
-        self.systems: list[str] = []
-        self.tool_names: list[str] = []
-
-    async def chat(self, messages, tools=None, **kwargs):
-        self.systems.append(messages[0]["content"])
-        if tools:
-            self.tool_names = [t["function"]["name"] for t in tools]
-        idx = min(self._i, len(self._r) - 1)
-        self._i += 1
-        return self._r[idx]
-
-
-async def test_agent_preloaded_skill_in_system_prompt():
-    from harness.agent import TestCaseAgent
-    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _spec
-
-    mgr = SkillManager()
-    mgr.register(Skill(name="基线", content="PRELOAD_MARK_常识", preload=True))
-    llm = _RecordingLLM(
-        [
-            _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
-            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
-            _resp(content="TEST_RESULT: PASS"),
-        ]
-    )
-    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), skills=mgr)
-    await agent.run(_case(), spec=_spec())
-    assert any("PRELOAD_MARK_常识" in s for s in llm.systems)
-    assert LOAD_SKILL_TOOL in llm.tool_names  # load_skill 工具已暴露给 LLM
-
-
-async def test_agent_lazy_skill_loaded_via_tool():
-    from harness.agent import TestCaseAgent
-    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _spec
-
-    mgr = SkillManager()
-    mgr.register(Skill(name="订单规则", description="DESC_简述", content="LAZY_MARK_正文"))
-    llm = _RecordingLLM(
-        [
-            # 第 1 轮:LLM 判断相关,调 load_skill 展开正文
-            _resp(content="加载", calls=[(LOAD_SKILL_TOOL, {"name": "订单规则"})]),
-            _resp(content="点", calls=[("browser_click", {"ref": "e3"})]),
-            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
-            _resp(content="TEST_RESULT: PASS"),
-        ]
-    )
-    agent = TestCaseAgent(llm, _FakeMCP(SNAPSHOT_OK), skills=mgr)
-    await agent.run(_case(), spec=_spec())
-    # 首轮:只有简述、无正文;load_skill 之后的轮次:正文进 system prompt
-    assert "DESC_简述" in llm.systems[0]
-    assert "LAZY_MARK_正文" not in llm.systems[0]
-    assert any("LAZY_MARK_正文" in s for s in llm.systems[1:])
-
-
 # ── E3:相关性匹配 + 三层加载 ────────────────────────────────
 
 
 def test_default_skills_include_mechanical_baseline():
-    """E3 基线机械 skill 下沉:重新快照、找不到元素诊断 等通用套路进 DEFAULT_SKILLS。"""
+    """通用执行建议仍作为默认 Skill 提供,但不绑定旧浏览器工具。"""
     names = {s.name for s in DEFAULT_SKILLS}
-    assert "重新快照拿新 ref" in names
+    assert "页面变化后重新观察" in names
     assert "找不到元素的常见原因" in names
     # 仍是 preload=True(短、通用,不值得让模型为它多花一次工具调用)
     for s in DEFAULT_SKILLS:
@@ -224,154 +160,3 @@ def test_auto_load_no_match_returns_none():
     mgr = SkillManager()
     mgr.register(Skill(name="审批", description="发起", content="..."))
     assert mgr.auto_load("登录") is None
-
-
-# ── E3 + ReActLoop:卡住时浮现/兜底加载 ─────────────────────────
-
-
-async def test_react_stuck_surfaces_relevant_skill_name():
-    """E3 甲:卡住时把命中的 skill 名点出来催加载(prompt 提到 load_skill(name="..."))。"""
-    import json
-
-    from harness.llm import LLMClient, LLMResponse, ToolCall
-    from harness.react_loop import ReActLoop, ToolOutcome
-    from harness.step_plan import StepPlan
-    from input.models import Phase
-
-    plan = StepPlan([Phase(steps=["点击加入购物车按钮"])])
-    mgr = SkillManager()
-    mgr.register(Skill(name="加购物车套路", description="本系统的加购按钮叫购物车", content="..."))
-
-    fixed = "Page URL: http://x/p\n- button [ref=e1]"
-    captured: list[list[dict]] = []
-
-    async def execute(name, arguments):
-        handled = plan.apply_tool_call(name, arguments)
-        if handled is not None:
-            return ToolOutcome(text=handled)
-        return ToolOutcome(text=fixed)
-
-    class _LLM(LLMClient):
-        def __init__(self, responses):
-            self._r = responses
-            self._i = 0
-
-        async def chat(self, messages, tools=None, **kwargs):
-            captured.append([dict(m) for m in messages])
-            idx = min(self._i, len(self._r) - 1)
-            self._i += 1
-            return self._r[idx]
-
-    llm = _LLM(
-        [
-            LLMResponse(content="", tool_calls=[ToolCall(name="browser_snapshot", arguments={})]),
-            LLMResponse(
-                content="", tool_calls=[ToolCall(name="browser_hover", arguments={"ref": "e1"})]
-            ),
-            LLMResponse(
-                content="", tool_calls=[ToolCall(name="browser_hover", arguments={"ref": "e2"})]
-            ),
-            LLMResponse(
-                content="", tool_calls=[ToolCall(name="browser_click", arguments={"ref": "e1"})]
-            ),
-            LLMResponse(
-                content="", tool_calls=[ToolCall(name="mark_step_done", arguments={"step_no": 1})]
-            ),
-        ]
-    )
-    loop = ReActLoop(
-        llm,
-        tools=[],
-        execute=execute,
-        step_plan=plan,
-        build_system=lambda p: p.to_prompt(),
-        stuck_round_budget=2,
-        loop_window=5,
-        skill_manager=mgr,
-        max_steps=10,
-    )
-    await loop.run()
-    # r4 时 messages 应已含「相关 skill」提示 + skill 名
-    msg_texts = [m.get("content", "") for m in captured[3] if isinstance(m.get("content"), str)]
-    joined = "\n".join(msg_texts)
-    assert "[卡住提醒]" in joined
-    assert "加购物车套路" in joined
-    assert "load_skill" in joined
-
-
-async def test_react_stuck_auto_loads_when_still_stuck():
-    """E3 乙:甲层已发但仍多轮卡住 → 平台 auto_load top1 兜底注入。"""
-    from harness.llm import LLMClient, LLMResponse, ToolCall
-    from harness.react_loop import ReActLoop, ToolOutcome
-    from harness.step_plan import StepPlan
-    from input.models import Phase
-
-    plan = StepPlan([Phase(steps=["点击加入购物车按钮"])])
-    mgr = SkillManager()
-    mgr.register(Skill(name="加购物车套路", description="加购按钮的常见位置", content="BODY_X"))
-
-    fixed = "Page URL: http://x/p\n- button [ref=e1]"
-    captured: list[list[dict]] = []
-
-    async def execute(name, arguments):
-        handled = plan.apply_tool_call(name, arguments)
-        if handled is not None:
-            return ToolOutcome(text=handled)
-        return ToolOutcome(text=fixed)
-
-    class _LLM(LLMClient):
-        def __init__(self, responses):
-            self._r = responses
-            self._i = 0
-
-        async def chat(self, messages, tools=None, **kwargs):
-            captured.append([dict(m) for m in messages])
-            idx = min(self._i, len(self._r) - 1)
-            self._i += 1
-            return self._r[idx]
-
-    # 持续卡住:r1 snapshot,r2..r5 都 hover 不同 ref(签名各异避开循环检测)
-    # budget=2,甲层在 stuck=2 触发(r3 末);乙层在 stuck=4 触发(r5 末)
-    llm = _LLM(
-        [
-            LLMResponse(content="", tool_calls=[ToolCall(name="browser_snapshot", arguments={})]),
-            LLMResponse(
-                content="", tool_calls=[ToolCall(name="browser_hover", arguments={"ref": "e1"})]
-            ),
-            LLMResponse(
-                content="", tool_calls=[ToolCall(name="browser_hover", arguments={"ref": "e2"})]
-            ),  # stuck=2
-            LLMResponse(
-                content="", tool_calls=[ToolCall(name="browser_hover", arguments={"ref": "e3"})]
-            ),
-            LLMResponse(
-                content="", tool_calls=[ToolCall(name="browser_hover", arguments={"ref": "e4"})]
-            ),  # stuck=4
-            LLMResponse(
-                content="", tool_calls=[ToolCall(name="browser_click", arguments={"ref": "e1"})]
-            ),
-            LLMResponse(
-                content="", tool_calls=[ToolCall(name="mark_step_done", arguments={"step_no": 1})]
-            ),
-        ]
-    )
-    loop = ReActLoop(
-        llm,
-        tools=[],
-        execute=execute,
-        step_plan=plan,
-        build_system=lambda p: p.to_prompt(),
-        stuck_round_budget=2,
-        loop_window=10,
-        skill_manager=mgr,
-        max_steps=12,
-    )
-    await loop.run()
-    # 验证 skill 已被 auto_load(乙层真正生效)
-    assert "加购物车套路" in mgr.loaded
-    # messages 里应出现「平台自动加载技能」提示
-    all_msgs = []
-    for snap in captured:
-        all_msgs.extend(m.get("content", "") for m in snap if isinstance(m.get("content"), str))
-    joined = "\n".join(all_msgs)
-    assert "[平台自动加载技能]" in joined

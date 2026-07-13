@@ -100,7 +100,7 @@ class VocabularyResolver:
     """把 VocabularyManager 适配成 page_probe 的 VocabResolver(运行时按页面查词)。
 
     探针只知道 url/title,login_role 由构造时给定(默认空)。命中返回词条
-    ``{role, name, ...}``,供 MCPPageProbe 按真实 role+name 匹配。
+    ``{role, name, ...}``,供历史断言探针或后续定位器解析按真实 role+name 匹配。
     """
 
     def __init__(self, manager: VocabularyManager, *, login_role: str = "") -> None:

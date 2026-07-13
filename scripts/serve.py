@@ -35,7 +35,6 @@ SOURCE_DIRS = [
     "codegen",
     "intelligence",
     "input",
-    "mcp_client",
     "cli",
 ]
 

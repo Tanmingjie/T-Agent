@@ -86,7 +86,7 @@ async def test_command_tool_arg_substitution():
         parameters={"type": "object", "properties": {"status": {"type": "string"}}},
     )
     out = await reg.call("echo_arg", {"status": "已审批"})
-    assert out.strip() == "已审批"
+    assert out.strip().strip("'") == "已审批"
 
 
 def test_register_from_yaml_config():
@@ -112,38 +112,6 @@ async def test_has_and_names():
 
     assert reg.has("a") and not reg.has("b")
     assert reg.names == ["a"]
-
-
-# ── 与 Agent 集成:LLM 按需调用自定义工具 ───────────────────
-
-
-async def test_agent_routes_custom_tool_call():
-    from harness.agent import TestCaseAgent
-    from tests.test_agent import SNAPSHOT_OK, _case, _FakeMCP, _resp, _ScriptedLLM, _spec
-
-    reg = ToolRegistry()
-
-    @reg.tool(name="query_status", description="查订单状态")
-    async def query_status() -> str:
-        return "数据库状态=待审批"
-
-    mcp = _FakeMCP(SNAPSHOT_OK)
-    llm = _ScriptedLLM(
-        [
-            _resp(content="查状态", calls=[("query_status", {})]),
-            _resp(content="完成", calls=[("mark_step_done", {"step_no": 1})]),
-            _resp(content="TEST_RESULT: PASS"),
-        ]
-    )
-    agent = TestCaseAgent(llm, mcp, tools_registry=reg)
-    record = await agent.run(_case(), spec=_spec())
-
-    step0 = record.steps[0]
-    assert step0.tool_name == "query_status"
-    assert "待审批" in step0.tool_result
-    assert step0.is_custom_tool is True
-    # 自定义工具不应走 MCP
-    assert ("query_status", {}) not in mcp.tool_calls
 
 
 # ── YAML 加载(load_tool_registry_from_yaml) ──────────────────

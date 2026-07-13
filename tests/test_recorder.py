@@ -99,7 +99,7 @@ def test_screenshot_path_creates_dir():
     with tempfile.TemporaryDirectory() as tmp:
         rec = Recorder("TC001", run_id="r1", exec_id="e1", screenshot_root=tmp)
         p = rec.screenshot_path(2)
-        assert p.endswith("r1/TC001/step_002.png")
+        assert p.replace("\\", "/").endswith("r1/TC001/step_002.png")
         assert Path(p).parent.is_dir()
 
 

@@ -9,7 +9,7 @@
   中止(不进任何用例)。
 - 汇总成 ``SuiteResult``(records + 通过/失败计数)。
 
-注:per-case 的 before_case/after_case Hooks 由 ``TestCaseAgent`` 内部负责;
+注:per-case 的 before_case/after_case Hooks 由具体 agent 内部负责;
 本模块只管 Suite 层调度与隔离。agent 只需实现 ``async run(case, spec=None, ctx=None)``。
 """
 

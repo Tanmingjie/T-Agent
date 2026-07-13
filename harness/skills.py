@@ -169,9 +169,7 @@ class SkillManager:
         }
 
 
-# 内置基线常识(始终展开):通用业务测试常识 + 通用机械操作套路,精炼克制不喧宾夺主。
-# 工具机制类基础见 agent.PLAYWRIGHT_MCP_HINT(每个 case 都注入);此处补的是「操作/判定的
-# 常见诀窍」——E3 把通用机械动作下沉到这里,业务侧 skill 只填业务知识,不再每个项目重写。
+# 内置基线常识(始终展开):通用业务测试常识,不绑定具体浏览器执行内核。
 DEFAULT_SKILLS: list[Skill] = [
     Skill(
         name="表单操作",
@@ -187,20 +185,19 @@ DEFAULT_SKILLS: list[Skill] = [
         "优先依据这些确定性信号判断,而非仅凭页面跳转。",
     ),
     Skill(
-        name="重新快照拿新 ref",
-        description="跳转/弹窗/异步加载后旧 ref 失效,需要重新 browser_snapshot",
+        name="页面变化后重新观察",
+        description="跳转/弹窗/异步加载后需要重新确认页面状态",
         preload=True,
-        content="ref 是 browser_snapshot 那一刻分配的临时引用,页面发生跳转、出现弹窗、"
-        "或异步内容加载后,旧 ref 会失效或指向错位元素。任何让页面发生变化的动作之后,"
-        "若要继续操作,应重新调用 browser_snapshot 获取最新 ref,而不是复用上一份快照的 ref。",
+        content="页面发生跳转、弹窗出现或异步内容加载后,不要沿用之前的观察结论;"
+        "继续操作前应重新确认当前页面、弹窗和目标控件是否已经出现。",
     ),
     Skill(
         name="找不到元素的常见原因",
         description="目标在快照里看不见时的几种典型情形与诊断方向",
         preload=True,
-        content="若 a11y 快照里找不到目标元素,不要盲点。常见原因:"
-        '(a) 在视野外——尝试 browser_press_key(key="PageDown") 滚动后再 browser_snapshot;'
-        "(b) 页面仍在加载——稍等再 browser_snapshot,或显式 browser_wait_for 等待文本出现;"
+        content="若当前页面找不到目标元素,不要盲点。常见原因:"
+        "(a) 在视野外——先滚动或切换到正确区域;"
+        "(b) 页面仍在加载——等待目标文案或控件出现;"
         "(c) 名字不同——同义词/英文/图标按钮(如「加购物车」实际叫 'Add to cart' 或纯图标);"
         "(d) 还在错的页面——先做前置(进入正确模块/打开弹窗)再找。",
     ),
@@ -212,8 +209,8 @@ DEFAULT_SKILLS: list[Skill] = [
         "(快照里多表现为 dialog/modal,或一层覆盖全屏的 backdrop/overlay),它会**拦截所有点击**——"
         "表象是点目标元素报错、点了没反应、或快照被浮层内容占满看不到正常导航。处理顺序:"
         "(1) 在浮层里找关闭类控件并点它——「×」「关闭」「Close」「Skip」「跳过」「知道了」"
-        '「Got it」「No thanks」「稍后」等;(2) 找不到关闭控件就 browser_press_key(key="Escape");'
-        "(3) 关掉后**重新 browser_snapshot** 再操作目标。不要对被挡住的目标反复重试点击。",
+        "「Got it」「No thanks」「稍后」等;(2) 找不到关闭控件就尝试 Escape;"
+        "(3) 关掉后重新观察页面再操作目标。不要对被挡住的目标反复重试点击。",
     ),
 ]
 

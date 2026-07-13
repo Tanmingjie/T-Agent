@@ -16,7 +16,7 @@
 队列即停并返回失败结果。
 
 **默认休眠**:平台/CLI 路径默认不预填任何 hook(``run_executor`` 传 ``hooks=None``);
-``TestCaseAgent`` 的 before_case/on_heal/on_failure/after_case 段**仅当调用方显式装配
+agent 的 before_case/on_heal/on_failure/after_case 段**仅当调用方显式装配
 HookManager 注入时才触发**,否则整段不跑。〔2026-06-18 Cookie/Session 退役后,登录态复用
 不再绑死在 hook 里,改交后续「环境管理」主线;hook 回归纯机制,不预置任何内置实现。〕
 """

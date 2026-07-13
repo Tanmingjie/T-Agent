@@ -143,9 +143,16 @@ playwright
 - 同页展示阶段截图缩略图、runner 日志、其他 artifact。
 - 阶段裁决仍展示在平台内，用于快速判断 PASS/FAIL 与失败阶段。
 
-## 后续清理顺序
+## 清理状态
 
-1. 主链路全切 Midscene 并保持测试通过。
-2. 基于真实内网 live 结果补齐 Midscene progress、report 展示和失败归因。
-3. 按模块物理删除 ReAct 执行链路：`agent.py`、`react_loop.py`、`prompt.py`、`step_plan.py`、`mcp_client` 相关调用。
+已完成:
+
+1. 主链路全切 Midscene。
+2. Midscene report / artifacts 作为结果主视图接入。
+3. 物理删除旧 ReAct 执行链路模块：`agent.py`、`react_loop.py`、`prompt.py`、`step_plan.py`、`page_probe.py`、`healing.py`、`mcp_client`。
 4. 移除 ReAct 专属测试，保留翻译、编排、结果、Midscene fake runner 测试。
+
+待后续另起任务:
+
+1. 清理历史文档中的旧设计描述。
+2. 评估 `permission.py` / `tools.py` 这类通用能力是否仍作为平台能力保留，或随旧 codegen/断言路径继续收缩。
