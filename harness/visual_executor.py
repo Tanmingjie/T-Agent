@@ -101,6 +101,14 @@ class VisualExecutor:
                 timeout=self.timeout_seconds,
             )
         except asyncio.TimeoutError:
+            await self._terminate_process(proc)
+            partial = self._read_partial_result(artifact_dir)
+            if partial is not None:
+                partial.passed = False
+                partial.stop_reason = "runner_timeout"
+                partial.error = partial.error or f"Midscene runner 超时({self.timeout_seconds}s)"
+                partial.artifacts.setdefault("artifact_dir", str(artifact_dir))
+                return partial
             return VisualExecutionResult(
                 passed=False,
                 stop_reason="runner_timeout",
@@ -121,6 +129,17 @@ class VisualExecutor:
         (artifact_dir / "runner-stderr.log").write_text(stderr_text, encoding="utf-8")
 
         if proc.returncode != 0:
+            partial = self._read_partial_result(artifact_dir)
+            if partial is not None:
+                partial.passed = False
+                partial.stop_reason = partial.stop_reason or "runner_failed"
+                partial.error = (
+                    partial.error
+                    or stderr_text.strip()
+                    or f"runner exited with code {proc.returncode}"
+                )
+                partial.artifacts.setdefault("artifact_dir", str(artifact_dir))
+                return partial
             return VisualExecutionResult(
                 passed=False,
                 stop_reason="runner_failed",
@@ -141,6 +160,31 @@ class VisualExecutor:
         data.setdefault("artifacts", {})
         data["artifacts"].setdefault("artifact_dir", str(artifact_dir))
         data["artifacts"].setdefault("duration_ms", int((time.time() - started) * 1000))
+        return VisualExecutionResult(**data)
+
+    @staticmethod
+    async def _terminate_process(proc) -> None:
+        if proc.returncode is not None:
+            return
+        try:
+            proc.kill()
+        except ProcessLookupError:
+            return
+        try:
+            await proc.wait()
+        except Exception:  # noqa: BLE001
+            return
+
+    @staticmethod
+    def _read_partial_result(artifact_dir: Path) -> VisualExecutionResult | None:
+        progress_file = artifact_dir / "midscene-result.json"
+        if not progress_file.exists():
+            return None
+        try:
+            data = json.loads(progress_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return None
+        data.setdefault("artifacts", {})
         return VisualExecutionResult(**data)
 
     @staticmethod

@@ -85,3 +85,32 @@ async def test_visual_executor_bad_output_fails(tmp_path, monkeypatch):
 
     assert result.passed is False
     assert result.stop_reason == "runner_bad_output"
+
+
+@pytest.mark.asyncio
+async def test_visual_executor_timeout_returns_partial_result(tmp_path, monkeypatch):
+    monkeypatch.setenv("MIDSCENE_ENABLED", "1")
+    script = (
+        "import json, pathlib, sys, time; "
+        "payload=json.loads(sys.stdin.read()); "
+        "p=pathlib.Path(payload['artifact_dir'])/'midscene-result.json'; "
+        "p.write_text(json.dumps({"
+        "'passed': False, "
+        "'stop_reason': 'completed', "
+        "'phase_results': [{'phase_index': 0, 'status': 'pass', 'expected': '阀门变红'}], "
+        "'artifacts': {}"
+        "}), encoding='utf-8'); "
+        "time.sleep(5)"
+    )
+    ex = VisualExecutor(
+        command=[sys.executable, "-c", script],
+        timeout_seconds=0.2,
+        artifact_root=tmp_path,
+    )
+
+    result = await ex.run_case(run_id="r1", case=_case(), spec=_spec())
+
+    assert result.passed is False
+    assert result.stop_reason == "runner_timeout"
+    assert "超时" in result.error
+    assert result.phase_results[0].status == "pass"

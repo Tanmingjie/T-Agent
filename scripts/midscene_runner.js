@@ -162,8 +162,21 @@ async function run() {
   const phaseResults = [];
   const actions = [];
   const artifacts = { artifact_dir: artifactDir };
+  const progressFile = path.join(artifactDir, 'midscene-result.json');
   let agent;
   let stopReason = 'completed';
+
+  function writeProgress(extra = {}) {
+    const snapshot = {
+      passed: false,
+      stop_reason: stopReason,
+      phase_results: phaseResults,
+      actions,
+      artifacts,
+      ...extra,
+    };
+    fs.writeFileSync(progressFile, `${JSON.stringify(snapshot)}\n`, 'utf8');
+  }
 
   try {
     const page = await browser.newPage({
@@ -193,6 +206,7 @@ async function run() {
     });
     artifacts.report = path.join(process.env.MIDSCENE_RUN_DIR, 'report', reportFileName);
     artifacts.initial_screenshot = await screenshot(page, artifactDir, 'initial.png');
+    writeProgress();
 
     const phases = payload.spec?.phases || [];
     for (const [phaseIndex, phase] of phases.entries()) {
@@ -225,6 +239,7 @@ async function run() {
           evidence: shot,
           query: { duration_ms: Date.now() - startedAt, url: page.url() },
         });
+        writeProgress();
       } catch (error) {
         stopReason = 'phase_failed';
         const shot = await screenshot(page, artifactDir, `phase-${phaseIndex + 1}-failed.png`).catch(() => '');
@@ -236,17 +251,20 @@ async function run() {
           evidence: shot,
           query: { duration_ms: Date.now() - startedAt, url: page.url() },
         });
+        writeProgress({ error: error && error.message ? error.message : String(error) });
         break;
       }
     }
 
-    return {
+    const finalResult = {
       passed: phaseResults.length === phases.length && phaseResults.every((item) => item.status === 'pass'),
       stop_reason: stopReason,
       phase_results: phaseResults,
       actions,
       artifacts,
     };
+    writeProgress(finalResult);
+    return finalResult;
   } finally {
     if (agent && typeof agent.destroy === 'function') {
       await agent.destroy().catch((error) => log('agent.destroy failed:', error.message));

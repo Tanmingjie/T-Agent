@@ -39,6 +39,12 @@ def _spec() -> TestSpec:
     )
 
 
+def _three_phase_spec() -> TestSpec:
+    spec = _spec()
+    spec.phases.append(Phase(steps=["确认告警"], expected="告警已出现"))
+    return spec
+
+
 @pytest.mark.asyncio
 async def test_midscene_agent_maps_visual_result_to_execution_record():
     visual = _FakeVisualExecutor(
@@ -90,6 +96,28 @@ async def test_midscene_agent_fills_missing_phase_as_fail():
     assert [a["phase_index"] for a in record.case_assertions] == [0, 1]
     assert record.case_assertions[1]["status"] == "fail"
     assert "未触达" in record.case_assertions[1]["reason"]
+
+
+@pytest.mark.asyncio
+async def test_midscene_agent_preserves_passed_phases_when_runner_times_out_later():
+    visual = _FakeVisualExecutor(
+        VisualExecutionResult(
+            passed=False,
+            stop_reason="runner_timeout",
+            error="Midscene runner 超时(300s)",
+            phase_results=[
+                VisualPhaseResult(phase_index=0, status="pass", expected="阀门变红"),
+                VisualPhaseResult(phase_index=1, status="pass", expected="液位显示 80%"),
+            ],
+        )
+    )
+    agent = MidsceneCaseAgent(llm=_NoopLLM(), visual_executor=visual)
+
+    record = await agent.run(_case(), spec=_three_phase_spec(), run_id="run1")
+
+    assert record.passed is False
+    assert [a["status"] for a in record.case_assertions] == ["pass", "pass", "fail"]
+    assert "超时" in record.case_assertions[2]["reason"]
 
 
 @pytest.mark.asyncio
