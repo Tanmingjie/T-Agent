@@ -107,6 +107,23 @@ kimi
 MIDSCENE_REUSE_LLM_CONFIG=1
 ```
 
+### Midscene 浏览器视口
+
+Midscene 视觉执行默认使用 `1920x1080` 视口,适合后台系统、工控页面和复杂表格。若页面仍因可视区域不足导致找不到控件,可在 `.env` 中调整:
+
+```dotenv
+MIDSCENE_VIEWPORT_WIDTH=1920
+MIDSCENE_VIEWPORT_HEIGHT=1080
+```
+
+需要滚动、拖动或横向查看更多内容时,建议在用例步骤或项目 Skill 中显式描述,例如:
+
+```text
+向下滚动到页面底部,点击保存按钮
+拖动表格底部横向滚动条到最右侧,查看操作列
+拖动画布,使右侧阀门区域进入可视范围
+```
+
 ## 启动
 
 ```bash

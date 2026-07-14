@@ -74,6 +74,15 @@ def test_system_prompt_describes_phase_structure():
     assert "不会" in system  # "...不会拿它驱动 agent..."
 
 
+def test_system_prompt_requires_idempotent_toggle_and_explicit_wait_steps():
+    """翻译 prompt 要把 toggle 改成目标状态,并保留明确时长等待供 runner 确定性执行。"""
+    system = build_spec_messages(_case())[0]["content"]
+    assert "目标状态" in system
+    assert "不要再次点击" in system
+    assert "等待/观察" in system
+    assert "确定性 sleep" in system
+
+
 # ── 响应解析 ──────────────────────────────────────────────────
 
 

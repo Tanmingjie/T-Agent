@@ -127,6 +127,10 @@ async function screenshot(page, artifactDir, name) {
   return file;
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function run() {
   loadDotEnv(path.join(repoRoot, '.env'));
   loadDotEnv(path.join(repoRoot, '.midscene-poc', '.env'));
@@ -181,8 +185,8 @@ async function run() {
   try {
     const page = await browser.newPage({
       viewport: {
-        width: Number(process.env.MIDSCENE_VIEWPORT_WIDTH || 1280),
-        height: Number(process.env.MIDSCENE_VIEWPORT_HEIGHT || 720),
+        width: Number(process.env.MIDSCENE_VIEWPORT_WIDTH || 1920),
+        height: Number(process.env.MIDSCENE_VIEWPORT_HEIGHT || 1080),
       },
       deviceScaleFactor: 1,
     });
@@ -214,16 +218,35 @@ async function run() {
       const expected = phase.expected || '';
       const startedAt = Date.now();
       try {
-        const instruction = buildPhaseInstruction(phaseIndex, steps, expected);
-        if (instruction) {
-          log(`phase ${phaseIndex + 1}, act: ${instruction}`);
-          await agent.aiAct(instruction);
-          actions.push({
-            phase_index: phaseIndex,
-            step_index: 0,
-            instruction,
-            status: 'done',
-          });
+        const segments = splitPhaseSteps(steps);
+        for (const [segmentIndex, segment] of segments.entries()) {
+          if (segment.kind === 'sleep') {
+            log(`phase ${phaseIndex + 1}, sleep: ${segment.duration_ms}ms, ${segment.instruction}`);
+            await sleep(segment.duration_ms);
+            actions.push({
+              phase_index: phaseIndex,
+              step_index: segment.step_index,
+              instruction: segment.instruction,
+              status: 'done',
+              result: `等待完成 ${segment.duration_ms}ms`,
+              duration_ms: segment.duration_ms,
+            });
+            continue;
+          }
+
+          const instruction = buildSegmentInstruction(phaseIndex, segmentIndex, segment.steps, expected);
+          if (instruction) {
+            log(`phase ${phaseIndex + 1}, act: ${instruction}`);
+            const actStartedAt = Date.now();
+            await agent.aiAct(instruction);
+            actions.push({
+              phase_index: phaseIndex,
+              step_index: segment.step_index,
+              instruction,
+              status: 'done',
+              duration_ms: Date.now() - actStartedAt,
+            });
+          }
         }
         if (expected) {
           const assertInstruction = buildAssertInstruction(expected, page.url());
@@ -274,11 +297,111 @@ async function run() {
 }
 
 function buildPhaseInstruction(phaseIndex, steps, expected) {
+  return buildSegmentInstruction(phaseIndex, 0, steps, expected);
+}
+
+function buildSegmentInstruction(phaseIndex, segmentIndex, steps, expected) {
   const normalizedSteps = (steps || []).map((step) => String(step || '').trim()).filter(Boolean);
   if (normalizedSteps.length === 0) return '';
   const lines = normalizedSteps.map((step, index) => `${index + 1}. ${step}`);
   const expectedLine = expected ? `\n阶段目标: ${expected}` : '';
-  return `执行阶段 ${phaseIndex + 1}:\n${lines.join('\n')}${expectedLine}`;
+  const title = segmentIndex === 0 ? `执行阶段 ${phaseIndex + 1}` : `继续执行阶段 ${phaseIndex + 1}`;
+  return `${title}:\n${lines.join('\n')}${expectedLine}`;
+}
+
+function splitPhaseSteps(steps) {
+  const segments = [];
+  let pending = [];
+  let pendingStart = 0;
+
+  function flushPending() {
+    if (pending.length === 0) return;
+    segments.push({ kind: 'aiAct', steps: pending, step_index: pendingStart });
+    pending = [];
+  }
+
+  for (const [index, rawStep] of (steps || []).entries()) {
+    const step = String(rawStep || '').trim();
+    if (!step) continue;
+
+    const wait = parseWaitStep(step);
+    if (wait) {
+      flushPending();
+      segments.push({
+        kind: 'sleep',
+        instruction: step,
+        duration_ms: wait.duration_ms,
+        step_index: index,
+      });
+      continue;
+    }
+
+    if (pending.length === 0) pendingStart = index;
+    pending.push(step);
+  }
+
+  flushPending();
+  return segments;
+}
+
+function parseWaitStep(step) {
+  const text = String(step || '').trim();
+  if (!/(等待|观察|停留|暂停|wait|sleep|observe)/i.test(text)) return null;
+
+  const match = text.match(/([0-9]+(?:\.[0-9]+)?|[零一二两三四五六七八九十百]+)\s*(毫秒|ms|秒钟|秒|s|分钟|分|mins?|minutes?|小时|钟头|hours?|hrs?|h)/i);
+  if (!match) return null;
+
+  const value = parseDurationNumber(match[1]);
+  if (!Number.isFinite(value) || value <= 0) return null;
+
+  const unit = match[2].toLowerCase();
+  let multiplier = 1000;
+  if (unit === '毫秒' || unit === 'ms') multiplier = 1;
+  else if (unit === '分钟' || unit === '分' || unit.startsWith('min')) multiplier = 60 * 1000;
+  else if (unit === '小时' || unit === '钟头' || unit.startsWith('hour') || unit === 'hrs' || unit === 'hr' || unit === 'h') {
+    multiplier = 60 * 60 * 1000;
+  }
+
+  return { duration_ms: Math.round(value * multiplier) };
+}
+
+function parseDurationNumber(raw) {
+  const text = String(raw || '').trim();
+  const numeric = Number(text);
+  if (Number.isFinite(numeric)) return numeric;
+  return parseChineseNumber(text);
+}
+
+function parseChineseNumber(text) {
+  const digits = { 零: 0, 一: 1, 二: 2, 两: 2, 三: 3, 四: 4, 五: 5, 六: 6, 七: 7, 八: 8, 九: 9 };
+  if (!text) return NaN;
+  if (Object.prototype.hasOwnProperty.call(digits, text)) return digits[text];
+  if (text === '十') return 10;
+
+  const hundredIndex = text.indexOf('百');
+  if (hundredIndex >= 0) {
+    const head = text.slice(0, hundredIndex);
+    const tail = text.slice(hundredIndex + 1);
+    const hundreds = head ? parseChineseNumber(head) : 1;
+    const rest = tail ? parseChineseNumber(tail) : 0;
+    return hundreds * 100 + rest;
+  }
+
+  const tenIndex = text.indexOf('十');
+  if (tenIndex >= 0) {
+    const head = text.slice(0, tenIndex);
+    const tail = text.slice(tenIndex + 1);
+    const tens = head ? parseChineseNumber(head) : 1;
+    const ones = tail ? parseChineseNumber(tail) : 0;
+    return tens * 10 + ones;
+  }
+
+  let value = 0;
+  for (const char of text) {
+    if (!Object.prototype.hasOwnProperty.call(digits, char)) return NaN;
+    value = value * 10 + digits[char];
+  }
+  return value;
 }
 
 function buildAssertInstruction(expected, currentUrl) {
@@ -289,18 +412,27 @@ function buildAssertInstruction(expected, currentUrl) {
   ].join('\n');
 }
 
-run()
-  .then((result) => {
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-  })
-  .catch((error) => {
-    const result = {
-      passed: false,
-      stop_reason: 'runner_exception',
-      phase_results: [],
-      actions: [],
-      artifacts: {},
-      error: error && error.stack ? error.stack : String(error),
-    };
-    process.stdout.write(`${JSON.stringify(result)}\n`);
-  });
+if (require.main === module) {
+  run()
+    .then((result) => {
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    })
+    .catch((error) => {
+      const result = {
+        passed: false,
+        stop_reason: 'runner_exception',
+        phase_results: [],
+        actions: [],
+        artifacts: {},
+        error: error && error.stack ? error.stack : String(error),
+      };
+      process.stdout.write(`${JSON.stringify(result)}\n`);
+    });
+}
+
+module.exports = {
+  buildPhaseInstruction,
+  buildSegmentInstruction,
+  parseWaitStep,
+  splitPhaseSteps,
+};
