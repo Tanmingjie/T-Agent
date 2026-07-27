@@ -54,6 +54,19 @@ def test_midscene_runner_reports_missing_model_config_clearly():
     assert "MIDSCENE_MODEL_FAMILY" in data["error"]
 
 
+def test_midscene_runner_uses_conservative_wait_after_action_default():
+    out = _node_eval("""
+        const { resolveWaitAfterActionMs } = require('./scripts/midscene_runner.js');
+        console.log(JSON.stringify([
+          resolveWaitAfterActionMs({}),
+          resolveWaitAfterActionMs({ MIDSCENE_WAIT_AFTER_ACTION_MS: '3500' }),
+          resolveWaitAfterActionMs({ MIDSCENE_WAIT_AFTER_ACTION_MS: 'invalid' })
+        ]));
+        """)
+
+    assert json.loads(out) == [2000, 3500, 2000]
+
+
 def test_midscene_runner_splits_wait_steps_without_splitting_normal_steps():
     out = _node_eval("""
         const { splitPhaseSteps } = require('./scripts/midscene_runner.js');
@@ -77,15 +90,17 @@ def test_midscene_runner_splits_wait_steps_without_splitting_normal_steps():
     assert segments[4]["steps"] == ["查看结果"]
 
 
-def test_midscene_runner_keeps_wait_without_duration_inside_ai_act():
+def test_midscene_runner_turns_condition_wait_without_duration_into_ai_wait_for():
     out = _node_eval("""
         const { splitPhaseSteps } = require('./scripts/midscene_runner.js');
         console.log(JSON.stringify(splitPhaseSteps(['点击刷新', '等待页面刷新完成', '查看结果'])));
         """)
 
     segments = json.loads(out)
-    assert [s["kind"] for s in segments] == ["aiAct"]
-    assert segments[0]["steps"] == ["点击刷新", "等待页面刷新完成", "查看结果"]
+    assert [s["kind"] for s in segments] == ["aiAct", "aiWaitFor", "aiAct"]
+    assert segments[0]["steps"] == ["点击刷新"]
+    assert segments[1]["condition"] == "等待页面刷新完成"
+    assert segments[2]["steps"] == ["查看结果"]
 
 
 def test_midscene_runner_parses_chinese_wait_duration():
@@ -104,3 +119,47 @@ def test_midscene_runner_parses_chinese_wait_duration():
         {"duration_ms": 120000},
         {"duration_ms": 100},
     ]
+
+
+def test_midscene_runner_splits_conditional_wait_to_ai_wait_for():
+    out = _node_eval("""
+        const { splitPhaseSteps } = require('./scripts/midscene_runner.js');
+        const segments = splitPhaseSteps([
+          '点击开始按钮',
+          '观察液位值,等到液位低于30后点击停止按钮',
+          '查看停止结果'
+        ]);
+        console.log(JSON.stringify(segments));
+        """)
+
+    segments = json.loads(out)
+    assert [s["kind"] for s in segments] == ["aiAct", "aiWaitFor", "aiAct", "aiAct"]
+    assert segments[0]["steps"] == ["点击开始按钮"]
+    assert segments[1]["condition"] == "观察液位值,等到液位低于30"
+    assert segments[2]["steps"] == ["点击停止按钮"]
+    assert segments[3]["steps"] == ["查看停止结果"]
+
+
+def test_midscene_runner_keeps_fixed_duration_wait_as_sleep_before_conditional_wait():
+    out = _node_eval("""
+        const { splitPhaseSteps } = require('./scripts/midscene_runner.js');
+        console.log(JSON.stringify(splitPhaseSteps([
+          '等待30秒',
+          '直到状态变为已完成'
+        ])));
+        """)
+
+    segments = json.loads(out)
+    assert [s["kind"] for s in segments] == ["sleep", "aiWaitFor"]
+    assert segments[0]["duration_ms"] == 30000
+    assert segments[1]["condition"] == "直到状态变为已完成"
+
+
+def test_midscene_runner_parses_conditional_wait_step_without_followup():
+    out = _node_eval("""
+        const { parseConditionalWaitStep } = require('./scripts/midscene_runner.js');
+        console.log(JSON.stringify(parseConditionalWaitStep('等待列表状态变为已完成')));
+        """)
+
+    parsed = json.loads(out)
+    assert parsed == {"condition": "等待列表状态变为已完成", "followup": ""}

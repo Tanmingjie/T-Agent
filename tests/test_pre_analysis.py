@@ -81,6 +81,8 @@ def test_system_prompt_requires_idempotent_toggle_and_explicit_wait_steps():
     assert "不要再次点击" in system
     assert "等待/观察" in system
     assert "确定性 sleep" in system
+    assert "aiWaitFor" in system
+    assert "条件等待/轮询观察" in system
 
 
 # ── 响应解析 ──────────────────────────────────────────────────

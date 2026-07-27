@@ -124,6 +124,20 @@ MIDSCENE_VIEWPORT_HEIGHT=1080
 拖动画布,使右侧阀门区域进入可视范围
 ```
 
+### 等待与观察
+
+T-Agent 会区分两类等待:
+
+- 固定时长等待: `等待3分钟`、`观察30秒` 会转成确定性 sleep。
+- 条件等待/轮询观察: `等到液位低于30后点击停止`、`直到状态变为已完成` 会调用 Midscene 原生 `aiWaitFor`。
+
+条件等待默认最多等 300 秒,每 30 秒检查一次。可在 `.env` 中调整:
+
+```dotenv
+MIDSCENE_AI_WAIT_FOR_TIMEOUT_SECONDS=300
+MIDSCENE_AI_WAIT_FOR_CHECK_INTERVAL_MS=30000
+```
+
 ## 启动
 
 ```bash

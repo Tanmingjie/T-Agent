@@ -131,6 +131,11 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function resolveWaitAfterActionMs(env = process.env) {
+  const configured = Number(env.MIDSCENE_WAIT_AFTER_ACTION_MS || 2000);
+  return Number.isFinite(configured) && configured >= 0 ? configured : 2000;
+}
+
 async function run() {
   loadDotEnv(path.join(repoRoot, '.env'));
   loadDotEnv(path.join(repoRoot, '.midscene-poc', '.env'));
@@ -201,7 +206,9 @@ async function run() {
       reportFileName,
       generateReport: process.env.MIDSCENE_GENERATE_REPORT !== '0',
       autoPrintReportMsg: false,
-      waitAfterAction: Number(process.env.MIDSCENE_WAIT_AFTER_ACTION_MS || 500),
+      // Delay the next snapshot/replan until asynchronous UI state has had time to settle.
+      // This is especially important for toggles: replanning from stale state can click twice.
+      waitAfterAction: resolveWaitAfterActionMs(),
       waitForNetworkIdleTimeout: Number(process.env.MIDSCENE_NETWORK_IDLE_TIMEOUT_MS || 1000),
       waitForNavigationTimeout: Number(process.env.MIDSCENE_NAVIGATION_TIMEOUT_MS || 3000),
       aiActContext:
@@ -230,6 +237,29 @@ async function run() {
               status: 'done',
               result: `等待完成 ${segment.duration_ms}ms`,
               duration_ms: segment.duration_ms,
+            });
+            continue;
+          }
+
+          if (segment.kind === 'aiWaitFor') {
+            const timeoutMs = Number(
+              process.env.MIDSCENE_AI_WAIT_FOR_TIMEOUT_SECONDS || 300,
+            ) * 1000;
+            const checkIntervalMs = Number(
+              process.env.MIDSCENE_AI_WAIT_FOR_CHECK_INTERVAL_MS || 30000,
+            );
+            log(
+              `phase ${phaseIndex + 1}, waitFor: ${segment.condition}, timeout=${timeoutMs}ms, interval=${checkIntervalMs}ms`,
+            );
+            const waitStartedAt = Date.now();
+            await agent.aiWaitFor(segment.condition, { timeoutMs, checkIntervalMs });
+            actions.push({
+              phase_index: phaseIndex,
+              step_index: segment.step_index,
+              instruction: segment.instruction,
+              status: 'done',
+              result: `条件已满足: ${segment.condition}`,
+              duration_ms: Date.now() - waitStartedAt,
             });
             continue;
           }
@@ -336,6 +366,25 @@ function splitPhaseSteps(steps) {
       continue;
     }
 
+    const conditionalWait = parseConditionalWaitStep(step);
+    if (conditionalWait) {
+      flushPending();
+      segments.push({
+        kind: 'aiWaitFor',
+        instruction: step,
+        condition: conditionalWait.condition,
+        step_index: index,
+      });
+      if (conditionalWait.followup) {
+        segments.push({
+          kind: 'aiAct',
+          steps: [conditionalWait.followup],
+          step_index: index,
+        });
+      }
+      continue;
+    }
+
     if (pending.length === 0) pendingStart = index;
     pending.push(step);
   }
@@ -363,6 +412,52 @@ function parseWaitStep(step) {
   }
 
   return { duration_ms: Math.round(value * multiplier) };
+}
+
+function parseConditionalWaitStep(step) {
+  const text = String(step || '').trim();
+  if (!/(等到|直到|等待|观察|wait until|wait for|observe until)/i.test(text)) return null;
+  if (
+    !/(变为|变成|变至|下降到|降到|低于|小于|高于|大于|达到|到达|出现|消失|完成|成功|失败|满足|低于|below|less than|greater than|above|becomes?|turns? into|appears?|disappears?|complete|succeed|fail)/i.test(
+      text,
+    )
+  ) {
+    return null;
+  }
+
+  const split = splitConditionalWaitAndFollowup(text);
+  return {
+    condition: normalizeWaitCondition(split.condition),
+    followup: split.followup,
+  };
+}
+
+function splitConditionalWaitAndFollowup(text) {
+  const match = text.match(/^(.*?(?:等到|直到|等待|观察).+?(?:时|后|的时候|以后|之后))[，,、;；\s]*(.+)$/);
+  if (!match) return { condition: text, followup: '' };
+
+  const followup = stripFollowupPrefix(match[2]);
+  if (!looksLikeAction(followup)) return { condition: text, followup: '' };
+  return { condition: match[1], followup };
+}
+
+function normalizeWaitCondition(text) {
+  return String(text || '')
+    .replace(/[，,、;；\s]*(然后|再|并且)?\s*$/g, '')
+    .replace(/(时|后|的时候|以后|之后)$/g, '')
+    .trim();
+}
+
+function stripFollowupPrefix(text) {
+  return String(text || '')
+    .replace(/^(然后|再|并且|则|就)\s*/g, '')
+    .trim();
+}
+
+function looksLikeAction(text) {
+  return /(点击|单击|双击|输入|填写|选择|打开|关闭|提交|保存|确认|取消|切换|拖动|滚动|click|tap|input|type|select|open|close|submit|save|confirm|cancel|drag|scroll)/i.test(
+    text,
+  );
 }
 
 function parseDurationNumber(raw) {
@@ -433,6 +528,8 @@ if (require.main === module) {
 module.exports = {
   buildPhaseInstruction,
   buildSegmentInstruction,
+  parseConditionalWaitStep,
   parseWaitStep,
+  resolveWaitAfterActionMs,
   splitPhaseSteps,
 };
