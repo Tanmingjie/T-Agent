@@ -80,6 +80,28 @@ async def test_midscene_agent_maps_visual_result_to_execution_record():
 
 
 @pytest.mark.asyncio
+async def test_midscene_agent_uses_human_approved_spec_without_translation():
+    approved = _spec()
+    visual = _FakeVisualExecutor(VisualExecutionResult(passed=True, stop_reason="completed"))
+
+    class _FailingGenerator:
+        async def generate(self, *args, **kwargs):
+            raise AssertionError("人工确认后不应再次翻译")
+
+    agent = MidsceneCaseAgent(
+        llm=_NoopLLM(),
+        visual_executor=visual,
+        spec_generator=_FailingGenerator(),
+        approved_specs={"tc1": approved},
+    )
+
+    record = await agent.run(_case(), run_id="run1")
+
+    assert record.spec == approved
+    assert visual.calls[0][2] == 2
+
+
+@pytest.mark.asyncio
 async def test_midscene_agent_fills_missing_phase_as_fail():
     visual = _FakeVisualExecutor(
         VisualExecutionResult(

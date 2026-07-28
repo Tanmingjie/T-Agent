@@ -117,6 +117,55 @@ async def test_run_embedded_no_skill_names_defaults_empty(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_spec_preview_translates_without_creating_run(client, monkeypatch):
+    from harness.llm import LLMResponse
+
+    class _LLM:
+        async def chat(self, messages, **kwargs):
+            return LLMResponse(
+                content=(
+                    '{"intent":"检查页面","preconditions":[],"phases":['
+                    '{"steps":["打开页面"],"expected":"页面显示 Ready"}]}'
+                )
+            )
+
+    monkeypatch.setattr("harness.llm.build_llm_client", lambda config: _LLM())
+
+    r = await client.post("/api/suites/sx/spec-preview", json={"case_id": "t1"})
+
+    assert r.status_code == 200
+    assert r.json()["specs"][0]["phases"][0]["expected"] == "页面显示 Ready"
+    import api.server as srv
+
+    assert await srv._repo.list_runs_by_suite("sx") == []
+
+
+@pytest.mark.asyncio
+async def test_run_persists_human_approved_specs(client, monkeypatch):
+    monkeypatch.setenv("RUN_MODE", "queue")
+    spec = {
+        "case_id": "t1",
+        "name": "C1",
+        "base_url": "https://x.com",
+        "intent": "人工修改后的意图",
+        "preconditions": [],
+        "phases": [{"steps": ["打开页面"], "expected": "人工确认的预期"}],
+    }
+
+    r = await client.post(
+        "/api/suites/sx/run?case_id=t1",
+        json={"approved_specs": {"t1": spec}},
+    )
+
+    assert r.status_code == 200
+    import api.server as srv
+
+    events = await srv._store.list_run_events(r.json()["run_id"])
+    approved = next(event for event in events if event.event_type == "specs_approved")
+    assert approved.data["specs"]["t1"]["phases"][0]["expected"] == "人工确认的预期"
+
+
+@pytest.mark.asyncio
 async def test_stream_queue_mode_uses_repo_get_run(client):
     """queue 模式 SSE(run 不在内存 _sse_queues)走 repo.get_run,不再 AttributeError。
 

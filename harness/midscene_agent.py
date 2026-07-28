@@ -26,6 +26,7 @@ class MidsceneCaseAgent:
         llm: LLMClient,
         visual_executor: VisualExecutor | None = None,
         translation_knowledge: str = "",
+        approved_specs: dict[str, TestSpec] | None = None,
         spec_generator: SpecGenerator | None = None,
         hooks: HookManager | None = None,
         step_callback: Callable[[str, dict], Coroutine] | None = None,
@@ -33,6 +34,7 @@ class MidsceneCaseAgent:
         self.llm = llm
         self.visual_executor = visual_executor or VisualExecutor()
         self.translation_knowledge = translation_knowledge
+        self.approved_specs = approved_specs or {}
         self.spec_generator = spec_generator or SpecGenerator(llm)
         self.hooks = hooks
         self.step_callback = step_callback
@@ -77,6 +79,8 @@ class MidsceneCaseAgent:
         await emit(
             "phase", {"case_id": case.id, "phase": "spec", "label": "翻译用例为执行规格 (TestSpec)"}
         )
+        if spec is None:
+            spec = self.approved_specs.get(case.id)
         if spec is None:
             spec = await self.generate_spec(case)
         recorder.set_spec(spec)

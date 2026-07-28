@@ -16,11 +16,12 @@ import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from api.auth import require_suite_access
 from api.execution_worker import spawn_run
 from api.repository import get_suite_settings, set_suite_settings
+from input.models import TestSpec
 
 router = APIRouter(tags=["execution"])
 
@@ -56,7 +57,62 @@ logger = logging.getLogger(__name__)
 
 class RunOptions(BaseModel):
     # 本次执行强制加载的项目 skill 名(一次性,随本次 run;空=全走渐进披露)。
-    skill_names: list[str] = []
+    skill_names: list[str] = Field(default_factory=list)
+    # 人工审核后的规格。空表示沿用执行期即时翻译。
+    approved_specs: dict[str, TestSpec] = Field(default_factory=dict)
+
+
+class SpecPreviewOptions(BaseModel):
+    case_id: str | None = None
+    skill_names: list[str] = Field(default_factory=list)
+
+
+async def _translation_context(store, suite, skill_names: list[str]) -> tuple[object, str]:
+    llm_config = await store.get_llm_config(suite.project_id) if suite.project_id else None
+    knowledge = ""
+    if suite.project_id:
+        project = await store.get_project(suite.project_id)
+        if project is not None:
+            knowledge = project.translation_knowledge or ""
+        selected = {name for name in skill_names if name}
+        for skill in await store.list_skills(suite.project_id):
+            if skill.name in selected and skill.content.strip():
+                knowledge += (
+                    f"\n\n[执行 Skill:{skill.name}]\n"
+                    f"{(skill.description or '').strip()}\n{skill.content.strip()}"
+                )
+    return llm_config, knowledge
+
+
+@router.post("/suites/{suite_id}/spec-preview", dependencies=_suite_guard)
+async def preview_specs(
+    suite_id: str,
+    options: SpecPreviewOptions,
+    repo=Depends(get_repo),
+    store=Depends(get_store),
+):
+    """执行前翻译预览。只生成 TestSpec，不创建 run、不启动 Midscene。"""
+    from harness.llm import build_llm_client
+    from intelligence.pre_analysis import SpecGenerator
+
+    suite = await repo.get_suite(suite_id)
+    if suite is None:
+        raise HTTPException(404, "Suite not found")
+    cases = await repo.list_by_suite(suite_id)
+    if options.case_id is not None:
+        cases = [case for case in cases if case.id == options.case_id]
+        if not cases:
+            raise HTTPException(404, f"用例 {options.case_id} 不存在于该套件")
+    if not cases:
+        raise HTTPException(400, "Suite 没有用例，请先上传 Excel")
+
+    llm_config, knowledge = await _translation_context(store, suite, options.skill_names)
+    generator = SpecGenerator(build_llm_client(llm_config))
+    specs = []
+    for case in cases:
+        spec = await generator.generate(case, knowledge=knowledge)
+        specs.append(spec.model_dump(mode="json"))
+    return {"specs": specs}
 
 
 @router.post("/suites/{suite_id}/run", dependencies=_suite_guard)
@@ -72,6 +128,7 @@ async def trigger_run(
     ``options.skill_names``:执行前勾选的项目 skill → 本次强制加载(详见 execute_run)。
     """
     skill_names = options.skill_names if options is not None else []
+    approved_specs = options.approved_specs if options is not None else {}
     suite = await repo.get_suite(suite_id)
     if suite is None:
         raise HTTPException(404, "Suite not found")
@@ -83,6 +140,13 @@ async def trigger_run(
         cases = [c for c in cases if c.id == case_id]
         if not cases:
             raise HTTPException(404, f"用例 {case_id} 不存在于该套件")
+
+    target_ids = {case.id for case in cases}
+    if set(approved_specs) - target_ids:
+        raise HTTPException(400, "人工确认规格包含非本次执行用例")
+    for approved_case_id, spec in approved_specs.items():
+        if spec.case_id != approved_case_id:
+            raise HTTPException(400, f"人工确认规格 case_id 不匹配: {approved_case_id}")
 
     # Check if already running。注意:_sse_queues 是内存态,进程重启后必为空,
     # 故 DB 里仍为 running 但不在队列中的 run 是上次崩溃/重启遗留的僵尸 → 自动收尾,
@@ -96,6 +160,17 @@ async def trigger_run(
 
     run_id = uuid.uuid4().hex[:12]
     await repo.create_run(run_id, suite_id, len(cases), suite.project_id, suite.version_id)
+    if approved_specs:
+        await store.append_run_event(
+            run_id,
+            "specs_approved",
+            {
+                "specs": {
+                    case_key: spec.model_dump(mode="json")
+                    for case_key, spec in approved_specs.items()
+                }
+            },
+        )
     await store.append_audit(
         "system", "run.trigger", project_id=suite.project_id, target=suite_id, detail=run_id
     )

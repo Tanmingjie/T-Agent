@@ -18,6 +18,9 @@ import {
 import Drawer from "../components/Drawer";
 import CaseDrawerBody from "../components/CaseDrawerBody";
 import PermissionDialog from "../components/PermissionDialog";
+import SpecReviewDialog, {
+  EditableTestSpec,
+} from "../components/SpecReviewDialog";
 import { CaseRunStatus } from "../hooks/useSuiteRun";
 
 interface Case {
@@ -122,6 +125,10 @@ export default function SuiteCasesPage() {
   // 执行确认弹框:点「执行」后弹出,选 skill 再确认开始。记录本次要跑的目标
   // (caseId 给定=单用例,否则整套件)。null=未打开。
   const [runModal, setRunModal] = useState<{ caseId?: string } | null>(null);
+  const [manualSpecReview, setManualSpecReview] = useState(false);
+  const [previewing, setPreviewing] = useState(false);
+  const [reviewTarget, setReviewTarget] = useState<{ caseId?: string } | null>(null);
+  const [reviewSpecs, setReviewSpecs] = useState<EditableTestSpec[] | null>(null);
 
   // 执行状态来自布局层的 RunProvider(切 tab 不丢失;高频更新只重渲染本页消费者,
   // 不带动侧栏/面包屑)。不再由本页持有 SSE。
@@ -217,15 +224,43 @@ export default function SuiteCasesPage() {
   }
 
   // 弹框「开始执行」确认:按选中的目标 + 勾选的 skill 触发。
-  function confirmRun() {
+  async function confirmRun() {
     const target = runModal;
-    setRunModal(null);
     if (!target) return;
+    if (manualSpecReview) {
+      setPreviewing(true);
+      try {
+        const result = await apiPost<{ specs: EditableTestSpec[] }>(
+          `/suites/${id}/spec-preview`,
+          { case_id: target.caseId ?? null, skill_names: forceSkills },
+          300_000,
+        );
+        setReviewTarget(target);
+        setReviewSpecs(result.specs);
+        setRunModal(null);
+      } catch (error) {
+        alert("翻译预览失败: " + (error instanceof Error ? error.message : String(error)));
+      } finally {
+        setPreviewing(false);
+      }
+      return;
+    }
+    setRunModal(null);
+    executeTarget(target);
+  }
+
+  function executeTarget(
+    target: { caseId?: string },
+    approvedSpecs?: EditableTestSpec[],
+  ) {
+    const approved = Object.fromEntries(
+      (approvedSpecs ?? []).map((spec) => [spec.case_id, spec]),
+    );
     if (target.caseId) {
-      run.start([target.caseId], target.caseId, forceSkills);
+      run.start([target.caseId], target.caseId, forceSkills, approved);
     } else {
       setSelected(null);
-      run.start(cases.map((c) => c.id), undefined, forceSkills);
+      run.start(cases.map((c) => c.id), undefined, forceSkills, approved);
     }
   }
 
@@ -468,6 +503,32 @@ export default function SuiteCasesPage() {
               </div>
 
               <div>
+                <div className="flex items-center justify-between gap-4 px-3 py-3 rounded-md border border-gray-200">
+                  <div>
+                    <div className="text-sm font-medium text-surface-900">人工确认执行规格</div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      执行前审核并修改翻译生成的阶段步骤与预期。
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={manualSpecReview}
+                    onClick={() => setManualSpecReview((value) => !value)}
+                    className={`relative w-10 h-6 shrink-0 rounded-full transition-colors ${
+                      manualSpecReview ? "bg-brand-600" : "bg-gray-300"
+                    }`}
+                  >
+                    <span
+                      className={`absolute left-0 top-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${
+                        manualSpecReview ? "translate-x-5" : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              <div>
                 <div className="text-xs font-medium text-gray-500 px-1 mb-2">
                   强制加载 Skill
                 </div>
@@ -530,15 +591,40 @@ export default function SuiteCasesPage() {
                 </button>
                 <button
                   onClick={confirmRun}
-                  className="inline-flex items-center gap-1.5 bg-brand-600 text-white px-3.5 py-2 rounded-md text-sm font-medium hover:bg-brand-700 transition-colors"
+                  disabled={previewing}
+                  className="inline-flex items-center gap-1.5 bg-brand-600 text-white px-3.5 py-2 rounded-md text-sm font-medium hover:bg-brand-700 transition-colors disabled:bg-brand-300"
                 >
-                  <Play size={15} />
-                  开始执行
+                  {previewing ? (
+                    <Loader2 size={15} className="animate-spin" />
+                  ) : (
+                    <Play size={15} />
+                  )}
+                  {previewing
+                    ? "正在翻译"
+                    : manualSpecReview
+                      ? "翻译并审核"
+                      : "开始执行"}
                 </button>
               </div>
             </div>
           </div>
         </div>
+      )}
+
+      {reviewSpecs && reviewTarget && (
+        <SpecReviewDialog
+          specs={reviewSpecs}
+          onCancel={() => {
+            setReviewSpecs(null);
+            setRunModal(reviewTarget);
+          }}
+          onConfirm={(specs) => {
+            const target = reviewTarget;
+            setReviewSpecs(null);
+            setReviewTarget(null);
+            executeTarget(target, specs);
+          }}
+        />
       )}
     </div>
   );

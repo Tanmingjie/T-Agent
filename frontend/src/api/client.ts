@@ -4,9 +4,13 @@ import { authHeaders } from "../lib/session";
 const BASE = "/api";
 const TIMEOUT_MS = 30000;
 
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+async function request<T>(
+  path: string,
+  init?: RequestInit,
+  timeoutMs = TIMEOUT_MS,
+): Promise<T> {
   const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
+  const timeout = setTimeout(() => controller.abort(), timeoutMs);
   // 调用方传入的 signal(用于取消被取代的请求)→ 触发内部 controller.abort,
   // 让被取代的 /result、/code 立刻释放连接,避免在 HTTP/1.1 连接池上堆积。
   if (init?.signal) {
@@ -39,13 +43,14 @@ export async function apiGet<T = unknown>(
 export async function apiPost<T = unknown>(
   path: string,
   body?: unknown,
+  timeoutMs?: number,
 ): Promise<T> {
   return request<T>(path, {
     method: "POST",
     headers:
       body instanceof FormData ? {} : { "Content-Type": "application/json" },
     body: body instanceof FormData ? body : JSON.stringify(body),
-  });
+  }, timeoutMs);
 }
 
 export async function apiPut<T = unknown>(

@@ -206,3 +206,58 @@ async def test_execute_run_uses_midscene_agent_with_selected_skill_context(tmp_p
     assert captured["agent_class"] == "MidsceneCaseAgent"
     assert "项目规范" in captured["knowledge"]
     assert "必须使用测试账号登录" in captured["knowledge"]
+
+
+@pytest.mark.asyncio
+async def test_execute_run_loads_human_approved_specs_from_run_event(tmp_path, monkeypatch):
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/approved.db"
+    store = Store(url=db_url)
+    await store.init()
+    repo = SQLModelRepository(store)
+    await repo.create(Suite(id="sx", name="SX", base_url="https://x.com"))
+    await repo.bulk_insert(
+        [TestCase(id="t1", name="C1", steps=["原始步骤"], base_url="https://x.com", suite_id="sx")]
+    )
+    run_id = "approved-run"
+    await repo.create_run(run_id, "sx", 1, None, None)
+    await store.append_run_event(
+        run_id,
+        "specs_approved",
+        {
+            "specs": {
+                "t1": {
+                    "case_id": "t1",
+                    "name": "C1",
+                    "base_url": "https://x.com",
+                    "intent": "人工意图",
+                    "preconditions": [],
+                    "phases": [{"steps": ["人工步骤"], "expected": "人工预期"}],
+                }
+            }
+        },
+    )
+
+    import harness.orchestrator as orch_mod
+
+    captured = {}
+
+    class _InspectingOrch:
+        def __init__(self, *, agent_factory):
+            self.agent_factory = agent_factory
+
+        async def run_suite(self, cases, **kwargs):
+            async with self.agent_factory() as agent:
+                captured["spec"] = agent.approved_specs["t1"]
+
+            class _R:
+                passed_count = 0
+                failed_count = 0
+
+            return _R()
+
+    monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
+
+    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx")
+
+    assert captured["spec"].phases[0].steps == ["人工步骤"]
+    assert captured["spec"].phases[0].expected == "人工预期"

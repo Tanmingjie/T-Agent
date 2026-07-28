@@ -47,7 +47,7 @@ async def execute_run(
     from harness.llm import build_llm_client
     from harness.midscene_agent import MidsceneCaseAgent
     from harness.orchestrator import Orchestrator
-    from input.models import ExecutionRecord
+    from input.models import ExecutionRecord, TestSpec
     from storage.db import Store
 
     store = Store(url=db_url)
@@ -82,6 +82,13 @@ async def execute_run(
         if case_id is not None:
             cases = [c for c in cases if c.id == case_id]
 
+        approved_specs = {}
+        for event in await store.list_run_events(run_id):
+            if event.event_type != "specs_approved":
+                continue
+            for approved_case_id, raw_spec in (event.data.get("specs") or {}).items():
+                approved_specs[approved_case_id] = TestSpec(**raw_spec)
+
         llm_config = await store.get_llm_config(suite.project_id) if suite.project_id else None
         settings_row = await get_suite_settings(store, suite_id)
         parallelism = int(settings_row.get("parallelism", 1))
@@ -111,6 +118,7 @@ async def execute_run(
                 llm=build_llm_client(llm_config),
                 hooks=None,
                 translation_knowledge=translation_knowledge,
+                approved_specs=approved_specs,
             )
             yield agent
 

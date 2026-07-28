@@ -66,6 +66,16 @@ for phase in phases:                      # 按序
 - Validator 复用既有 `AssertionEngine._check_llm_judge` 的证据接地裁判(偏-FAIL),
   内部以 `Assertion(type="llm_judge", target=expected, expected=expected)` 承载该阶段预期。
 
+## 执行前人工确认
+
+执行入口可选择是否人工确认 TestSpec：
+
+- 不介入：保持默认链路，在用例执行时即时翻译并继续执行。
+- 人工介入：先调用翻译预览，只生成 TestSpec、不创建 run；用户可编辑 `intent`、
+  `preconditions`、`phases.steps` 和 `phases.expected`，确认后再创建 run。
+- 人工确认后的 TestSpec 随 run 写入持久化 `run_event`，embedded / queue 执行核统一读取；
+  执行时直接使用确认版本，不再二次翻译。
+
 ## Mock 1:saucedemo TC101
 
 ```json
