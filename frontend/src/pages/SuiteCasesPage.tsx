@@ -236,7 +236,7 @@ export default function SuiteCasesPage() {
         const result = await apiPost<{ specs: EditableTestSpec[] }>(
           `/suites/${id}/spec-preview`,
           { case_id: target.caseId ?? null, skill_names: forceSkills },
-          300_000,
+          null,
           controller.signal,
         );
         setReviewTarget(target);
