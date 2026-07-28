@@ -44,9 +44,11 @@ export async function apiPost<T = unknown>(
   path: string,
   body?: unknown,
   timeoutMs?: number,
+  signal?: AbortSignal,
 ): Promise<T> {
   return request<T>(path, {
     method: "POST",
+    signal,
     headers:
       body instanceof FormData ? {} : { "Content-Type": "application/json" },
     body: body instanceof FormData ? body : JSON.stringify(body),

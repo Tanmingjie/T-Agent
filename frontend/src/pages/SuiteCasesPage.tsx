@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams } from "react-router-dom";
 import { apiGet, apiPost } from "../api/client";
 import { useSuiteRunCtx } from "../components/SuiteLayout";
@@ -127,6 +127,7 @@ export default function SuiteCasesPage() {
   const [runModal, setRunModal] = useState<{ caseId?: string } | null>(null);
   const [manualSpecReview, setManualSpecReview] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const previewAbortRef = useRef<AbortController | null>(null);
   const [reviewTarget, setReviewTarget] = useState<{ caseId?: string } | null>(null);
   const [reviewSpecs, setReviewSpecs] = useState<EditableTestSpec[] | null>(null);
 
@@ -228,20 +229,28 @@ export default function SuiteCasesPage() {
     const target = runModal;
     if (!target) return;
     if (manualSpecReview) {
+      const controller = new AbortController();
+      previewAbortRef.current = controller;
       setPreviewing(true);
       try {
         const result = await apiPost<{ specs: EditableTestSpec[] }>(
           `/suites/${id}/spec-preview`,
           { case_id: target.caseId ?? null, skill_names: forceSkills },
           300_000,
+          controller.signal,
         );
         setReviewTarget(target);
         setReviewSpecs(result.specs);
         setRunModal(null);
       } catch (error) {
-        alert("翻译预览失败: " + (error instanceof Error ? error.message : String(error)));
+        if (!controller.signal.aborted) {
+          alert("翻译预览失败: " + (error instanceof Error ? error.message : String(error)));
+        }
       } finally {
-        setPreviewing(false);
+        if (previewAbortRef.current === controller) {
+          previewAbortRef.current = null;
+          setPreviewing(false);
+        }
       }
       return;
     }
@@ -473,7 +482,9 @@ export default function SuiteCasesPage() {
       {runModal !== null && (
         <div
           className="fixed inset-0 z-[60] bg-black/30 flex items-center justify-center p-4"
-          onClick={() => setRunModal(null)}
+          onClick={() => {
+            if (!previewing) setRunModal(null);
+          }}
         >
           <div
             className="bg-white rounded-xl shadow-elevated w-full max-w-md max-h-[80vh] flex flex-col"
@@ -584,7 +595,10 @@ export default function SuiteCasesPage() {
               </span>
               <div className="flex gap-2">
                 <button
-                  onClick={() => setRunModal(null)}
+                  onClick={() => {
+                    previewAbortRef.current?.abort();
+                    setRunModal(null);
+                  }}
                   className="px-3.5 py-2 rounded-md text-sm font-medium border border-gray-300 text-gray-700 hover:bg-gray-50 transition-colors"
                 >
                   取消
