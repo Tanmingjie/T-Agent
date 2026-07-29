@@ -6,7 +6,7 @@
     "midscene:check": "node --check scripts/midscene_runner.js"
   },
   "dependencies": {
-    "@midscene/web": "^1.10.2",
+    "@midscene/web": "1.10.7",
     "@playwright/test": "1.61.1",
     "playwright": "1.61.1"
   }
