@@ -42,7 +42,7 @@
 |---|---|---|
 | `intent` | Actor(背景) + Validator(背景) | 整体目的。**不是 pass/fail 判据**,不喂硬门控 |
 | `preconditions[]` | Actor(背景) | 假设的初始状态。不执行、不核验 |
-| `phases[].steps[]` | **Actor(驱动)** | 这一步要达成什么。数据写在句子里("输入用户名 standard_user")。agent 看真实页面自己选工具/定位 |
+| `phases[].steps[]` | **Actor(驱动)** | 这一步要达成什么。数据写在句子里("输入用户名 standard_user")。agent 看真实页面自己选工具/定位；运行时按配置拆成多个 `aiAct` 顺序执行 |
 | `phases[].expected` | **Validator(裁决)** | 阶段边界核验依据。**绝不进 Actor 驱动循环** |
 
 - 步骤序号 = 数组位置(全局连续渲染 1,2,3…),不写进字符串。
@@ -53,7 +53,8 @@
 
 ```
 for phase in phases:                      # 按序
-    Actor 执行 phase.steps(ReAct,在真实页面接地)
+    Actor 顺序执行 phase.steps(默认每条 step 一次 aiAct,在真实页面接地)
+    # step 间不做断言；一次 aiAct 的 replanning 额度不会被整个长 phase 共享
     到阶段边界 → Validator(phase.expected, 当前真实页面快照 + 实时 URL):
         偏-FAIL + 强制引证页面证据 + 证据确定性核验(锚点接地)
         PASS → 记为该阶段裁决证据,进入下一阶段
@@ -62,6 +63,8 @@ for phase in phases:                      # 按序
 ```
 
 - Validator 解析失败 / 拿不到证据 → **fail-closed**(FAIL),绝不默认绿。
+- `phase.expected` 只在全部 steps 完成后交给 Validator,不进入任何 `aiAct` 指令；执行分段不新增
+  业务 phase,也不制造中间 expected。
 - 不取 agent 自报的 TEST_RESULT。
 - Validator 复用既有 `AssertionEngine._check_llm_judge` 的证据接地裁判(偏-FAIL),
   内部以 `Assertion(type="llm_judge", target=expected, expected=expected)` 承载该阶段预期。

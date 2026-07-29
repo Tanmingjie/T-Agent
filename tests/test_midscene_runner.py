@@ -67,7 +67,7 @@ def test_midscene_runner_uses_conservative_wait_after_action_default():
     assert json.loads(out) == [2000, 3500, 2000]
 
 
-def test_midscene_runner_splits_wait_steps_without_splitting_normal_steps():
+def test_midscene_runner_splits_normal_steps_into_individual_ai_acts():
     out = _node_eval("""
         const { splitPhaseSteps } = require('./scripts/midscene_runner.js');
         const segments = splitPhaseSteps([
@@ -82,12 +82,56 @@ def test_midscene_runner_splits_wait_steps_without_splitting_normal_steps():
         """)
 
     segments = json.loads(out)
-    assert [s["kind"] for s in segments] == ["aiAct", "sleep", "aiAct", "sleep", "aiAct"]
-    assert segments[0]["steps"] == ["输入用户名", "输入密码"]
-    assert segments[1]["duration_ms"] == 180000
-    assert segments[2]["steps"] == ["点击查询"]
-    assert segments[3]["duration_ms"] == 30000
-    assert segments[4]["steps"] == ["查看结果"]
+    assert [s["kind"] for s in segments] == [
+        "aiAct",
+        "aiAct",
+        "sleep",
+        "aiAct",
+        "sleep",
+        "aiAct",
+    ]
+    assert segments[0]["steps"] == ["输入用户名"]
+    assert segments[1]["steps"] == ["输入密码"]
+    assert segments[2]["duration_ms"] == 180000
+    assert segments[3]["steps"] == ["点击查询"]
+    assert segments[4]["duration_ms"] == 30000
+    assert segments[5]["steps"] == ["查看结果"]
+
+
+def test_midscene_runner_supports_configurable_ai_act_chunk_size():
+    out = _node_eval("""
+        const { splitPhaseSteps } = require('./scripts/midscene_runner.js');
+        console.log(JSON.stringify(splitPhaseSteps(['步骤1', '步骤2', '步骤3'], 2)));
+        """)
+
+    segments = json.loads(out)
+    assert [s["steps"] for s in segments] == [["步骤1", "步骤2"], ["步骤3"]]
+    assert [s["step_index"] for s in segments] == [0, 2]
+
+
+def test_midscene_runner_uses_one_step_per_ai_act_by_default():
+    out = _node_eval("""
+        const { resolveMaxStepsPerAct } = require('./scripts/midscene_runner.js');
+        console.log(JSON.stringify([
+          resolveMaxStepsPerAct({}),
+          resolveMaxStepsPerAct({ MIDSCENE_MAX_STEPS_PER_ACT: '3' }),
+          resolveMaxStepsPerAct({ MIDSCENE_MAX_STEPS_PER_ACT: '0' }),
+          resolveMaxStepsPerAct({ MIDSCENE_MAX_STEPS_PER_ACT: 'invalid' })
+        ]));
+        """)
+
+    assert json.loads(out) == [1, 3, 1, 1]
+
+
+def test_midscene_runner_does_not_feed_phase_expected_into_ai_act():
+    out = _node_eval("""
+        const { buildSegmentInstruction } = require('./scripts/midscene_runner.js');
+        console.log(buildSegmentInstruction(0, 0, ['输入用户名'], '最终应进入首页'));
+        """)
+
+    assert "输入用户名" in out
+    assert "最终应进入首页" not in out
+    assert "不要提前执行后续步骤" in out
 
 
 def test_midscene_runner_turns_condition_wait_without_duration_into_ai_wait_for():

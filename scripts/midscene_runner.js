@@ -136,6 +136,11 @@ function resolveWaitAfterActionMs(env = process.env) {
   return Number.isFinite(configured) && configured >= 0 ? configured : 2000;
 }
 
+function resolveMaxStepsPerAct(env = process.env) {
+  const configured = Number(env.MIDSCENE_MAX_STEPS_PER_ACT || 1);
+  return Number.isInteger(configured) && configured > 0 ? configured : 1;
+}
+
 async function run() {
   loadDotEnv(path.join(repoRoot, '.env'));
   loadDotEnv(path.join(repoRoot, '.midscene-poc', '.env'));
@@ -225,7 +230,7 @@ async function run() {
       const expected = phase.expected || '';
       const startedAt = Date.now();
       try {
-        const segments = splitPhaseSteps(steps);
+        const segments = splitPhaseSteps(steps, resolveMaxStepsPerAct());
         for (const [segmentIndex, segment] of segments.entries()) {
           if (segment.kind === 'sleep') {
             log(`phase ${phaseIndex + 1}, sleep: ${segment.duration_ms}ms, ${segment.instruction}`);
@@ -264,7 +269,7 @@ async function run() {
             continue;
           }
 
-          const instruction = buildSegmentInstruction(phaseIndex, segmentIndex, segment.steps, expected);
+          const instruction = buildSegmentInstruction(phaseIndex, segmentIndex, segment.steps);
           if (instruction) {
             log(`phase ${phaseIndex + 1}, act: ${instruction}`);
             const actStartedAt = Date.now();
@@ -326,27 +331,35 @@ async function run() {
   }
 }
 
-function buildPhaseInstruction(phaseIndex, steps, expected) {
-  return buildSegmentInstruction(phaseIndex, 0, steps, expected);
+function buildPhaseInstruction(phaseIndex, steps) {
+  return buildSegmentInstruction(phaseIndex, 0, steps);
 }
 
-function buildSegmentInstruction(phaseIndex, segmentIndex, steps, expected) {
+function buildSegmentInstruction(phaseIndex, segmentIndex, steps) {
   const normalizedSteps = (steps || []).map((step) => String(step || '').trim()).filter(Boolean);
   if (normalizedSteps.length === 0) return '';
   const lines = normalizedSteps.map((step, index) => `${index + 1}. ${step}`);
-  const expectedLine = expected ? `\n阶段目标: ${expected}` : '';
   const title = segmentIndex === 0 ? `执行阶段 ${phaseIndex + 1}` : `继续执行阶段 ${phaseIndex + 1}`;
-  return `${title}:\n${lines.join('\n')}${expectedLine}`;
+  return `${title}，只执行以下当前步骤，不要提前执行后续步骤:\n${lines.join('\n')}`;
 }
 
-function splitPhaseSteps(steps) {
+function splitPhaseSteps(steps, maxStepsPerAct = 1) {
   const segments = [];
   let pending = [];
-  let pendingStart = 0;
+  const chunkSize = Number.isInteger(Number(maxStepsPerAct)) && Number(maxStepsPerAct) > 0
+    ? Number(maxStepsPerAct)
+    : 1;
 
   function flushPending() {
     if (pending.length === 0) return;
-    segments.push({ kind: 'aiAct', steps: pending, step_index: pendingStart });
+    for (let offset = 0; offset < pending.length; offset += chunkSize) {
+      const chunk = pending.slice(offset, offset + chunkSize);
+      segments.push({
+        kind: 'aiAct',
+        steps: chunk.map((item) => item.step),
+        step_index: chunk[0].index,
+      });
+    }
     pending = [];
   }
 
@@ -385,8 +398,7 @@ function splitPhaseSteps(steps) {
       continue;
     }
 
-    if (pending.length === 0) pendingStart = index;
-    pending.push(step);
+    pending.push({ step, index });
   }
 
   flushPending();
@@ -530,6 +542,7 @@ module.exports = {
   buildSegmentInstruction,
   parseConditionalWaitStep,
   parseWaitStep,
+  resolveMaxStepsPerAct,
   resolveWaitAfterActionMs,
   splitPhaseSteps,
 };
