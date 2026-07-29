@@ -54,9 +54,12 @@ class VisualExecutor:
         artifact_root: str | Path | None = None,
     ) -> None:
         self.command = command or self._default_command()
-        self.timeout_seconds = timeout_seconds or float(
-            os.getenv("MIDSCENE_RUNNER_TIMEOUT_SECONDS", "300")
+        configured_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else float(os.getenv("MIDSCENE_RUNNER_TIMEOUT_SECONDS", "0") or "0")
         )
+        self.timeout_seconds = configured_timeout if configured_timeout > 0 else None
         self.artifact_root = Path(artifact_root or os.getenv("ARTIFACT_ROOT", "storage"))
 
     @staticmethod
@@ -198,9 +201,12 @@ class VisualExecutor:
         proc = await asyncio.create_subprocess_exec(*self.command, **kwargs)
         self._append_launch_log(launch_log, f"启动尝试 {attempt}: pid={proc.pid}。")
         try:
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(payload), timeout=self.timeout_seconds
-            )
+            if self.timeout_seconds is None:
+                stdout, stderr = await proc.communicate(payload)
+            else:
+                stdout, stderr = await asyncio.wait_for(
+                    proc.communicate(payload), timeout=self.timeout_seconds
+                )
         except asyncio.TimeoutError:
             await self._terminate_process(proc)
             raise

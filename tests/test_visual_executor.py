@@ -129,6 +129,26 @@ def test_visual_executor_explains_repeated_windows_dll_init_failure():
     assert "0xC0000142" in error
 
 
+def test_visual_executor_disables_runner_timeout_by_default(tmp_path, monkeypatch):
+    monkeypatch.delenv("MIDSCENE_RUNNER_TIMEOUT_SECONDS", raising=False)
+
+    ex = VisualExecutor(command=["node", "runner.js"], artifact_root=tmp_path)
+
+    assert ex.timeout_seconds is None
+
+
+def test_visual_executor_supports_optional_runner_timeout(tmp_path, monkeypatch):
+    monkeypatch.setenv("MIDSCENE_RUNNER_TIMEOUT_SECONDS", "900")
+
+    configured = VisualExecutor(command=["node", "runner.js"], artifact_root=tmp_path)
+    disabled = VisualExecutor(
+        command=["node", "runner.js"], timeout_seconds=0, artifact_root=tmp_path
+    )
+
+    assert configured.timeout_seconds == 900
+    assert disabled.timeout_seconds is None
+
+
 @pytest.mark.asyncio
 async def test_visual_executor_logs_failure_before_runner_can_write_stderr(tmp_path, monkeypatch):
     monkeypatch.setenv("MIDSCENE_ENABLED", "1")
