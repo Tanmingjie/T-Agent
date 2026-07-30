@@ -123,6 +123,45 @@ def test_midscene_runner_uses_one_step_per_ai_act_by_default():
     assert json.loads(out) == [1, 3, 1, 1]
 
 
+def test_midscene_runner_uses_fifteen_minute_ai_act_timeout_default():
+    out = _node_eval("""
+        const { resolveAiActTimeoutMs } = require('./scripts/midscene_runner.js');
+        console.log(JSON.stringify([
+          resolveAiActTimeoutMs({}),
+          resolveAiActTimeoutMs({ MIDSCENE_AI_ACT_TIMEOUT_SECONDS: '60' }),
+          resolveAiActTimeoutMs({ MIDSCENE_AI_ACT_TIMEOUT_SECONDS: '0' }),
+          resolveAiActTimeoutMs({ MIDSCENE_AI_ACT_TIMEOUT_SECONDS: 'invalid' })
+        ]));
+        """)
+
+    assert json.loads(out) == [900000, 60000, 0, 900000]
+
+
+def test_midscene_runner_aborts_ai_act_after_timeout():
+    out = _node_eval("""
+        const { runAiActWithTimeout } = require('./scripts/midscene_runner.js');
+        const agent = {
+          aiAct: (_instruction, options) => new Promise((_resolve, reject) => {
+            options.abortSignal.addEventListener(
+              'abort',
+              () => reject(options.abortSignal.reason),
+              { once: true }
+            );
+          })
+        };
+        runAiActWithTimeout(agent, '一直不完成的步骤', 10)
+          .then(() => console.log('unexpected-success'))
+          .catch((error) => console.log(JSON.stringify({
+            code: error.code,
+            message: error.message
+          })));
+        """)
+
+    error = json.loads(out)
+    assert error["code"] == "MIDSCENE_AI_ACT_TIMEOUT"
+    assert "0.01s" in error["message"]
+
+
 def test_midscene_runner_does_not_feed_phase_expected_into_ai_act():
     out = _node_eval("""
         const { buildSegmentInstruction } = require('./scripts/midscene_runner.js');

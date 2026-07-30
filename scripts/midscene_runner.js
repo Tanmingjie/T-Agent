@@ -141,6 +141,35 @@ function resolveMaxStepsPerAct(env = process.env) {
   return Number.isInteger(configured) && configured > 0 ? configured : 1;
 }
 
+function resolveAiActTimeoutMs(env = process.env) {
+  const raw = env.MIDSCENE_AI_ACT_TIMEOUT_SECONDS;
+  const configured = raw === undefined || raw === '' ? 900 : Number(raw);
+  return Number.isFinite(configured) && configured >= 0 ? configured * 1000 : 900 * 1000;
+}
+
+async function runAiActWithTimeout(agent, instruction, timeoutMs) {
+  if (!timeoutMs) return agent.aiAct(instruction);
+
+  const controller = new AbortController();
+  const timeoutSeconds = timeoutMs / 1000;
+  const timer = setTimeout(() => {
+    const reason = new Error(`Midscene aiAct 超时(${timeoutSeconds}s)`);
+    reason.code = 'MIDSCENE_AI_ACT_TIMEOUT';
+    controller.abort(reason);
+  }, timeoutMs);
+
+  try {
+    return await agent.aiAct(instruction, { abortSignal: controller.signal });
+  } catch (error) {
+    if (!controller.signal.aborted) throw error;
+    const timeoutError = new Error(`Midscene aiAct 超时(${timeoutSeconds}s)`, { cause: error });
+    timeoutError.code = 'MIDSCENE_AI_ACT_TIMEOUT';
+    throw timeoutError;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
 async function run() {
   loadDotEnv(path.join(repoRoot, '.env'));
   loadDotEnv(path.join(repoRoot, '.midscene-poc', '.env'));
@@ -273,7 +302,14 @@ async function run() {
           if (instruction) {
             log(`phase ${phaseIndex + 1}, act: ${instruction}`);
             const actStartedAt = Date.now();
-            await agent.aiAct(instruction);
+            try {
+              await runAiActWithTimeout(agent, instruction, resolveAiActTimeoutMs());
+            } catch (error) {
+              if (error && error.code === 'MIDSCENE_AI_ACT_TIMEOUT') {
+                error.message = `阶段 ${phaseIndex + 1} 步骤 ${segment.step_index + 1}: ${error.message}`;
+              }
+              throw error;
+            }
             actions.push({
               phase_index: phaseIndex,
               step_index: segment.step_index,
@@ -542,7 +578,9 @@ module.exports = {
   buildSegmentInstruction,
   parseConditionalWaitStep,
   parseWaitStep,
+  resolveAiActTimeoutMs,
   resolveMaxStepsPerAct,
   resolveWaitAfterActionMs,
+  runAiActWithTimeout,
   splitPhaseSteps,
 };

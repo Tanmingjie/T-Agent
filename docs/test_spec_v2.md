@@ -65,6 +65,8 @@ for phase in phases:                      # 按序
 - Validator 解析失败 / 拿不到证据 → **fail-closed**(FAIL),绝不默认绿。
 - `phase.expected` 只在全部 steps 完成后交给 Validator,不进入任何 `aiAct` 指令；执行分段不新增
   业务 phase,也不制造中间 expected。
+- 每次 `aiAct` 有独立时间边界(`MIDSCENE_AI_ACT_TIMEOUT_SECONDS`,默认 900 秒)；超时只令当前
+  phase/用例失败,不限制整条用例的累计执行时间。
 - 不取 agent 自报的 TEST_RESULT。
 - Validator 复用既有 `AssertionEngine._check_llm_judge` 的证据接地裁判(偏-FAIL),
   内部以 `Assertion(type="llm_judge", target=expected, expected=expected)` 承载该阶段预期。
