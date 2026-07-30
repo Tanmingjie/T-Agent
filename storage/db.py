@@ -155,6 +155,7 @@ class SuiteSettingsRow(SQLModel, table=True):
     suite_id: str = Field(primary_key=True)
     permission_mode: str = "trust"  # trust | approve
     parallelism: int = 1  # 并发执行用例数(1=串行)
+    login_setup_case_id: str | None = None  # Run 内登录准备;空=不启用
     updated_at: float = 0.0
 
 
@@ -657,9 +658,12 @@ class Store:
                 suite_data.update(id=new_suite_id, version_id=to_version_id)
                 s.add(SuiteRow(**suite_data))
                 # 用例随 Suite 拷贝(新 id,挂新 Suite)
+                case_id_map: dict[str, str] = {}
                 for tc in cases:
                     tc_data = tc.model_dump()
-                    tc_data.update(id=uuid.uuid4().hex, suite_id=new_suite_id)
+                    new_case_id = uuid.uuid4().hex
+                    case_id_map[tc.id] = new_case_id
+                    tc_data.update(id=new_case_id, suite_id=new_suite_id)
                     s.add(TestCaseRow(**tc_data))
                 # 执行设置随 Suite 拷贝(并发/权限模式)
                 old_settings = await s.get(SuiteSettingsRow, suite.id)
@@ -669,6 +673,9 @@ class Store:
                             suite_id=new_suite_id,
                             permission_mode=old_settings.permission_mode,
                             parallelism=old_settings.parallelism,
+                            login_setup_case_id=case_id_map.get(
+                                old_settings.login_setup_case_id or ""
+                            ),
                             updated_at=time.time(),
                         )
                     )

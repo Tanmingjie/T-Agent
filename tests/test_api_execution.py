@@ -27,6 +27,27 @@ async def client():
                 base_url="https://x.com",
                 suite_id="sx",
             ),
+            TestCase(
+                id="login",
+                name="Login",
+                steps=["sign in"],
+                base_url="https://x.com",
+                suite_id="sx",
+            ),
+            TestCase(
+                id="t2",
+                name="C2",
+                steps=["do c"],
+                base_url="https://x.com",
+                suite_id="sx",
+            ),
+            TestCase(
+                id="other-login",
+                name="Other Login",
+                steps=["login"],
+                base_url="https://other.example",
+                suite_id="other-suite",
+            ),
         ]
     )
     import api.server as srv
@@ -46,15 +67,38 @@ async def test_get_settings_default(client):
     r = await client.get("/api/suites/sx/settings")
     assert r.status_code == 200
     assert r.json()["permission_mode"] == "trust"
+    assert r.json()["login_setup_case_id"] is None
 
 
 @pytest.mark.asyncio
 async def test_update_settings(client):
-    r = await client.put("/api/suites/sx/settings", json={"permission_mode": "approve"})
+    r = await client.put(
+        "/api/suites/sx/settings",
+        json={"permission_mode": "approve", "login_setup_case_id": "t1"},
+    )
     assert r.status_code == 200
 
     r = await client.get("/api/suites/sx/settings")
     assert r.json()["permission_mode"] == "approve"
+    assert r.json()["login_setup_case_id"] == "t1"
+
+    r = await client.put(
+        "/api/suites/sx/settings",
+        json={"permission_mode": "trust", "login_setup_case_id": None},
+    )
+    assert r.status_code == 200
+    assert (await client.get("/api/suites/sx/settings")).json()["login_setup_case_id"] is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("case_id", ["missing", "other-login"])
+async def test_update_settings_rejects_login_case_outside_suite(client, case_id):
+    r = await client.put(
+        "/api/suites/sx/settings",
+        json={"permission_mode": "trust", "login_setup_case_id": case_id},
+    )
+    assert r.status_code == 400
+    assert "当前 Suite" in r.json()["detail"]
 
 
 @pytest.mark.asyncio
@@ -87,6 +131,44 @@ async def test_run_single_case_filters_to_one(client, monkeypatch):
 
     run = await srv._repo.get_run(run_id)
     assert run["total_cases"] == 1  # 只跑 1 条
+
+
+@pytest.mark.asyncio
+async def test_run_single_business_case_includes_configured_login_once(client, monkeypatch):
+    monkeypatch.setenv("RUN_MODE", "embedded")
+    import api.routers.execution as execmod
+
+    monkeypatch.setattr(execmod, "spawn_run", lambda run_id, main: None)
+    configured = await client.put(
+        "/api/suites/sx/settings",
+        json={"permission_mode": "trust", "login_setup_case_id": "login"},
+    )
+    assert configured.status_code == 200
+
+    response = await client.post("/api/suites/sx/run?case_id=t1")
+    assert response.status_code == 200
+    import api.server as srv
+
+    run = await srv._repo.get_run(response.json()["run_id"])
+    assert run["total_cases"] == 2
+
+
+@pytest.mark.asyncio
+async def test_run_login_setup_case_itself_is_not_duplicated(client, monkeypatch):
+    monkeypatch.setenv("RUN_MODE", "embedded")
+    import api.routers.execution as execmod
+
+    monkeypatch.setattr(execmod, "spawn_run", lambda run_id, main: None)
+    await client.put(
+        "/api/suites/sx/settings",
+        json={"permission_mode": "trust", "login_setup_case_id": "login"},
+    )
+
+    response = await client.post("/api/suites/sx/run?case_id=login")
+    import api.server as srv
+
+    run = await srv._repo.get_run(response.json()["run_id"])
+    assert run["total_cases"] == 1
 
 
 @pytest.mark.asyncio
@@ -141,6 +223,31 @@ async def test_spec_preview_translates_without_creating_run(client, monkeypatch)
 
 
 @pytest.mark.asyncio
+async def test_spec_preview_single_case_includes_configured_login(client, monkeypatch):
+    from harness.llm import LLMResponse
+
+    class _LLM:
+        async def chat(self, messages, **kwargs):
+            return LLMResponse(
+                content=(
+                    '{"intent":"检查页面","preconditions":[],"phases":['
+                    '{"steps":["打开页面"],"expected":"页面显示 Ready"}]}'
+                )
+            )
+
+    monkeypatch.setattr("harness.llm.build_llm_client", lambda config: _LLM())
+    await client.put(
+        "/api/suites/sx/settings",
+        json={"permission_mode": "trust", "login_setup_case_id": "login"},
+    )
+
+    response = await client.post("/api/suites/sx/spec-preview", json={"case_id": "t1"})
+
+    assert response.status_code == 200
+    assert [spec["case_id"] for spec in response.json()["specs"]] == ["login", "t1"]
+
+
+@pytest.mark.asyncio
 async def test_run_persists_human_approved_specs(client, monkeypatch):
     monkeypatch.setenv("RUN_MODE", "queue")
     spec = {
@@ -163,6 +270,42 @@ async def test_run_persists_human_approved_specs(client, monkeypatch):
     events = await srv._store.list_run_events(r.json()["run_id"])
     approved = next(event for event in events if event.event_type == "specs_approved")
     assert approved.data["specs"]["t1"]["phases"][0]["expected"] == "人工确认的预期"
+
+
+@pytest.mark.asyncio
+async def test_run_approved_specs_accept_configured_login_case(client, monkeypatch):
+    monkeypatch.setenv("RUN_MODE", "queue")
+    await client.put(
+        "/api/suites/sx/settings",
+        json={"permission_mode": "trust", "login_setup_case_id": "login"},
+    )
+
+    def spec(case_id, name):
+        return {
+            "case_id": case_id,
+            "name": name,
+            "base_url": "https://x.com",
+            "intent": name,
+            "preconditions": [],
+            "phases": [{"steps": [name], "expected": f"{name} 完成"}],
+        }
+
+    response = await client.post(
+        "/api/suites/sx/run?case_id=t1",
+        json={
+            "approved_specs": {
+                "login": spec("login", "Login"),
+                "t1": spec("t1", "C1"),
+            }
+        },
+    )
+
+    assert response.status_code == 200
+    import api.server as srv
+
+    events = await srv._store.list_run_events(response.json()["run_id"])
+    approved = next(event for event in events if event.event_type == "specs_approved")
+    assert set(approved.data["specs"]) == {"login", "t1"}
 
 
 @pytest.mark.asyncio

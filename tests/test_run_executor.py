@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import pytest
 
-from api.repository import SQLModelRepository
+from api.repository import SQLModelRepository, set_suite_settings
 from api.run_executor import execute_run
 from input.models import Project, ProjectSkill, Suite, TestCase
 from storage.db import Store
@@ -261,3 +261,56 @@ async def test_execute_run_loads_human_approved_specs_from_run_event(tmp_path, m
 
     assert captured["spec"].phases[0].steps == ["人工步骤"]
     assert captured["spec"].phases[0].expected == "人工预期"
+
+
+@pytest.mark.asyncio
+async def test_execute_run_uses_effective_cases_and_cleans_temporary_auth_state(
+    tmp_path, monkeypatch
+):
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/auth.db"
+    store = Store(url=db_url)
+    await store.init()
+    repo = SQLModelRepository(store)
+    await repo.create(Suite(id="sx", name="SX", base_url="https://x.com"))
+    await repo.bulk_insert(
+        [
+            TestCase(
+                id="login", name="Login", steps=["login"], base_url="https://x.com", suite_id="sx"
+            ),
+            TestCase(id="t1", name="C1", steps=["a"], base_url="https://x.com", suite_id="sx"),
+            TestCase(id="t2", name="C2", steps=["b"], base_url="https://x.com", suite_id="sx"),
+        ]
+    )
+    await set_suite_settings(store, "sx", "trust", login_setup_case_id="login")
+    run_id = "auth-run"
+    await repo.create_run(run_id, "sx", 2, None, None)
+
+    import harness.orchestrator as orch_mod
+
+    captured = {}
+
+    class _InspectingOrch:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_suite(self, cases, **kwargs):
+            captured["case_ids"] = [case.id for case in cases]
+            captured["setup_id"] = kwargs["login_setup_case"].id
+            state_path = kwargs["storage_state_path"]
+            state_path.write_text('{"cookies":[]}', encoding="utf-8")
+            captured["state_path"] = state_path
+
+            class _R:
+                passed_count = 2
+                failed_count = 0
+
+            return _R()
+
+    monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
+
+    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx", case_id="t1")
+
+    assert captured["case_ids"] == ["login", "t1"]
+    assert captured["setup_id"] == "login"
+    assert captured["state_path"].is_absolute()
+    assert not captured["state_path"].parent.exists()

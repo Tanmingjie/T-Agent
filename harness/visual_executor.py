@@ -78,6 +78,8 @@ class VisualExecutor:
         case: TestCase,
         spec: TestSpec,
         execution_context: str = "",
+        storage_state_path: str | Path | None = None,
+        capture_storage_state: bool = False,
     ) -> VisualExecutionResult:
         if os.getenv("MIDSCENE_ENABLED", "1") == "0":
             return VisualExecutionResult(
@@ -97,6 +99,9 @@ class VisualExecutor:
             "model_config": self._model_config(),
             "execution_context": execution_context,
         }
+        if storage_state_path is not None:
+            payload["storage_state_path"] = str(Path(storage_state_path).resolve())
+            payload["capture_storage_state"] = bool(capture_storage_state)
 
         started = time.time()
         payload_bytes = json.dumps(payload, ensure_ascii=False).encode("utf-8")

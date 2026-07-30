@@ -20,7 +20,7 @@ from pydantic import BaseModel, Field
 
 from api.auth import require_suite_access
 from api.execution_worker import spawn_run
-from api.repository import get_suite_settings, set_suite_settings
+from api.repository import get_suite_settings, resolve_effective_cases, set_suite_settings
 from input.models import TestSpec
 
 router = APIRouter(tags=["execution"])
@@ -98,13 +98,21 @@ async def preview_specs(
     suite = await repo.get_suite(suite_id)
     if suite is None:
         raise HTTPException(404, "Suite not found")
-    cases = await repo.list_by_suite(suite_id)
-    if options.case_id is not None:
-        cases = [case for case in cases if case.id == options.case_id]
-        if not cases:
-            raise HTTPException(404, f"用例 {options.case_id} 不存在于该套件")
-    if not cases:
+    all_cases = await repo.list_by_suite(suite_id)
+    if not all_cases:
         raise HTTPException(400, "Suite 没有用例，请先上传 Excel")
+    settings = await get_suite_settings(store, suite_id)
+    try:
+        cases, _ = resolve_effective_cases(
+            all_cases,
+            requested_case_id=options.case_id,
+            login_setup_case_id=settings.get("login_setup_case_id"),
+        )
+    except ValueError as exc:
+        status_code = (
+            404 if options.case_id and options.case_id not in {c.id for c in all_cases} else 400
+        )
+        raise HTTPException(status_code, str(exc)) from exc
 
     llm_config, knowledge = await _translation_context(store, suite, options.skill_names)
     generator = SpecGenerator(build_llm_client(llm_config))
@@ -133,13 +141,19 @@ async def trigger_run(
     if suite is None:
         raise HTTPException(404, "Suite not found")
 
-    cases = await repo.list_by_suite(suite_id)
-    if not cases:
+    all_cases = await repo.list_by_suite(suite_id)
+    if not all_cases:
         raise HTTPException(400, "Suite 没有用例，请先上传 Excel")
-    if case_id is not None:
-        cases = [c for c in cases if c.id == case_id]
-        if not cases:
-            raise HTTPException(404, f"用例 {case_id} 不存在于该套件")
+    settings = await get_suite_settings(store, suite_id)
+    try:
+        cases, _ = resolve_effective_cases(
+            all_cases,
+            requested_case_id=case_id,
+            login_setup_case_id=settings.get("login_setup_case_id"),
+        )
+    except ValueError as exc:
+        status_code = 404 if case_id and case_id not in {c.id for c in all_cases} else 400
+        raise HTTPException(status_code, str(exc)) from exc
 
     target_ids = {case.id for case in cases}
     if set(approved_specs) - target_ids:
@@ -311,9 +325,26 @@ async def get_settings(suite_id: str, store=Depends(get_store)):
 class SettingsUpdate(BaseModel):
     permission_mode: str  # "trust" | "approve"
     parallelism: int = 1  # 并发执行用例数(1=串行)
+    login_setup_case_id: str | None = None
 
 
 @router.put("/suites/{suite_id}/settings", dependencies=_suite_guard)
-async def update_settings(suite_id: str, body: SettingsUpdate, store=Depends(get_store)):
-    await set_suite_settings(store, suite_id, body.permission_mode, body.parallelism)
+async def update_settings(
+    suite_id: str,
+    body: SettingsUpdate,
+    store=Depends(get_store),
+    repo=Depends(get_repo),
+):
+    login_setup_case_id = body.login_setup_case_id or None
+    if login_setup_case_id:
+        setup_case = await repo.get_case(login_setup_case_id)
+        if setup_case is None or setup_case.suite_id != suite_id:
+            raise HTTPException(400, "登录准备用例必须属于当前 Suite")
+    await set_suite_settings(
+        store,
+        suite_id,
+        body.permission_mode,
+        body.parallelism,
+        login_setup_case_id,
+    )
     return {"ok": True}

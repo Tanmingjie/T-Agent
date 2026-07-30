@@ -6,12 +6,13 @@ import { Trash2, Check } from "lucide-react";
 interface SuiteResp {
   name: string;
   base_url: string;
-  cases?: unknown[];
+  cases?: { id: string; name: string }[];
 }
 
 interface SuiteSettings {
   permission_mode: string;
   parallelism: number;
+  login_setup_case_id: string | null;
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -42,6 +43,19 @@ export default function SuiteSettingsPage() {
   async function saveParallelism(n: number) {
     if (!settings) return;
     const next = { ...settings, parallelism: Math.max(1, n) };
+    setSettings(next);
+    try {
+      await apiPut(`/suites/${id}/settings`, next);
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      alert("保存失败: " + (e instanceof Error ? e.message : String(e)));
+    }
+  }
+
+  async function saveLoginSetupCase(caseId: string) {
+    if (!settings) return;
+    const next = { ...settings, login_setup_case_id: caseId || null };
     setSettings(next);
     try {
       await apiPut(`/suites/${id}/settings`, next);
@@ -116,6 +130,27 @@ export default function SuiteSettingsPage() {
               className="w-20 border border-gray-300 rounded-md px-3 py-1.5 text-sm text-right focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500"
             />
           </div>
+        </div>
+        <div className="flex items-center justify-between px-5 py-4 border-t border-gray-100">
+          <div>
+            <p className="text-sm font-medium text-surface-900">登录准备用例</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              每次执行先运行一次，后续用例复用本次登录状态。
+            </p>
+          </div>
+          <select
+            value={settings?.login_setup_case_id ?? ""}
+            onChange={(e) => saveLoginSetupCase(e.target.value)}
+            disabled={!settings}
+            className="w-64 border border-gray-300 rounded-md px-3 py-1.5 text-sm bg-white focus:outline-none focus:ring-2 focus:ring-brand-500/40 focus:border-brand-500 disabled:opacity-50"
+          >
+            <option value="">不使用</option>
+            {(suite?.cases ?? []).map((testCase) => (
+              <option key={testCase.id} value={testCase.id}>
+                {testCase.name} ({testCase.id})
+              </option>
+            ))}
+          </select>
         </div>
       </div>
 

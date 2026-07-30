@@ -19,8 +19,10 @@ queue 两模式都走这条路 → 行为一致、都可重连重放。调用方
 from __future__ import annotations
 
 import logging
+import tempfile
 import time
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import Awaitable, Callable
 
 logger = logging.getLogger(__name__)
@@ -43,7 +45,7 @@ async def execute_run(
     ``force_skill_names``:本次执行显式选择的项目 skill 名。Midscene 路径下把命中
     skill 正文合并进翻译/执行上下文,作为业务知识输入。
     """
-    from api.repository import SQLModelRepository, get_suite_settings
+    from api.repository import SQLModelRepository, get_suite_settings, resolve_effective_cases
     from harness.llm import build_llm_client
     from harness.midscene_agent import MidsceneCaseAgent
     from harness.orchestrator import Orchestrator
@@ -57,6 +59,7 @@ async def execute_run(
     saved_ids: set[str] = set()  # 本 run 已落库的 case_id(_save_record 累加)
     fail_reason = ""
     completed = False
+    auth_temp_dir = None
 
     async def _emit(event: str, data: dict) -> None:
         """唯一事件落库点:写 run_event 表(供 /stream 从 seq 0 重放)+ 转发 live 通道。
@@ -78,9 +81,7 @@ async def execute_run(
         if suite is None:
             fail_reason = "套件不存在"
             return
-        cases = await repo.list_by_suite(suite_id)
-        if case_id is not None:
-            cases = [c for c in cases if c.id == case_id]
+        all_cases = await repo.list_by_suite(suite_id)
 
         approved_specs = {}
         for event in await store.list_run_events(run_id):
@@ -92,6 +93,15 @@ async def execute_run(
         llm_config = await store.get_llm_config(suite.project_id) if suite.project_id else None
         settings_row = await get_suite_settings(store, suite_id)
         parallelism = int(settings_row.get("parallelism", 1))
+        cases, login_setup_case = resolve_effective_cases(
+            all_cases,
+            requested_case_id=case_id,
+            login_setup_case_id=settings_row.get("login_setup_case_id"),
+        )
+        storage_state_path = None
+        if login_setup_case is not None:
+            auth_temp_dir = tempfile.TemporaryDirectory(prefix=f"t-agent-auth-{run_id}-")
+            storage_state_path = Path(auth_temp_dir.name).resolve() / "storage-state.json"
 
         # 项目级翻译知识/操作指南:注入翻译 prompt(助补全流程/对齐术语/写对 expected)
         translation_knowledge = ""
@@ -148,6 +158,8 @@ async def execute_run(
             on_record=_save_record,
             parallelism=parallelism,
             should_abort=_should_abort,
+            login_setup_case=login_setup_case,
+            storage_state_path=storage_state_path,
         )
         # 用户中止 → 终态记 aborted(区别于正常 completed);否则 completed。
         aborted = await _should_abort()
@@ -164,6 +176,11 @@ async def execute_run(
         logger.exception("Run %s 异常中断", run_id)
         await _emit("error", {"message": fail_reason})
     finally:
+        if auth_temp_dir is not None:
+            try:
+                auth_temp_dir.cleanup()
+            except Exception:  # noqa: BLE001
+                logger.warning("清理 run %s 临时登录状态失败", run_id, exc_info=True)
         # 兜底:run 未正常完成(setup 阶段异常 / 进程被中断 / orchestrator 抛错)→ 标 failed
         # (幂等)+ 给「本 run 未落任何记录」的用例补一条「执行中断」占位记录。根治旧代码的
         # 两个坑:① 外层 setup 异常漏标状态 → 僵尸 running;② 中途被杀 → /result 全空、抽屉无详情。

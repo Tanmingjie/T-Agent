@@ -345,25 +345,64 @@ class SQLModelRepository(
 # ── Suite Settings ──
 
 
+def resolve_effective_cases(
+    cases: list[TestCase],
+    *,
+    requested_case_id: str | None = None,
+    login_setup_case_id: str | None = None,
+) -> tuple[list[TestCase], TestCase | None]:
+    """Resolve the cases that belong to one run, with login setup first."""
+    by_id = {case.id: case for case in cases}
+    if requested_case_id is None:
+        requested = list(cases)
+    else:
+        requested_case = by_id.get(requested_case_id)
+        if requested_case is None:
+            raise ValueError(f"用例 {requested_case_id} 不存在于该套件")
+        requested = [requested_case]
+
+    if not login_setup_case_id:
+        return requested, None
+
+    login_setup_case = by_id.get(login_setup_case_id)
+    if login_setup_case is None:
+        raise ValueError("Suite 配置的登录准备用例不存在或不属于当前 Suite")
+
+    effective = [login_setup_case]
+    effective.extend(case for case in requested if case.id != login_setup_case.id)
+    return effective, login_setup_case
+
+
 async def get_suite_settings(store: Store, suite_id: str) -> dict:
     async with store._sf() as s:
         row = await s.get(SuiteSettingsRow, suite_id)
         if row is None:
-            return {"suite_id": suite_id, "permission_mode": "trust", "parallelism": 1}
+            return {
+                "suite_id": suite_id,
+                "permission_mode": "trust",
+                "parallelism": 1,
+                "login_setup_case_id": None,
+            }
         return {
             "suite_id": row.suite_id,
             "permission_mode": row.permission_mode,
             "parallelism": row.parallelism,
+            "login_setup_case_id": row.login_setup_case_id,
         }
 
 
 async def set_suite_settings(
-    store: Store, suite_id: str, permission_mode: str, parallelism: int = 1
+    store: Store,
+    suite_id: str,
+    permission_mode: str,
+    parallelism: int = 1,
+    login_setup_case_id: str | None = None,
 ) -> None:
     row = SuiteSettingsRow(
         suite_id=suite_id,
         permission_mode=permission_mode,
         parallelism=max(1, int(parallelism)),
+        login_setup_case_id=login_setup_case_id or None,
         updated_at=time.time(),
     )
     async with store._sf() as s:

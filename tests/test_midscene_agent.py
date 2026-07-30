@@ -17,9 +17,20 @@ class _FakeVisualExecutor:
     def __init__(self, result):
         self.result = result
         self.calls = []
+        self.storage_calls = []
 
-    async def run_case(self, *, run_id, case, spec, execution_context=""):
+    async def run_case(
+        self,
+        *,
+        run_id,
+        case,
+        spec,
+        execution_context="",
+        storage_state_path=None,
+        capture_storage_state=False,
+    ):
         self.calls.append((run_id, case.id, len(spec.phases), execution_context))
+        self.storage_calls.append((storage_state_path, capture_storage_state))
         return self.result
 
 
@@ -99,6 +110,32 @@ async def test_midscene_agent_uses_human_approved_spec_without_translation():
 
     assert record.spec == approved
     assert visual.calls[0][2] == 2
+
+
+@pytest.mark.asyncio
+async def test_midscene_agent_passes_storage_state_options_to_visual_executor(tmp_path):
+    visual = _FakeVisualExecutor(
+        VisualExecutionResult(
+            passed=True,
+            stop_reason="completed",
+            phase_results=[
+                VisualPhaseResult(phase_index=0, status="pass"),
+                VisualPhaseResult(phase_index=1, status="pass"),
+            ],
+        )
+    )
+    state_path = tmp_path / "auth.json"
+    agent = MidsceneCaseAgent(llm=_NoopLLM(), visual_executor=visual)
+
+    await agent.run(
+        _case(),
+        spec=_spec(),
+        run_id="run1",
+        storage_state_path=state_path,
+        capture_storage_state=True,
+    )
+
+    assert visual.storage_calls == [(state_path, True)]
 
 
 @pytest.mark.asyncio

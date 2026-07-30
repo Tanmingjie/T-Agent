@@ -7,6 +7,7 @@ T-Agent 既有契约。真实视觉执行由 ``VisualExecutor`` 调 Node sidecar
 from __future__ import annotations
 
 import time
+from pathlib import Path
 from typing import Callable, Coroutine
 
 from harness.hooks import AFTER_CASE, BEFORE_CASE, ON_FAILURE, ExecutionContext, HookManager
@@ -52,6 +53,8 @@ class MidsceneCaseAgent:
         step_callback=None,
         run_id: str | None = None,
         should_abort=None,
+        storage_state_path: str | Path | None = None,
+        capture_storage_state: bool = False,
     ) -> ExecutionRecord:
         ctx = ctx or ExecutionContext(case=case)
         recorder = Recorder(case.id, suite_id=case.suite_id, run_id=run_id)
@@ -101,6 +104,8 @@ class MidsceneCaseAgent:
             case=case,
             spec=spec,
             execution_context=self.translation_knowledge,
+            storage_state_path=storage_state_path,
+            capture_storage_state=capture_storage_state,
         )
 
         for step in self._action_steps(result):

@@ -168,15 +168,26 @@ async def test_version_create_and_clone(ctx):
         )
     ).json()["id"]
     # 在 v1 下建一个 suite(带租户字段)
-    from input.models import Suite
+    from api.repository import get_suite_settings, set_suite_settings
+    from input.models import Suite, TestCase
 
     await store.save_suite(Suite(id="s1", name="冒烟", base_url="x", project_id=pid, version_id=v1))
+    await store.save_case(
+        TestCase(id="login", name="登录准备", steps=["登录"], base_url="x", suite_id="s1")
+    )
+    await set_suite_settings(store, "s1", "trust", 1, "login")
     r = await client.post(
         f"/api/projects/{pid}/versions/{v2}/clone-suites?from_version_id={v1}", headers=_h("alice")
     )
     assert r.status_code == 200
     assert r.json()["cloned"] == 1
-    assert len(await store.list_suites(version_id=v2)) == 1
+    cloned_suites = await store.list_suites(version_id=v2)
+    assert len(cloned_suites) == 1
+    cloned_cases = await store.list_cases(suite_id=cloned_suites[0].id)
+    assert len(cloned_cases) == 1
+    settings = await get_suite_settings(store, cloned_suites[0].id)
+    assert settings["login_setup_case_id"] == cloned_cases[0].id
+    assert settings["login_setup_case_id"] != "login"
 
 
 # ── LLM 配置(加密/掩码/自检)─────────────────────────────────

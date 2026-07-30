@@ -16,6 +16,7 @@ node_modules/
 storage/screenshots/*
 storage/generated/*
 storage/midscene/
+storage/midscene-smoke/
 !storage/screenshots/.gitkeep
 !storage/generated/.gitkeep
 

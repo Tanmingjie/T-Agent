@@ -23,6 +23,17 @@ def _spec() -> TestSpec:
     )
 
 
+def _echo_payload_command() -> list[str]:
+    script = (
+        "import json, sys; "
+        "payload=json.loads(sys.stdin.read()); "
+        "print(json.dumps({'passed': True, 'stop_reason': 'completed', "
+        "'phase_results': [{'phase_index': 0, 'status': 'pass'}], "
+        "'artifacts': {'received_payload': payload}}))"
+    )
+    return [sys.executable, "-c", script]
+
+
 @pytest.mark.asyncio
 async def test_visual_executor_returns_disabled_when_not_enabled(tmp_path, monkeypatch):
     monkeypatch.setenv("MIDSCENE_ENABLED", "0")
@@ -75,6 +86,38 @@ async def test_visual_executor_parses_runner_json(tmp_path, monkeypatch):
     assert result.passed is True
     assert result.phase_results[0].status == "pass"
     assert "artifact_dir" in result.artifacts
+
+
+@pytest.mark.asyncio
+async def test_visual_executor_omits_storage_options_by_default(tmp_path, monkeypatch):
+    monkeypatch.setenv("MIDSCENE_ENABLED", "1")
+    ex = VisualExecutor(command=_echo_payload_command(), artifact_root=tmp_path)
+
+    result = await ex.run_case(run_id="r1", case=_case(), spec=_spec())
+
+    received = result.artifacts["received_payload"]
+    assert "storage_state_path" not in received
+    assert "capture_storage_state" not in received
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("capture", [False, True])
+async def test_visual_executor_passes_storage_state_options(tmp_path, monkeypatch, capture):
+    monkeypatch.setenv("MIDSCENE_ENABLED", "1")
+    ex = VisualExecutor(command=_echo_payload_command(), artifact_root=tmp_path)
+    state_path = tmp_path / "run-auth" / "state.json"
+
+    result = await ex.run_case(
+        run_id="r1",
+        case=_case(),
+        spec=_spec(),
+        storage_state_path=state_path,
+        capture_storage_state=capture,
+    )
+
+    received = result.artifacts["received_payload"]
+    assert received["storage_state_path"] == str(state_path.resolve())
+    assert received["capture_storage_state"] is capture
 
 
 @pytest.mark.asyncio

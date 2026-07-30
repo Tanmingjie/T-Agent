@@ -54,6 +54,79 @@ def test_midscene_runner_reports_missing_model_config_clearly():
     assert "MIDSCENE_MODEL_FAMILY" in data["error"]
 
 
+def test_midscene_runner_context_options_load_state_only_when_requested(tmp_path):
+    state_path = tmp_path / "state.json"
+    out = _node_eval(f"""
+        const {{ browserContextOptions }} = require('./scripts/midscene_runner.js');
+        const plain = browserContextOptions({{}}, {{}});
+        const load = browserContextOptions(
+          {{ storage_state_path: {json.dumps(str(state_path))}, capture_storage_state: false }},
+          {{}}
+        );
+        const capture = browserContextOptions(
+          {{ storage_state_path: {json.dumps(str(state_path))}, capture_storage_state: true }},
+          {{}}
+        );
+        console.log(JSON.stringify({{ plain, load, capture }}));
+        """)
+
+    options = json.loads(out)
+    assert "storageState" not in options["plain"]
+    assert options["load"]["storageState"] == os.path.abspath(state_path)
+    assert "storageState" not in options["capture"]
+
+
+def test_midscene_runner_captures_storage_state_with_indexed_db(tmp_path):
+    state_path = tmp_path / "auth" / "state.json"
+    out = _node_eval(f"""
+        const fs = require('node:fs');
+        const {{ captureStorageState }} = require('./scripts/midscene_runner.js');
+        const calls = [];
+        const context = {{
+          storageState: async (options) => {{
+            calls.push(options);
+            fs.writeFileSync(options.path, '{{"cookies":[],"origins":[]}}', 'utf8');
+          }}
+        }};
+        captureStorageState(context, {json.dumps(str(state_path))})
+          .then(() => console.log(JSON.stringify(calls[0])));
+        """)
+
+    options = json.loads(out)
+    assert options == {"path": os.path.abspath(state_path), "indexedDB": True}
+    assert state_path.is_file()
+
+
+def test_midscene_runner_reports_storage_state_capture_failure(tmp_path):
+    state_path = tmp_path / "auth" / "state.json"
+    out = _node_eval(f"""
+        const {{ captureStorageState }} = require('./scripts/midscene_runner.js');
+        const context = {{ storageState: async () => {{ throw new Error('capture denied'); }} }};
+        captureStorageState(context, {json.dumps(str(state_path))})
+          .then(() => console.log('unexpected-success'))
+          .catch((error) => console.log(error.message));
+        """)
+
+    assert out == "capture denied"
+    assert not state_path.exists()
+
+
+def test_midscene_runner_only_adds_url_guidance_for_url_expectations():
+    out = _node_eval("""
+        const { buildAssertInstruction } = require('./scripts/midscene_runner.js');
+        console.log(JSON.stringify({
+          visibleText: buildAssertInstruction('页面出现文案 Products', 'https://example.com/a'),
+          url: buildAssertInstruction('URL 包含 inventory.html', 'https://example.com/inventory.html')
+        }));
+        """)
+
+    instructions = json.loads(out)
+    assert "当前页面 URL" not in instructions["visibleText"]
+    assert "URL 条件" not in instructions["visibleText"]
+    assert "当前页面 URL: https://example.com/inventory.html" in instructions["url"]
+    assert "预期包含 URL 条件" in instructions["url"]
+
+
 def test_midscene_runner_uses_conservative_wait_after_action_default():
     out = _node_eval("""
         const { resolveWaitAfterActionMs } = require('./scripts/midscene_runner.js');

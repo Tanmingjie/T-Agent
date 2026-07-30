@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from harness.hooks import AFTER_SUITE, BEFORE_SUITE, HookError, HookManager
 from harness.orchestrator import Orchestrator, SuiteResult
@@ -196,3 +197,146 @@ async def test_before_suite_failure_aborts_suite():
     assert agent.calls == []  # 一个用例都没跑
     assert result.aborted is True
     assert "环境没起来" in result.error
+
+
+# ── Suite 登录准备 ─────────────────────────────────────────
+
+
+class _LoginStateAgent:
+    def __init__(self, tracker, *, setup_passes=True, writes_state=True):
+        self.tracker = tracker
+        self.setup_passes = setup_passes
+        self.writes_state = writes_state
+
+    async def run(
+        self,
+        case,
+        spec=None,
+        ctx=None,
+        step_callback=None,
+        run_id=None,
+        should_abort=None,
+        storage_state_path=None,
+        capture_storage_state=False,
+    ):
+        self.tracker["calls"].append((case.id, capture_storage_state))
+        if capture_storage_state:
+            self.tracker["setup_finished"] = True
+            if self.setup_passes and self.writes_state:
+                Path(storage_state_path).write_text('{"cookies":[]}', encoding="utf-8")
+            return ExecutionRecord(
+                exec_id=f"e{case.id}",
+                case_id=case.id,
+                passed=self.setup_passes,
+            )
+
+        assert self.tracker["setup_finished"] is True
+        assert Path(storage_state_path).is_file()
+        self.tracker["business_cur"] += 1
+        self.tracker["business_max"] = max(
+            self.tracker["business_max"], self.tracker["business_cur"]
+        )
+        try:
+            await asyncio.sleep(0.02)
+            return ExecutionRecord(exec_id=f"e{case.id}", case_id=case.id, passed=True)
+        finally:
+            self.tracker["business_cur"] -= 1
+
+
+def _login_factory(tracker, **kwargs):
+    @asynccontextmanager
+    async def make():
+        yield _LoginStateAgent(tracker, **kwargs)
+
+    return make
+
+
+async def test_login_setup_runs_once_before_parallel_business_cases(tmp_path):
+    tracker = {
+        "calls": [],
+        "setup_finished": False,
+        "business_cur": 0,
+        "business_max": 0,
+    }
+    cases = _cases("login", "A", "B")
+    result = await Orchestrator(agent_factory=_login_factory(tracker)).run_suite(
+        cases,
+        login_setup_case=cases[0],
+        storage_state_path=tmp_path / "auth.json",
+        parallelism=2,
+    )
+
+    assert tracker["calls"].count(("login", True)) == 1
+    assert tracker["calls"][0] == ("login", True)
+    assert tracker["business_max"] == 2
+    assert [record.case_id for record in result.records] == ["login", "A", "B"]
+    assert result.passed_count == 3
+
+
+async def test_login_setup_failure_skips_business_cases_and_persists_records(tmp_path):
+    tracker = {
+        "calls": [],
+        "setup_finished": False,
+        "business_cur": 0,
+        "business_max": 0,
+    }
+    saved = []
+
+    async def save_record(record):
+        saved.append(record)
+
+    cases = _cases("login", "A", "B")
+    result = await Orchestrator(
+        agent_factory=_login_factory(tracker, setup_passes=False)
+    ).run_suite(
+        cases,
+        login_setup_case=cases[0],
+        storage_state_path=tmp_path / "auth.json",
+        on_record=save_record,
+    )
+
+    assert tracker["calls"] == [("login", True)]
+    assert [record.case_id for record in result.records] == ["login", "A", "B"]
+    assert [record.case_id for record in saved] == ["login", "A", "B"]
+    assert all(not record.passed for record in result.records)
+    assert all("未执行" in record.final_result for record in result.records[1:])
+
+
+async def test_missing_captured_state_turns_setup_failure(tmp_path):
+    tracker = {
+        "calls": [],
+        "setup_finished": False,
+        "business_cur": 0,
+        "business_max": 0,
+    }
+    cases = _cases("login", "A")
+    result = await Orchestrator(
+        agent_factory=_login_factory(tracker, writes_state=False)
+    ).run_suite(
+        cases,
+        login_setup_case=cases[0],
+        storage_state_path=tmp_path / "auth.json",
+    )
+
+    assert tracker["calls"] == [("login", True)]
+    assert result.records[0].passed is False
+    assert "认证状态文件" in result.records[0].final_result
+    assert "未执行" in result.records[1].final_result
+
+
+async def test_requesting_login_setup_case_executes_it_once(tmp_path):
+    tracker = {
+        "calls": [],
+        "setup_finished": False,
+        "business_cur": 0,
+        "business_max": 0,
+    }
+    login_case = _cases("login")[0]
+    result = await Orchestrator(agent_factory=_login_factory(tracker)).run_suite(
+        [login_case],
+        login_setup_case=login_case,
+        storage_state_path=tmp_path / "auth.json",
+    )
+
+    assert tracker["calls"] == [("login", True)]
+    assert [record.case_id for record in result.records] == ["login"]

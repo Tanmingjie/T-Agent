@@ -170,6 +170,33 @@ async function runAiActWithTimeout(agent, instruction, timeoutMs) {
   }
 }
 
+function browserContextOptions(payload, env = process.env) {
+  const options = {
+    viewport: {
+      width: Number(env.MIDSCENE_VIEWPORT_WIDTH || 1920),
+      height: Number(env.MIDSCENE_VIEWPORT_HEIGHT || 1080),
+    },
+    deviceScaleFactor: 1,
+  };
+  if (payload.storage_state_path && !payload.capture_storage_state) {
+    options.storageState = path.resolve(payload.storage_state_path);
+  }
+  return options;
+}
+
+async function captureStorageState(context, storageStatePath) {
+  if (!storageStatePath) {
+    throw new Error('登录准备缺少 storage_state_path');
+  }
+  const resolved = path.resolve(storageStatePath);
+  fs.mkdirSync(path.dirname(resolved), { recursive: true });
+  await context.storageState({ path: resolved, indexedDB: true });
+  const stat = fs.statSync(resolved);
+  if (!stat.isFile() || stat.size === 0) {
+    throw new Error('登录状态捕获后未生成有效文件');
+  }
+}
+
 async function run() {
   loadDotEnv(path.join(repoRoot, '.env'));
   loadDotEnv(path.join(repoRoot, '.midscene-poc', '.env'));
@@ -207,6 +234,7 @@ async function run() {
   const artifacts = { artifact_dir: artifactDir };
   const progressFile = path.join(artifactDir, 'midscene-result.json');
   let agent;
+  let context;
   let stopReason = 'completed';
 
   function writeProgress(extra = {}) {
@@ -222,13 +250,8 @@ async function run() {
   }
 
   try {
-    const page = await browser.newPage({
-      viewport: {
-        width: Number(process.env.MIDSCENE_VIEWPORT_WIDTH || 1920),
-        height: Number(process.env.MIDSCENE_VIEWPORT_HEIGHT || 1080),
-      },
-      deviceScaleFactor: 1,
-    });
+    context = await browser.newContext(browserContextOptions(payload));
+    const page = await context.newPage();
 
     if (payload.base_url) {
       await page.goto(payload.base_url, { waitUntil: 'domcontentloaded' });
@@ -350,18 +373,34 @@ async function run() {
       }
     }
 
+    let passed = phaseResults.length === phases.length && phaseResults.every((item) => item.status === 'pass');
+    let finalError = '';
+    if (passed && payload.capture_storage_state) {
+      try {
+        await captureStorageState(context, payload.storage_state_path);
+      } catch (error) {
+        passed = false;
+        stopReason = 'auth_state_capture_failed';
+        finalError = error && error.message ? error.message : String(error);
+      }
+    }
+
     const finalResult = {
-      passed: phaseResults.length === phases.length && phaseResults.every((item) => item.status === 'pass'),
+      passed,
       stop_reason: stopReason,
       phase_results: phaseResults,
       actions,
       artifacts,
+      ...(finalError ? { error: finalError } : {}),
     };
     writeProgress(finalResult);
     return finalResult;
   } finally {
     if (agent && typeof agent.destroy === 'function') {
       await agent.destroy().catch((error) => log('agent.destroy failed:', error.message));
+    }
+    if (context) {
+      await context.close().catch((error) => log('context.close failed:', error.message));
     }
     await browser.close();
   }
@@ -548,11 +587,12 @@ function parseChineseNumber(text) {
 }
 
 function buildAssertInstruction(expected, currentUrl) {
-  return [
-    `当前页面 URL: ${currentUrl || '(unknown)'}`,
-    `请验证以下阶段预期是否成立: ${expected}`,
-    '如果预期包含 URL 条件,请以上面的当前页面 URL 作为判断依据。',
-  ].join('\n');
+  const lines = [`请验证以下阶段预期是否成立: ${expected}`];
+  if (/(?:\burl\b|网址|页面地址|地址栏)/i.test(expected)) {
+    lines.unshift(`当前页面 URL: ${currentUrl || '(unknown)'}`);
+    lines.push('预期包含 URL 条件,请以上面的当前页面 URL 作为判断依据。');
+  }
+  return lines.join('\n');
 }
 
 if (require.main === module) {
@@ -574,8 +614,11 @@ if (require.main === module) {
 }
 
 module.exports = {
+  browserContextOptions,
+  buildAssertInstruction,
   buildPhaseInstruction,
   buildSegmentInstruction,
+  captureStorageState,
   parseConditionalWaitStep,
   parseWaitStep,
   resolveAiActTimeoutMs,

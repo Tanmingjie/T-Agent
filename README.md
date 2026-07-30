@@ -285,6 +285,9 @@ T-Agent/
 | TestSpec 翻译 | `intelligence/pre_analysis.py` | Excel 用例 -> 阶段化 TestSpec |
 | 前端执行视图 | `frontend/src/pages/SuiteCasesPage.tsx` | 执行入口、过程和结果展示 |
 
+Suite 内登录状态复用的 Excel 编写和设置步骤见
+[`docs/Suite登录态复用.md`](docs/Suite登录态复用.md)。
+
 ## 当前边界
 
 - Midscene 是唯一执行主链路。
