@@ -233,8 +233,11 @@ export default function SuiteCasesPage() {
   }, [cases]);
 
   function statusOf(caseId: string): CaseRunStatus {
-    // 本次会话的实时状态优先;否则回退到最近一次历史 run 的裁决
-    return run.statuses[caseId]?.status ?? pastStatus[caseId] ?? "pending";
+    // 新 Run 开始后只展示本轮状态,避免部分执行时混入上一次 Run 的裁决。
+    if (run.running || run.done) {
+      return run.statuses[caseId]?.status ?? "pending";
+    }
+    return pastStatus[caseId] ?? "pending";
   }
 
   // 稳定引用,供 memo 化的 CaseRow 比对(否则每次渲染新闭包会让所有行重渲染)。
