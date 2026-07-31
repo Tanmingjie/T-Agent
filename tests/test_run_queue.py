@@ -27,6 +27,24 @@ async def test_enqueue_and_claim_fifo(store):
     assert c1.status == "claimed" and c1.claimed_by == "w1" and c1.attempts == 1
 
 
+async def test_enqueue_and_claim_preserves_selected_case_ids(store):
+    await store.enqueue_run("selected", "s1", "p1", case_ids=["C", "A"])
+
+    claimed = await store.claim_next_run("w1")
+
+    assert claimed.case_ids == ["C", "A"]
+    assert claimed.case_id is None
+
+
+async def test_legacy_single_case_queue_row_remains_readable(store):
+    await store.enqueue_run("legacy", "s1", "p1", case_id="A")
+
+    claimed = await store.claim_next_run("w1")
+
+    assert claimed.case_ids is None
+    assert claimed.case_id == "A"
+
+
 async def test_claim_empty_returns_none(store):
     assert await store.claim_next_run("w1") is None
 

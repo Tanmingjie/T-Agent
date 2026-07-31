@@ -348,18 +348,23 @@ class SQLModelRepository(
 def resolve_effective_cases(
     cases: list[TestCase],
     *,
-    requested_case_id: str | None = None,
+    requested_case_ids: list[str] | None = None,
     login_setup_case_id: str | None = None,
 ) -> tuple[list[TestCase], TestCase | None]:
     """Resolve the cases that belong to one run, with login setup first."""
     by_id = {case.id: case for case in cases}
-    if requested_case_id is None:
+    if requested_case_ids is None:
         requested = list(cases)
     else:
-        requested_case = by_id.get(requested_case_id)
-        if requested_case is None:
-            raise ValueError(f"用例 {requested_case_id} 不存在于该套件")
-        requested = [requested_case]
+        if not requested_case_ids:
+            raise ValueError("case_ids 不能为空；不提供 case_ids 才表示执行全部用例")
+        if len(set(requested_case_ids)) != len(requested_case_ids):
+            raise ValueError("case_ids 包含重复用例")
+        missing = [case_id for case_id in requested_case_ids if case_id not in by_id]
+        if missing:
+            raise ValueError(f"用例 {', '.join(missing)} 不存在于该套件")
+        selected = set(requested_case_ids)
+        requested = [case for case in cases if case.id in selected]
 
     if not login_setup_case_id:
         return requested, None

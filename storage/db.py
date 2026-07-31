@@ -170,6 +170,7 @@ class RunQueueRow(SQLModel, table=True):
     suite_id: str = Field(default="", index=True)
     project_id: str = Field(default="", index=True)
     case_id: str | None = None
+    case_ids: list | None = Field(default=None, sa_column=Column(JSON, nullable=True))
     status: str = Field(default="queued", index=True)  # queued | claimed | done | failed
     claimed_by: str = ""
     claimed_at: float = 0.0  # 心跳时间(超时回收依据);0=未领取
@@ -830,6 +831,7 @@ class Store:
         suite_id: str,
         project_id: str = "",
         case_id: str | None = None,
+        case_ids: list[str] | None = None,
         skill_names: list[str] | None = None,
     ) -> None:
         async with self._sf() as s:
@@ -839,6 +841,7 @@ class Store:
                     suite_id=suite_id,
                     project_id=project_id,
                     case_id=case_id,
+                    case_ids=case_ids,
                     status="queued",
                     created_at=time.time(),
                     skill_names=skill_names or [],

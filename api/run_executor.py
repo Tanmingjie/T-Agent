@@ -36,6 +36,7 @@ async def execute_run(
     run_id: str,
     suite_id: str,
     case_id: str | None = None,
+    case_ids: list[str] | None = None,
     sse_cb: SSECallback | None = None,
     perm_approver_factory: Callable[[SSECallback], object] | None = None,
     force_skill_names: list[str] | None = None,
@@ -45,6 +46,9 @@ async def execute_run(
     ``force_skill_names``:本次执行显式选择的项目 skill 名。Midscene 路径下把命中
     skill 正文合并进翻译/执行上下文,作为业务知识输入。
     """
+    if case_id is not None and case_ids is not None:
+        raise ValueError("case_id 与 case_ids 不能同时提供")
+    requested_case_ids = [case_id] if case_id is not None else case_ids
     from api.repository import SQLModelRepository, get_suite_settings, resolve_effective_cases
     from harness.llm import build_llm_client
     from harness.midscene_agent import MidsceneCaseAgent
@@ -95,7 +99,7 @@ async def execute_run(
         parallelism = int(settings_row.get("parallelism", 1))
         cases, login_setup_case = resolve_effective_cases(
             all_cases,
-            requested_case_id=case_id,
+            requested_case_ids=requested_case_ids,
             login_setup_case_id=settings_row.get("login_setup_case_id"),
         )
         storage_state_path = None

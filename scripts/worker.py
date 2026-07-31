@@ -94,11 +94,14 @@ async def _run_one(db_url: str, claimed) -> None:
 
     hb_task = asyncio.create_task(_heartbeat())
     try:
+        selected_case_ids = claimed.case_ids
+        if selected_case_ids is None and claimed.case_id is not None:
+            selected_case_ids = [claimed.case_id]
         await execute_run(
             db_url=db_url,
             run_id=claimed.run_id,
             suite_id=claimed.suite_id,
-            case_id=claimed.case_id,
+            case_ids=selected_case_ids,
             sse_cb=None,  # 事件由 execute_run 统一落 run_event 表
             perm_approver_factory=_make_approver,
             force_skill_names=list(claimed.skill_names or []),

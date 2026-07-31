@@ -2,7 +2,7 @@
 
 import pytest
 
-from api.repository import SQLModelRepository
+from api.repository import SQLModelRepository, resolve_effective_cases
 from input.models import ExecutionRecord, Suite, TestCase
 from storage.db import Store
 
@@ -48,6 +48,62 @@ async def test_case_bulk_insert_and_list(repo):
     assert n == 2
     result = await repo.list_by_suite("s1")
     assert len(result) == 2
+
+
+def _case(case_id: str) -> TestCase:
+    return TestCase(
+        id=case_id,
+        name=case_id,
+        steps=[case_id],
+        base_url="https://x.com",
+        suite_id="s1",
+    )
+
+
+def test_resolve_effective_cases_supports_full_single_and_multi_selection():
+    cases = [_case("A"), _case("B"), _case("C")]
+
+    full, _ = resolve_effective_cases(cases)
+    single, _ = resolve_effective_cases(cases, requested_case_ids=["B"])
+    selected, _ = resolve_effective_cases(cases, requested_case_ids=["C", "A"])
+
+    assert [case.id for case in full] == ["A", "B", "C"]
+    assert [case.id for case in single] == ["B"]
+    assert [case.id for case in selected] == ["A", "C"]
+
+
+@pytest.mark.parametrize(
+    ("requested", "message"),
+    [([], "不能为空"), (["A", "A"], "重复"), (["missing"], "不存在于该套件")],
+)
+def test_resolve_effective_cases_rejects_invalid_selection(requested, message):
+    with pytest.raises(ValueError, match=message):
+        resolve_effective_cases([_case("A")], requested_case_ids=requested)
+
+
+def test_resolve_effective_cases_inserts_login_once():
+    cases = [_case("login"), _case("A"), _case("B")]
+
+    selected, login = resolve_effective_cases(
+        cases,
+        requested_case_ids=["B", "A"],
+        login_setup_case_id="login",
+    )
+    includes_login, _ = resolve_effective_cases(
+        cases,
+        requested_case_ids=["login", "B"],
+        login_setup_case_id="login",
+    )
+    login_only, _ = resolve_effective_cases(
+        cases,
+        requested_case_ids=["login"],
+        login_setup_case_id="login",
+    )
+
+    assert login is not None and login.id == "login"
+    assert [case.id for case in selected] == ["login", "A", "B"]
+    assert [case.id for case in includes_login] == ["login", "B"]
+    assert [case.id for case in login_only] == ["login"]
 
 
 @pytest.mark.asyncio

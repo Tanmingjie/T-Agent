@@ -89,16 +89,33 @@ const CaseRow = memo(function CaseRow({
   c,
   status,
   onSelect,
+  checked,
+  selectionDisabled,
+  onToggle,
 }: {
   c: Case;
   status: CaseRunStatus;
   onSelect: (c: Case) => void;
+  checked: boolean;
+  selectionDisabled: boolean;
+  onToggle: (caseId: string) => void;
 }) {
   return (
     <tr
       onClick={() => onSelect(c)}
       className="border-b border-gray-100 last:border-0 hover:bg-gray-50/70 cursor-pointer transition-colors"
     >
+      <td className="pl-5 pr-1 py-3.5 w-12">
+        <input
+          type="checkbox"
+          checked={checked}
+          disabled={selectionDisabled}
+          aria-label={`选择用例 ${c.name}`}
+          onClick={(event) => event.stopPropagation()}
+          onChange={() => onToggle(c.id)}
+          className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500 disabled:opacity-50"
+        />
+      </td>
       <td className="px-5 py-3.5">
         <StatusCell status={status} />
       </td>
@@ -117,18 +134,23 @@ export default function SuiteCasesPage() {
   const [uploading, setUploading] = useState(false);
   const [query, setQuery] = useState("");
   const [selected, setSelected] = useState<Case | null>(null);
+  const [selectedCaseIds, setSelectedCaseIds] = useState<Set<string>>(() => new Set());
   // 最近一次历史 run 的逐用例裁决(caseId → passed),供未实时执行时回填状态列
   const [pastStatus, setPastStatus] = useState<Record<string, CaseRunStatus>>({});
   // 项目 skill + 执行前勾选(强制加载,一次性随本次 run)
   const [skills, setSkills] = useState<ProjectSkill[]>([]);
   const [forceSkills, setForceSkills] = useState<string[]>([]);
   // 执行确认弹框:点「执行」后弹出,选 skill 再确认开始。记录本次要跑的目标
-  // (caseId 给定=单用例,否则整套件)。null=未打开。
-  const [runModal, setRunModal] = useState<{ caseId?: string } | null>(null);
+  // caseIds=null=全量；非空列表=单条或部分执行。runModal=null=未打开。
+  type RunTarget = {
+    caseIds: string[] | null;
+    source: "all" | "selected" | "single";
+  };
+  const [runModal, setRunModal] = useState<RunTarget | null>(null);
   const [manualSpecReview, setManualSpecReview] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const previewAbortRef = useRef<AbortController | null>(null);
-  const [reviewTarget, setReviewTarget] = useState<{ caseId?: string } | null>(null);
+  const [reviewTarget, setReviewTarget] = useState<RunTarget | null>(null);
   const [reviewSpecs, setReviewSpecs] = useState<EditableTestSpec[] | null>(null);
 
   // 执行状态来自布局层的 RunProvider(切 tab 不丢失;高频更新只重渲染本页消费者,
@@ -197,6 +219,18 @@ export default function SuiteCasesPage() {
       (c) => c.name.toLowerCase().includes(q) || c.id.toLowerCase().includes(q),
     );
   }, [cases, query]);
+  const filteredIds = useMemo(() => filtered.map((c) => c.id), [filtered]);
+  const allFilteredSelected =
+    filteredIds.length > 0 && filteredIds.every((caseId) => selectedCaseIds.has(caseId));
+  const someFilteredSelected = filteredIds.some((caseId) => selectedCaseIds.has(caseId));
+
+  useEffect(() => {
+    const available = new Set(cases.map((c) => c.id));
+    setSelectedCaseIds((previous) => {
+      const next = new Set([...previous].filter((caseId) => available.has(caseId)));
+      return next.size === previous.size ? previous : next;
+    });
+  }, [cases]);
 
   function statusOf(caseId: string): CaseRunStatus {
     // 本次会话的实时状态优先;否则回退到最近一次历史 run 的裁决
@@ -213,15 +247,40 @@ export default function SuiteCasesPage() {
   ).length;
   const activeCount = tracked.filter((c) => c.status === "running").length;
   const showProgress = run.running || run.done;
+  const runTotal = run.result?.total || run.totalCases || tracked.length;
 
   // 点「执行」:先弹框确认 Midscene 执行 + 可选 skill,再跑整套件。
   function startRun() {
-    setRunModal({});
+    const caseIds = cases.filter((c) => selectedCaseIds.has(c.id)).map((c) => c.id);
+    setRunModal(
+      caseIds.length > 0
+        ? { caseIds, source: "selected" }
+        : { caseIds: null, source: "all" },
+    );
   }
 
   // 单用例执行(抽屉右上角「执行」按钮):先弹框确认 Midscene 执行 + 可选 skill。
   function runOne(caseId: string) {
-    setRunModal({ caseId });
+    setRunModal({ caseIds: [caseId], source: "single" });
+  }
+
+  const toggleCaseSelection = useCallback((caseId: string) => {
+    setSelectedCaseIds((previous) => {
+      const next = new Set(previous);
+      if (next.has(caseId)) next.delete(caseId);
+      else next.add(caseId);
+      return next;
+    });
+  }, []);
+
+  function toggleFilteredSelection() {
+    if (run.running || filteredIds.length === 0) return;
+    setSelectedCaseIds((previous) => {
+      const next = new Set(previous);
+      if (allFilteredSelected) filteredIds.forEach((caseId) => next.delete(caseId));
+      else filteredIds.forEach((caseId) => next.add(caseId));
+      return next;
+    });
   }
 
   // 弹框「开始执行」确认:按选中的目标 + 勾选的 skill 触发。
@@ -235,7 +294,7 @@ export default function SuiteCasesPage() {
       try {
         const result = await apiPost<{ specs: EditableTestSpec[] }>(
           `/suites/${id}/spec-preview`,
-          { case_id: target.caseId ?? null, skill_names: forceSkills },
+          { case_ids: target.caseIds, skill_names: forceSkills },
           null,
           controller.signal,
         );
@@ -259,18 +318,21 @@ export default function SuiteCasesPage() {
   }
 
   function executeTarget(
-    target: { caseId?: string },
+    target: RunTarget,
     approvedSpecs?: EditableTestSpec[],
   ) {
     const approved = Object.fromEntries(
       (approvedSpecs ?? []).map((spec) => [spec.case_id, spec]),
     );
-    if (target.caseId) {
-      run.start([target.caseId], target.caseId, forceSkills, approved);
-    } else {
+    if (target.source !== "single") {
       setSelected(null);
-      run.start(cases.map((c) => c.id), undefined, forceSkills, approved);
     }
+    run.start({
+      caseIds: target.caseIds,
+      allCaseIds: cases.map((c) => c.id),
+      skillNames: forceSkills,
+      approvedSpecs: approved,
+    });
   }
 
   // 抽屉数据源:本次会话刚跑的 run 优先,否则取套件最近一次 run
@@ -322,7 +384,11 @@ export default function SuiteCasesPage() {
             ) : (
               <Play size={16} />
             )}
-            {run.running ? "执行中…" : "执行"}
+            {run.running
+              ? "执行中…"
+              : selectedCaseIds.size > 0
+                ? `执行所选 ${selectedCaseIds.size} 条`
+                : "执行全部"}
           </button>
           {run.running && (
             <button
@@ -345,7 +411,7 @@ export default function SuiteCasesPage() {
             <span className="text-surface-900 font-medium">
               {run.done
                 ? "执行完成"
-                : `${completed} / ${cases.length} 完成`}
+                : `${completed} / ${runTotal} 完成`}
               {!run.done && activeCount > 0 && (
                 <span className="text-gray-500 font-normal">
                   {" "}
@@ -368,7 +434,7 @@ export default function SuiteCasesPage() {
                 run.done ? "bg-brand-600" : "bg-blue-500"
               }`}
               style={{
-                width: `${cases.length ? (completed / cases.length) * 100 : 0}%`,
+                width: `${runTotal ? (completed / runTotal) * 100 : 0}%`,
               }}
             />
           </div>
@@ -396,6 +462,19 @@ export default function SuiteCasesPage() {
           />
         </div>
         <span className="text-xs text-gray-400 ml-auto">共 {cases.length} 条用例</span>
+        {selectedCaseIds.size > 0 && (
+          <>
+            <span className="text-xs text-brand-700">已选择 {selectedCaseIds.size} 条</span>
+            <button
+              type="button"
+              disabled={run.running}
+              onClick={() => setSelectedCaseIds(new Set())}
+              className="text-xs text-gray-500 hover:text-surface-900 disabled:opacity-50"
+            >
+              清空选择
+            </button>
+          </>
+        )}
       </div>
 
       {/* Table */}
@@ -403,6 +482,19 @@ export default function SuiteCasesPage() {
         <table className="w-full text-sm">
           <thead>
             <tr className="border-b border-gray-200 text-left text-xs font-medium text-gray-500">
+              <th className="pl-5 pr-1 py-3 font-medium w-12">
+                <input
+                  type="checkbox"
+                  checked={allFilteredSelected}
+                  disabled={run.running || filteredIds.length === 0}
+                  aria-label="选择当前筛选结果"
+                  ref={(element) => {
+                    if (element) element.indeterminate = someFilteredSelected && !allFilteredSelected;
+                  }}
+                  onChange={toggleFilteredSelection}
+                  className="h-4 w-4 rounded border-gray-300 text-brand-600 focus:ring-brand-500 disabled:opacity-50"
+                />
+              </th>
               <th className="px-5 py-3 font-medium w-28">状态</th>
               <th className="px-5 py-3 font-medium">名称</th>
               <th className="px-5 py-3 font-medium w-32">ID</th>
@@ -412,7 +504,7 @@ export default function SuiteCasesPage() {
           <tbody>
             {filtered.length === 0 && (
               <tr>
-                <td colSpan={4} className="px-5 py-16 text-center">
+                <td colSpan={5} className="px-5 py-16 text-center">
                   <FileSpreadsheet
                     size={36}
                     className="mx-auto text-gray-300 mb-3"
@@ -434,6 +526,9 @@ export default function SuiteCasesPage() {
                 c={c}
                 status={statusOf(c.id)}
                 onSelect={onSelect}
+                checked={selectedCaseIds.has(c.id)}
+                selectionDisabled={run.running}
+                onToggle={toggleCaseSelection}
               />
             ))}
           </tbody>
@@ -496,10 +591,13 @@ export default function SuiteCasesPage() {
                 选择执行方式
               </h3>
               <p className="text-xs text-gray-500 mt-1">
-                {runModal.caseId
+                {runModal.source === "single"
                   ? "只执行当前用例。"
-                  : `执行全部 ${cases.length} 条用例。`}
+                  : runModal.source === "selected"
+                    ? `执行所选 ${runModal.caseIds?.length ?? 0} 条用例。`
+                    : `执行全部 ${cases.length} 条用例。`}
                 当前执行内核为 Midscene 视觉执行。
+                {runModal.source === "selected" && " 如已配置登录准备用例，将自动先执行。"}
               </p>
             </div>
             <div className="flex-1 overflow-auto p-3 space-y-4">
@@ -524,6 +622,7 @@ export default function SuiteCasesPage() {
                   <button
                     type="button"
                     role="switch"
+                    aria-label="人工确认执行规格"
                     aria-checked={manualSpecReview}
                     onClick={() => setManualSpecReview((value) => !value)}
                     className={`relative w-10 h-6 shrink-0 rounded-full transition-colors ${

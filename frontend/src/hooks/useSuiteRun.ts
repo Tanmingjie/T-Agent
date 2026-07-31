@@ -53,6 +53,13 @@ export interface RunResult {
   total: number;
 }
 
+interface StartRunOptions {
+  caseIds: string[] | null;
+  allCaseIds: string[];
+  skillNames?: string[];
+  approvedSpecs?: Record<string, unknown>;
+}
+
 /**
  * 把执行控制台的 SSE 逻辑封装成 hook,供用例表「原地执行」使用。
  * statuses: 按 case_id 索引的实时状态 + 步骤流。
@@ -65,6 +72,7 @@ export function useSuiteRun(suiteId: string | undefined) {
   const [permission, setPermission] = useState<PermReq | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runId, setRunId] = useState<string | null>(null);
+  const [totalCases, setTotalCases] = useState(0);
   const [aborting, setAborting] = useState(false); // 已请求停止、等执行链优雅退出
   const esRef = useRef<EventSource | null>(null);
 
@@ -147,6 +155,11 @@ export function useSuiteRun(suiteId: string | undefined) {
             : { ...EMPTY_STREAM };
           notifyStream(cid);
         };
+
+        es.addEventListener("suite_start", (e) => {
+          const d = safeParse((e as MessageEvent).data);
+          if (d) setTotalCases(Number(d.total_cases) || 0);
+        });
 
         es.addEventListener("case_start", (e) => {
           const d = safeParse((e as MessageEvent).data);
@@ -247,6 +260,7 @@ export function useSuiteRun(suiteId: string | undefined) {
               failed: d.failed as number,
               total: d.total as number,
             });
+          if (d) setTotalCases(Number(d.total) || 0);
           setDone(true);
           setRunning(false);
           setAborting(false);
@@ -267,21 +281,16 @@ export function useSuiteRun(suiteId: string | undefined) {
   );
 
   const start = useCallback(
-    // caseId 给定时只跑该单条用例(抽屉「执行」按钮),否则跑 caseIds 代表的整套件。
-    // skillNames:本次执行强制加载的项目 skill 名(一次性;空=全走渐进披露)。
-    async (
-      caseIds: string[],
-      caseId?: string,
-      skillNames?: string[],
-      approvedSpecs?: Record<string, unknown>,
-    ) => {
+    async ({ caseIds, allCaseIds, skillNames, approvedSpecs }: StartRunOptions) => {
       if (!suiteId) return;
       stop();
+      const seedIds = caseIds ?? allCaseIds;
       // 预置所有用例为 pending
       const seed: Record<string, CaseRunState> = {};
-      for (const cid of caseIds)
+      for (const cid of seedIds)
         seed[cid] = { status: "pending", steps: [], phases: [] };
       setStatuses(seed);
+      setTotalCases(seedIds.length);
       setRunning(true);
       setDone(false);
       setResult(null);
@@ -289,10 +298,8 @@ export function useSuiteRun(suiteId: string | undefined) {
       setAborting(false);
 
       try {
-        const runPath = caseId
-          ? `/suites/${suiteId}/run?case_id=${encodeURIComponent(caseId)}`
-          : `/suites/${suiteId}/run`;
-        const { run_id } = await apiPost<{ run_id: string }>(runPath, {
+        const { run_id } = await apiPost<{ run_id: string }>(`/suites/${suiteId}/run`, {
+          case_ids: caseIds,
           skill_names: skillNames ?? [],
           approved_specs: approvedSpecs ?? {},
         });
@@ -317,6 +324,7 @@ export function useSuiteRun(suiteId: string | undefined) {
           seed[cid] = { status: "pending", steps: [], phases: [] };
         setStatuses(seed);
       }
+      setTotalCases(caseIds?.length ?? 0);
       setRunId(run_id);
       setRunning(true);
       setDone(false);
@@ -347,6 +355,7 @@ export function useSuiteRun(suiteId: string | undefined) {
     error,
     runId,
     aborting,
+    totalCases,
     start,
     resume,
     requestStop,

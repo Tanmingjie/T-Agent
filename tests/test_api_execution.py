@@ -134,6 +134,47 @@ async def test_run_single_case_filters_to_one(client, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_run_selected_cases_creates_one_partial_run(client, monkeypatch):
+    monkeypatch.setenv("RUN_MODE", "embedded")
+    import api.routers.execution as execmod
+
+    monkeypatch.setattr(execmod, "spawn_run", lambda run_id, main: None)
+
+    response = await client.post(
+        "/api/suites/sx/run",
+        json={"case_ids": ["t2", "t1"]},
+    )
+
+    assert response.status_code == 200
+    import api.server as srv
+
+    run = await srv._repo.get_run(response.json()["run_id"])
+    assert run["total_cases"] == 2
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "case_ids",
+    [[], ["t1", "t1"], ["t1", "missing"]],
+)
+async def test_run_rejects_invalid_selected_case_ids(client, case_ids):
+    response = await client.post("/api/suites/sx/run", json={"case_ids": case_ids})
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
+async def test_run_rejects_legacy_and_list_selection_together(client):
+    response = await client.post(
+        "/api/suites/sx/run?case_id=t1",
+        json={"case_ids": ["t2"]},
+    )
+
+    assert response.status_code == 400
+    assert "不能同时提供" in response.json()["detail"]
+
+
+@pytest.mark.asyncio
 async def test_run_single_business_case_includes_configured_login_once(client, monkeypatch):
     monkeypatch.setenv("RUN_MODE", "embedded")
     import api.routers.execution as execmod
@@ -185,6 +226,23 @@ async def test_run_queue_mode_persists_skill_names(client, monkeypatch):
     queued = await srv._store.get_queued_run(run_id)
     assert queued is not None
     assert queued.skill_names == ["登录流程", "下单校验"]
+
+
+@pytest.mark.asyncio
+async def test_run_queue_mode_persists_selected_case_ids(client, monkeypatch):
+    monkeypatch.setenv("RUN_MODE", "queue")
+
+    response = await client.post(
+        "/api/suites/sx/run",
+        json={"case_ids": ["t2", "t1"]},
+    )
+
+    assert response.status_code == 200
+    import api.server as srv
+
+    queued = await srv._store.get_queued_run(response.json()["run_id"])
+    assert queued.case_ids == ["t2", "t1"]
+    assert queued.case_id is None
 
 
 @pytest.mark.asyncio
@@ -248,6 +306,41 @@ async def test_spec_preview_single_case_includes_configured_login(client, monkey
 
 
 @pytest.mark.asyncio
+async def test_spec_preview_selected_cases_uses_suite_order_and_login(client, monkeypatch):
+    from harness.llm import LLMResponse
+
+    class _LLM:
+        async def chat(self, messages, **kwargs):
+            return LLMResponse(
+                content=(
+                    '{"intent":"检查页面","preconditions":[],"phases":['
+                    '{"steps":["打开页面"],"expected":"页面显示 Ready"}]}'
+                )
+            )
+
+    monkeypatch.setattr("harness.llm.build_llm_client", lambda config: _LLM())
+    await client.put(
+        "/api/suites/sx/settings",
+        json={"permission_mode": "trust", "login_setup_case_id": "login"},
+    )
+
+    response = await client.post(
+        "/api/suites/sx/spec-preview",
+        json={"case_ids": ["t2", "t1"]},
+    )
+
+    assert response.status_code == 200
+    assert [spec["case_id"] for spec in response.json()["specs"]] == ["login", "t1", "t2"]
+
+
+@pytest.mark.asyncio
+async def test_spec_preview_rejects_empty_selected_case_ids(client):
+    response = await client.post("/api/suites/sx/spec-preview", json={"case_ids": []})
+
+    assert response.status_code == 400
+
+
+@pytest.mark.asyncio
 async def test_run_persists_human_approved_specs(client, monkeypatch):
     monkeypatch.setenv("RUN_MODE", "queue")
     spec = {
@@ -306,6 +399,27 @@ async def test_run_approved_specs_accept_configured_login_case(client, monkeypat
     events = await srv._store.list_run_events(response.json()["run_id"])
     approved = next(event for event in events if event.event_type == "specs_approved")
     assert set(approved.data["specs"]) == {"login", "t1"}
+
+
+@pytest.mark.asyncio
+async def test_run_selected_approved_specs_rejects_unselected_case(client, monkeypatch):
+    monkeypatch.setenv("RUN_MODE", "queue")
+    spec = {
+        "case_id": "t2",
+        "name": "C2",
+        "base_url": "https://x.com",
+        "intent": "不属于本次范围",
+        "preconditions": [],
+        "phases": [{"steps": ["打开页面"], "expected": "完成"}],
+    }
+
+    response = await client.post(
+        "/api/suites/sx/run",
+        json={"case_ids": ["t1"], "approved_specs": {"t2": spec}},
+    )
+
+    assert response.status_code == 400
+    assert "非本次执行用例" in response.json()["detail"]
 
 
 @pytest.mark.asyncio

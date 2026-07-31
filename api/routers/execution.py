@@ -56,6 +56,8 @@ logger = logging.getLogger(__name__)
 
 
 class RunOptions(BaseModel):
+    # null/未提供=全量；非空列表=部分执行；显式空列表由路由拒绝。
+    case_ids: list[str] | None = None
     # 本次执行强制加载的项目 skill 名(一次性,随本次 run;空=全走渐进披露)。
     skill_names: list[str] = Field(default_factory=list)
     # 人工审核后的规格。空表示沿用执行期即时翻译。
@@ -63,8 +65,18 @@ class RunOptions(BaseModel):
 
 
 class SpecPreviewOptions(BaseModel):
+    # case_id 保留兼容旧前端；新调用统一使用 case_ids。
     case_id: str | None = None
+    case_ids: list[str] | None = None
     skill_names: list[str] = Field(default_factory=list)
+
+
+def _normalize_requested_case_ids(
+    *, legacy_case_id: str | None, case_ids: list[str] | None
+) -> list[str] | None:
+    if legacy_case_id is not None and case_ids is not None:
+        raise HTTPException(400, "case_id 与 case_ids 不能同时提供")
+    return [legacy_case_id] if legacy_case_id is not None else case_ids
 
 
 async def _translation_context(store, suite, skill_names: list[str]) -> tuple[object, str]:
@@ -101,11 +113,15 @@ async def preview_specs(
     all_cases = await repo.list_by_suite(suite_id)
     if not all_cases:
         raise HTTPException(400, "Suite 没有用例，请先上传 Excel")
+    requested_case_ids = _normalize_requested_case_ids(
+        legacy_case_id=options.case_id,
+        case_ids=options.case_ids,
+    )
     settings = await get_suite_settings(store, suite_id)
     try:
         cases, _ = resolve_effective_cases(
             all_cases,
-            requested_case_id=options.case_id,
+            requested_case_ids=requested_case_ids,
             login_setup_case_id=settings.get("login_setup_case_id"),
         )
     except ValueError as exc:
@@ -131,12 +147,16 @@ async def trigger_run(
     repo=Depends(get_repo),
     store=Depends(get_store),
 ):
-    """触发执行。``case_id`` 给定时只跑该单条用例(抽屉里的「执行」按钮),否则跑整套件。
+    """触发执行。``case_ids`` 选择部分用例；旧 ``case_id`` 继续兼容单条执行。
 
     ``options.skill_names``:执行前勾选的项目 skill → 本次强制加载(详见 execute_run)。
     """
     skill_names = options.skill_names if options is not None else []
     approved_specs = options.approved_specs if options is not None else {}
+    requested_case_ids = _normalize_requested_case_ids(
+        legacy_case_id=case_id,
+        case_ids=options.case_ids if options is not None else None,
+    )
     suite = await repo.get_suite(suite_id)
     if suite is None:
         raise HTTPException(404, "Suite not found")
@@ -148,7 +168,7 @@ async def trigger_run(
     try:
         cases, _ = resolve_effective_cases(
             all_cases,
-            requested_case_id=case_id,
+            requested_case_ids=requested_case_ids,
             login_setup_case_id=settings.get("login_setup_case_id"),
         )
     except ValueError as exc:
@@ -193,7 +213,13 @@ async def trigger_run(
     # 默认 embedded:进程内守护线程执行(单机)。两模式进度都落 run_event 表,/stream 统一
     # 从表重放+尾随 → 退出执行页再进来可看全程。
     if os.getenv("RUN_MODE") == "queue":
-        await store.enqueue_run(run_id, suite_id, suite.project_id, case_id, skill_names)
+        await store.enqueue_run(
+            run_id,
+            suite_id,
+            suite.project_id,
+            case_ids=requested_case_ids,
+            skill_names=skill_names,
+        )
         return {"run_id": run_id, "status": "queued"}
 
     api_loop = asyncio.get_running_loop()
@@ -238,7 +264,7 @@ async def trigger_run(
                 db_url=db_url,
                 run_id=run_id,
                 suite_id=suite_id,
-                case_id=case_id,
+                case_ids=requested_case_ids,
                 sse_cb=None,
                 perm_approver_factory=_perm_approver_factory,
                 force_skill_names=skill_names,
