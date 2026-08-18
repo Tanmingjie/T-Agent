@@ -21,6 +21,13 @@
 
 ## 安装
 
+> Midscene 集成后,项目有两套 Node 依赖:
+>
+> - 项目根目录 `package.json`: Midscene runner 依赖,包括 `@midscene/web`、`playwright`、`@playwright/test`。
+> - `frontend/package.json`: 前端控制台依赖。
+>
+> 新环境两处都要安装；已有环境从旧 ReAct/playwright-mcp 版本升级时,重点是补装项目根目录依赖。
+
 ### Windows PowerShell
 
 ```powershell
@@ -60,6 +67,35 @@ pip install -r requirements.txt
 
 npm install --ignore-scripts --cache .npm-cache
 cd frontend && npm install && cd ..
+```
+
+### 已有环境升级依赖
+
+如果机器上已经部署过旧版本,拉取 Midscene 集成后的代码后执行:
+
+```powershell
+# Python 依赖通常无新增；为保持一致可重跑
+pip install -r requirements.txt
+
+# 必须在项目根目录执行:安装 Midscene runner 依赖
+npm install --ignore-scripts --cache .npm-cache
+
+# 前端如 package-lock 有变化再执行
+cd frontend
+npm install
+cd ..
+```
+
+服务器不能联网下载浏览器时,不要强行跑 Playwright 浏览器安装；直接配置已有 Chrome/Chromium:
+
+```dotenv
+MIDSCENE_BROWSER_EXECUTABLE=/absolute/path/to/chrome
+```
+
+能联网时可在项目根目录安装 Playwright Chromium:
+
+```powershell
+npx playwright install chromium
 ```
 
 ## 配置
