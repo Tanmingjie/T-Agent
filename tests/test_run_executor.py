@@ -10,7 +10,16 @@ import pytest
 
 from api.repository import SQLModelRepository, set_suite_settings
 from api.run_executor import execute_run
-from input.models import Project, ProjectSkill, Suite, TestCase
+from harness.execution_memory import case_fingerprint
+from input.models import (
+    CaseExecutionMemory,
+    Phase,
+    Project,
+    ProjectSkill,
+    Suite,
+    TestCase,
+    TestSpec,
+)
 from storage.db import Store
 
 
@@ -261,6 +270,234 @@ async def test_execute_run_loads_human_approved_specs_from_run_event(tmp_path, m
 
     assert captured["spec"].phases[0].steps == ["人工步骤"]
     assert captured["spec"].phases[0].expected == "人工预期"
+
+
+@pytest.mark.asyncio
+async def test_execute_run_reuses_successful_case_memory(tmp_path, monkeypatch):
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/memory.db"
+    store = Store(url=db_url)
+    await store.init()
+    repo = SQLModelRepository(store)
+    suite = Suite(id="sx", name="SX", base_url="https://x.com", project_id="p1", version_id="v1")
+    case = TestCase(
+        id="t1",
+        name="C1",
+        steps=["原始步骤"],
+        expected=["成功"],
+        base_url="https://x.com",
+        suite_id="sx",
+    )
+    await repo.create(suite)
+    await repo.bulk_insert([case])
+    run_id = "memory-run"
+    await repo.create_run(run_id, "sx", 1, "p1", "v1")
+    spec = TestSpec(
+        case_id="t1",
+        name="C1",
+        base_url="https://x.com",
+        phases=[Phase(steps=["记忆步骤"], expected="记忆预期")],
+    )
+    await store.save_case_memory(
+        CaseExecutionMemory(
+            id="mem1",
+            project_id="p1",
+            version_id="v1",
+            suite_id="sx",
+            case_id="t1",
+            base_url="https://x.com",
+            case_hash=case_fingerprint(
+                case,
+                project_id="p1",
+                version_id="v1",
+                suite_id="sx",
+                base_url="https://x.com",
+            ),
+            spec=spec,
+            experience="- 不要重复点击",
+            source_run_id="old-run",
+            source_exec_id="old-exec",
+        )
+    )
+
+    import harness.orchestrator as orch_mod
+
+    captured = {}
+
+    class _InspectingOrch:
+        def __init__(self, *, agent_factory):
+            self.agent_factory = agent_factory
+
+        async def run_suite(self, cases, **kwargs):
+            async with self.agent_factory() as agent:
+                captured["spec"] = agent.approved_specs["t1"]
+                captured["source"] = agent.approved_spec_sources["t1"]
+                captured["context"] = agent.case_contexts["t1"]
+
+            class _R:
+                passed_count = 0
+                failed_count = 0
+
+            return _R()
+
+    monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
+
+    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx")
+
+    assert captured["spec"].phases[0].steps == ["记忆步骤"]
+    assert captured["source"]["type"] == "memory"
+    assert "不要重复点击" in captured["context"]
+
+
+@pytest.mark.asyncio
+async def test_execute_run_human_spec_overrides_memory(tmp_path, monkeypatch):
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/memory-human.db"
+    store = Store(url=db_url)
+    await store.init()
+    repo = SQLModelRepository(store)
+    suite = Suite(id="sx", name="SX", base_url="https://x.com", project_id="p1", version_id="v1")
+    case = TestCase(
+        id="t1",
+        name="C1",
+        steps=["原始步骤"],
+        expected=["成功"],
+        base_url="https://x.com",
+        suite_id="sx",
+    )
+    await repo.create(suite)
+    await repo.bulk_insert([case])
+    run_id = "memory-human-run"
+    await repo.create_run(run_id, "sx", 1, "p1", "v1")
+    await store.save_case_memory(
+        CaseExecutionMemory(
+            id="mem1",
+            project_id="p1",
+            version_id="v1",
+            suite_id="sx",
+            case_id="t1",
+            base_url="https://x.com",
+            case_hash=case_fingerprint(
+                case, project_id="p1", version_id="v1", suite_id="sx", base_url="https://x.com"
+            ),
+            spec=TestSpec(
+                case_id="t1",
+                name="C1",
+                base_url="https://x.com",
+                phases=[Phase(steps=["记忆步骤"], expected="记忆预期")],
+            ),
+            experience="- 经验",
+        )
+    )
+    await store.append_run_event(
+        run_id,
+        "specs_approved",
+        {
+            "specs": {
+                "t1": TestSpec(
+                    case_id="t1",
+                    name="C1",
+                    base_url="https://x.com",
+                    phases=[Phase(steps=["人工步骤"], expected="人工预期")],
+                ).model_dump(mode="json")
+            }
+        },
+    )
+
+    import harness.orchestrator as orch_mod
+
+    captured = {}
+
+    class _InspectingOrch:
+        def __init__(self, *, agent_factory):
+            self.agent_factory = agent_factory
+
+        async def run_suite(self, cases, **kwargs):
+            async with self.agent_factory() as agent:
+                captured["spec"] = agent.approved_specs["t1"]
+                captured["sources"] = agent.approved_spec_sources
+
+            class _R:
+                passed_count = 0
+                failed_count = 0
+
+            return _R()
+
+    monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
+
+    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx")
+
+    assert captured["spec"].phases[0].steps == ["人工步骤"]
+    assert "t1" not in captured["sources"]
+
+
+@pytest.mark.asyncio
+async def test_execute_run_retranslate_bypasses_memory(tmp_path, monkeypatch):
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/memory-bypass.db"
+    store = Store(url=db_url)
+    await store.init()
+    repo = SQLModelRepository(store)
+    suite = Suite(id="sx", name="SX", base_url="https://x.com", project_id="p1", version_id="v1")
+    case = TestCase(
+        id="t1",
+        name="C1",
+        steps=["原始步骤"],
+        expected=["成功"],
+        base_url="https://x.com",
+        suite_id="sx",
+    )
+    await repo.create(suite)
+    await repo.bulk_insert([case])
+    await repo.create_run("memory-bypass-run", "sx", 1, "p1", "v1")
+    await store.save_case_memory(
+        CaseExecutionMemory(
+            id="mem1",
+            project_id="p1",
+            version_id="v1",
+            suite_id="sx",
+            case_id="t1",
+            base_url="https://x.com",
+            case_hash=case_fingerprint(
+                case, project_id="p1", version_id="v1", suite_id="sx", base_url="https://x.com"
+            ),
+            spec=TestSpec(
+                case_id="t1",
+                name="C1",
+                base_url="https://x.com",
+                phases=[Phase(steps=["记忆步骤"], expected="记忆预期")],
+            ),
+            experience="- 经验",
+        )
+    )
+
+    import harness.orchestrator as orch_mod
+
+    captured = {}
+
+    class _InspectingOrch:
+        def __init__(self, *, agent_factory):
+            self.agent_factory = agent_factory
+
+        async def run_suite(self, cases, **kwargs):
+            async with self.agent_factory() as agent:
+                captured["approved_specs"] = dict(agent.approved_specs)
+                captured["contexts"] = dict(agent.case_contexts)
+
+            class _R:
+                passed_count = 0
+                failed_count = 0
+
+            return _R()
+
+    monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
+
+    await execute_run(
+        db_url=db_url,
+        run_id="memory-bypass-run",
+        suite_id="sx",
+        retranslate_case_ids=["t1"],
+    )
+
+    assert "t1" not in captured["approved_specs"]
+    assert "t1" not in captured["contexts"]
 
 
 @pytest.mark.asyncio

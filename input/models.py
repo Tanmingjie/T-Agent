@@ -180,6 +180,30 @@ class ProjectSkill(BaseModel):
     updated_at: float = Field(default_factory=time.time)
 
 
+class CaseExecutionMemory(BaseModel):
+    """成功用例执行记忆:复用已通过 TestSpec + 注入用例级成功经验。"""
+
+    id: str
+    project_id: str = ""
+    version_id: str = ""
+    suite_id: str = ""
+    case_id: str = ""
+    base_url: str = ""
+    case_hash: str = ""
+    spec: TestSpec
+    experience: str = ""
+    enabled: bool = True
+    stale: bool = False
+    source_run_id: str = ""
+    source_exec_id: str = ""
+    usage_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    consecutive_failures: int = 0
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class Suite(BaseModel):
     """用例套件(规格 §4)。"""
 

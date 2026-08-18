@@ -58,6 +58,7 @@ interface StartRunOptions {
   allCaseIds: string[];
   skillNames?: string[];
   approvedSpecs?: Record<string, unknown>;
+  retranslateCaseIds?: string[];
 }
 
 /**
@@ -281,7 +282,13 @@ export function useSuiteRun(suiteId: string | undefined) {
   );
 
   const start = useCallback(
-    async ({ caseIds, allCaseIds, skillNames, approvedSpecs }: StartRunOptions) => {
+    async ({
+      caseIds,
+      allCaseIds,
+      skillNames,
+      approvedSpecs,
+      retranslateCaseIds,
+    }: StartRunOptions) => {
       if (!suiteId) return;
       stop();
       const seedIds = caseIds ?? allCaseIds;
@@ -302,6 +309,7 @@ export function useSuiteRun(suiteId: string | undefined) {
           case_ids: caseIds,
           skill_names: skillNames ?? [],
           approved_specs: approvedSpecs ?? {},
+          retranslate_case_ids: retranslateCaseIds ?? [],
         });
         setRunId(run_id);
         attach(run_id);

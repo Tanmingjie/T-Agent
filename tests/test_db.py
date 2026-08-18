@@ -10,10 +10,13 @@ import pytest
 
 from input.models import (
     ActionStep,
+    CaseExecutionMemory,
     ExecutionRecord,
     PageVocabulary,
+    Phase,
     Suite,
     TestCase,
+    TestSpec,
 )
 from storage.db import Store
 
@@ -103,6 +106,94 @@ async def test_list_records_filter_by_case(store):
     await store.save_record(ExecutionRecord(exec_id="e3", case_id="TC1"))
     recs = await store.list_records(case_id="TC1")
     assert {r.exec_id for r in recs} == {"e1", "e3"}
+
+
+# ── CaseExecutionMemory ─────────────────────────────────────
+
+
+def _memory(memory_id="m1", case_hash="h1", *, enabled=True, stale=False):
+    return CaseExecutionMemory(
+        id=memory_id,
+        project_id="p1",
+        version_id="v1",
+        suite_id="s1",
+        case_id="c1",
+        base_url="https://x",
+        case_hash=case_hash,
+        spec=TestSpec(
+            case_id="c1",
+            name="C1",
+            base_url="https://x",
+            phases=[Phase(steps=["成功步骤"], expected="成功预期")],
+        ),
+        experience="- 点击后等待状态稳定",
+        enabled=enabled,
+        stale=stale,
+        source_run_id="r1",
+        source_exec_id="e1",
+    )
+
+
+async def test_case_execution_memory_roundtrip(store):
+    await store.save_case_memory(_memory())
+    got = await store.find_case_memory(
+        project_id="p1",
+        version_id="v1",
+        suite_id="s1",
+        case_id="c1",
+        base_url="https://x",
+        case_hash="h1",
+    )
+    assert got is not None
+    assert got.spec.phases[0].steps == ["成功步骤"]
+    assert got.experience == "- 点击后等待状态稳定"
+
+
+async def test_case_execution_memory_hash_mismatch_and_disabled(store):
+    await store.save_case_memory(_memory(enabled=False))
+    assert (
+        await store.find_case_memory(
+            project_id="p1",
+            version_id="v1",
+            suite_id="s1",
+            case_id="c1",
+            base_url="https://x",
+            case_hash="h2",
+        )
+        is None
+    )
+    assert (
+        await store.find_case_memory(
+            project_id="p1",
+            version_id="v1",
+            suite_id="s1",
+            case_id="c1",
+            base_url="https://x",
+            case_hash="h1",
+        )
+        is None
+    )
+    got = await store.find_case_memory(
+        project_id="p1",
+        version_id="v1",
+        suite_id="s1",
+        case_id="c1",
+        base_url="https://x",
+        case_hash="h1",
+        enabled_only=False,
+    )
+    assert got is not None and got.enabled is False
+
+
+async def test_case_execution_memory_outcome_marks_stale(store):
+    await store.save_case_memory(_memory())
+    await store.record_case_memory_outcome("m1", passed=False)
+    await store.record_case_memory_outcome("m1", passed=False)
+    got = await store.get_case_memory("m1")
+    assert got is not None
+    assert got.usage_count == 2
+    assert got.failure_count == 2
+    assert got.stale is True
 
 
 # ── Suite / PageVocabulary ───────────────────────────────────

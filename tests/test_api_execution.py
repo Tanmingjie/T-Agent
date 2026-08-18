@@ -7,7 +7,8 @@ from httpx import ASGITransport, AsyncClient
 
 from api.repository import SQLModelRepository
 from api.server import app
-from input.models import Suite, TestCase
+from harness.execution_memory import case_fingerprint
+from input.models import CaseExecutionMemory, Phase, Suite, TestCase, TestSpec
 from storage.db import Store
 
 
@@ -105,6 +106,48 @@ async def test_update_settings_rejects_login_case_outside_suite(client, case_id)
 async def test_run_single_case_unknown_id_404(client):
     r = await client.post("/api/suites/sx/run?case_id=nope")
     assert r.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_get_and_toggle_case_memory(client):
+    import api.server as srv
+
+    store = srv._store
+    assert store is not None
+    case = await store.get_case("t1")
+    suite = await store.get_suite("sx")
+    assert case is not None and suite is not None
+    spec = TestSpec(
+        case_id="t1",
+        name="C1",
+        base_url="https://x.com",
+        phases=[Phase(steps=["记忆步骤"], expected="记忆预期")],
+    )
+    await store.save_case_memory(
+        CaseExecutionMemory(
+            id="mem1",
+            suite_id="sx",
+            case_id="t1",
+            base_url="https://x.com",
+            case_hash=case_fingerprint(case, suite_id="sx", base_url="https://x.com"),
+            spec=spec,
+            experience="- 成功经验",
+        )
+    )
+
+    r = await client.get("/api/suites/sx/cases/t1/memory")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["eligible"] is True
+    assert body["current"]["experience"] == "- 成功经验"
+
+    r = await client.patch(
+        "/api/suites/sx/cases/t1/memory/mem1",
+        json={"enabled": False},
+    )
+    assert r.status_code == 200
+    assert r.json()["enabled"] is False
+    assert (await client.get("/api/suites/sx/cases/t1/memory")).json()["eligible"] is False
 
 
 @pytest.mark.asyncio

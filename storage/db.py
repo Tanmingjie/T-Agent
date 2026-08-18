@@ -33,6 +33,7 @@ import json
 
 from input.models import (
     AuditLog,
+    CaseExecutionMemory,
     ExecutionRecord,
     PageVocabulary,
     Project,
@@ -88,6 +89,29 @@ class ProjectSkillRow(SQLModel, table=True):
     name: str = Field(primary_key=True)
     description: str = ""  # 简述:常驻 prompt 清单,供 LLM 判断是否 load_skill 展开
     content: str = ""
+    updated_at: float = 0.0
+
+
+class CaseExecutionMemoryRow(SQLModel, table=True):
+    __tablename__ = "case_execution_memory"
+    id: str = Field(primary_key=True)
+    project_id: str = Field(default="", index=True)
+    version_id: str = Field(default="", index=True)
+    suite_id: str = Field(default="", index=True)
+    case_id: str = Field(default="", index=True)
+    base_url: str = ""
+    case_hash: str = Field(default="", index=True)
+    spec: dict = Field(default_factory=dict, sa_column=Column(JSON))
+    experience: str = ""
+    enabled: bool = True
+    stale: bool = False
+    source_run_id: str = ""
+    source_exec_id: str = ""
+    usage_count: int = 0
+    success_count: int = 0
+    failure_count: int = 0
+    consecutive_failures: int = 0
+    created_at: float = 0.0
     updated_at: float = 0.0
 
 
@@ -179,6 +203,7 @@ class RunQueueRow(SQLModel, table=True):
     # 本次执行强制加载的项目 skill 名(一次性、随 run;空=全走渐进披露)。queue 模式下
     # 触发时落库,worker 领取后透传给 execute_run(embedded 模式直接走函数参数不经此列)。
     skill_names: list = Field(default_factory=list, sa_column=Column(JSON))
+    retranslate_case_ids: list = Field(default_factory=list, sa_column=Column(JSON))
 
 
 class RunEventRow(SQLModel, table=True):
@@ -534,6 +559,115 @@ class Store:
             await s.commit()
             return True
 
+    # —— CaseExecutionMemory(成功用例执行记忆)——
+
+    async def save_case_memory(self, memory: CaseExecutionMemory) -> None:
+        data = memory.model_dump(mode="json")
+        now = time.time()
+        async with self._sf() as s:
+            existing = await s.get(CaseExecutionMemoryRow, memory.id)
+            if existing is not None:
+                data["created_at"] = existing.created_at
+                data["usage_count"] = existing.usage_count
+                data["success_count"] = existing.success_count
+                data["failure_count"] = existing.failure_count
+                data["consecutive_failures"] = existing.consecutive_failures
+                data["enabled"] = existing.enabled
+            else:
+                data["created_at"] = memory.created_at or now
+            data["updated_at"] = now
+            await s.merge(CaseExecutionMemoryRow(**data))
+            await s.commit()
+
+    async def get_case_memory(self, memory_id: str) -> CaseExecutionMemory | None:
+        async with self._sf() as s:
+            row = await s.get(CaseExecutionMemoryRow, memory_id)
+            return CaseExecutionMemory(**row.model_dump()) if row else None
+
+    async def find_case_memory(
+        self,
+        *,
+        project_id: str = "",
+        version_id: str = "",
+        suite_id: str = "",
+        case_id: str,
+        base_url: str = "",
+        case_hash: str = "",
+        enabled_only: bool = True,
+        include_stale: bool = False,
+    ) -> CaseExecutionMemory | None:
+        stmt = select(CaseExecutionMemoryRow).where(
+            CaseExecutionMemoryRow.project_id == project_id,
+            CaseExecutionMemoryRow.version_id == version_id,
+            CaseExecutionMemoryRow.suite_id == suite_id,
+            CaseExecutionMemoryRow.case_id == case_id,
+            CaseExecutionMemoryRow.base_url == base_url,
+            CaseExecutionMemoryRow.case_hash == case_hash,
+        )
+        if enabled_only:
+            stmt = stmt.where(CaseExecutionMemoryRow.enabled == True)  # noqa: E712
+        if not include_stale:
+            stmt = stmt.where(CaseExecutionMemoryRow.stale == False)  # noqa: E712
+        stmt = stmt.order_by(CaseExecutionMemoryRow.updated_at.desc())
+        async with self._sf() as s:
+            row = (await s.exec(stmt)).first()
+            return CaseExecutionMemory(**row.model_dump()) if row else None
+
+    async def latest_case_memory(
+        self,
+        *,
+        project_id: str = "",
+        version_id: str = "",
+        suite_id: str = "",
+        case_id: str,
+    ) -> CaseExecutionMemory | None:
+        stmt = (
+            select(CaseExecutionMemoryRow)
+            .where(
+                CaseExecutionMemoryRow.project_id == project_id,
+                CaseExecutionMemoryRow.version_id == version_id,
+                CaseExecutionMemoryRow.suite_id == suite_id,
+                CaseExecutionMemoryRow.case_id == case_id,
+            )
+            .order_by(CaseExecutionMemoryRow.updated_at.desc())
+        )
+        async with self._sf() as s:
+            row = (await s.exec(stmt)).first()
+            return CaseExecutionMemory(**row.model_dump()) if row else None
+
+    async def set_case_memory_enabled(self, memory_id: str, enabled: bool) -> bool:
+        async with self._sf() as s:
+            row = await s.get(CaseExecutionMemoryRow, memory_id)
+            if row is None:
+                return False
+            row.enabled = enabled
+            row.updated_at = time.time()
+            s.add(row)
+            await s.commit()
+            return True
+
+    async def record_case_memory_outcome(
+        self, memory_id: str, *, passed: bool, stale_after_failures: int = 2
+    ) -> bool:
+        async with self._sf() as s:
+            row = await s.get(CaseExecutionMemoryRow, memory_id)
+            if row is None:
+                return False
+            row.usage_count += 1
+            if passed:
+                row.success_count += 1
+                row.consecutive_failures = 0
+                row.stale = False
+            else:
+                row.failure_count += 1
+                row.consecutive_failures += 1
+                if row.consecutive_failures >= stale_after_failures:
+                    row.stale = True
+            row.updated_at = time.time()
+            s.add(row)
+            await s.commit()
+            return True
+
     # —— PageVocabulary(按缓存键 upsert)——
 
     async def save_vocabulary(self, v: PageVocabulary) -> None:
@@ -833,6 +967,7 @@ class Store:
         case_id: str | None = None,
         case_ids: list[str] | None = None,
         skill_names: list[str] | None = None,
+        retranslate_case_ids: list[str] | None = None,
     ) -> None:
         async with self._sf() as s:
             s.add(
@@ -845,6 +980,7 @@ class Store:
                     status="queued",
                     created_at=time.time(),
                     skill_names=skill_names or [],
+                    retranslate_case_ids=retranslate_case_ids or [],
                 )
             )
             await s.commit()

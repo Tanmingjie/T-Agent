@@ -8,7 +8,7 @@ import {
   useSyncExternalStore,
   type ReactNode,
 } from "react";
-import { apiGet } from "../api/client";
+import { apiGet, apiPatch } from "../api/client";
 import {
   CheckCircle,
   XCircle,
@@ -128,6 +128,31 @@ interface CaseResult {
   spec?: TestSpec | null;
   metrics?: CaseMetrics | null;
   midscene_artifacts?: MidsceneArtifacts | null;
+}
+
+interface CaseExecutionMemory {
+  id: string;
+  case_id: string;
+  case_hash: string;
+  spec: TestSpec;
+  experience: string;
+  enabled: boolean;
+  stale: boolean;
+  source_run_id: string;
+  source_exec_id: string;
+  usage_count: number;
+  success_count: number;
+  failure_count: number;
+  consecutive_failures: number;
+  updated_at: number;
+}
+
+interface CaseMemoryResp {
+  case_id: string;
+  case_hash: string;
+  current?: CaseExecutionMemory | null;
+  latest?: CaseExecutionMemory | null;
+  eligible: boolean;
 }
 
 interface CodeResp {
@@ -435,6 +460,116 @@ function InfoView({
       </section>
 
       <TranslationPromptBlock suiteId={suiteId} caseId={caseInfo.id} />
+    </div>
+  );
+}
+
+function MemoryView({
+  suiteId,
+  caseId,
+  memory,
+  onChanged,
+}: {
+  suiteId: string;
+  caseId: string;
+  memory: CaseMemoryResp | null;
+  onChanged: () => void;
+}) {
+  const current = memory?.current;
+  const latest = memory?.latest;
+  const shown = current ?? latest;
+  const [saving, setSaving] = useState(false);
+
+  async function setEnabled(enabled: boolean) {
+    if (!shown) return;
+    setSaving(true);
+    try {
+      await apiPatch(`/suites/${suiteId}/cases/${caseId}/memory/${shown.id}`, {
+        enabled,
+      });
+      onChanged();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="p-6 space-y-6 max-w-3xl">
+      <section>
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-surface-900 mb-1">
+          <Wrench size={15} className="text-brand-600" />
+          成功经验
+        </h3>
+        <p className="text-xs text-gray-400">
+          PASS 后沉淀的执行规格和经验。命中时会跳过重新翻译,并把经验注入 Midscene 执行上下文。
+        </p>
+      </section>
+
+      {!shown ? (
+        <div className="rounded-md border border-dashed border-gray-200 bg-white px-4 py-8 text-center text-sm text-gray-400">
+          暂无成功经验。该用例 PASS 后会自动沉淀。
+        </div>
+      ) : (
+        <>
+          <section className="rounded-lg border border-gray-200 bg-white p-4 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div className="space-y-1 text-xs text-gray-500">
+                <p>
+                  当前状态:
+                  <span className={memory?.eligible ? "text-brand-700" : "text-amber-700"}>
+                    {" "}
+                    {memory?.eligible
+                      ? "可复用"
+                      : shown.stale
+                        ? "疑似过期"
+                        : shown.enabled
+                          ? "当前用例未命中"
+                          : "已禁用"}
+                  </span>
+                </p>
+                <p>来源 Run: {shown.source_run_id || "-"}</p>
+                <p>
+                  使用 {shown.usage_count} 次 · 成功 {shown.success_count} · 失败{" "}
+                  {shown.failure_count}
+                </p>
+                <p>更新时间: {shown.updated_at ? new Date(shown.updated_at * 1000).toLocaleString() : "-"}</p>
+              </div>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={() => setEnabled(!shown.enabled)}
+                className={`shrink-0 px-3 py-1.5 rounded-md text-xs font-medium border transition-colors ${
+                  shown.enabled
+                    ? "border-red-200 text-red-600 hover:bg-red-50"
+                    : "border-brand-200 text-brand-700 hover:bg-brand-50"
+                } disabled:opacity-50`}
+              >
+                {shown.enabled ? "禁用复用" : "启用复用"}
+              </button>
+            </div>
+          </section>
+
+          <section>
+            <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+              经验摘要
+            </h4>
+            {shown.experience ? (
+              <pre className="text-sm leading-relaxed whitespace-pre-wrap bg-white border border-gray-200 rounded-md p-3">
+                {shown.experience}
+              </pre>
+            ) : (
+              <p className="text-sm text-gray-400">暂无经验摘要；仍可复用成功 TestSpec。</p>
+            )}
+          </section>
+
+          <section>
+            <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-1">
+              固化 TestSpec
+            </h4>
+            <CodeBlock code={JSON.stringify(shown.spec, null, 2)} />
+          </section>
+        </>
+      )}
     </div>
   );
 }
@@ -1120,7 +1255,7 @@ function BlinkCursor() {
   );
 }
 
-type Selection = { kind: "info" } | { kind: "result" };
+type Selection = { kind: "info" } | { kind: "memory" } | { kind: "result" };
 
 interface DisplayStep {
   no: number; // 用于截图 URL (history 用 step_no);live/spec 用序号
@@ -1164,6 +1299,7 @@ export default function CaseDrawerBody({
     [subscribeStream, getStream],
   );
   const [result, setResult] = useState<CaseResult | null>(null);
+  const [memory, setMemory] = useState<CaseMemoryResp | null>(null);
   const [code, setCode] = useState<string | null>(null);
   const [sel, setSel] = useState<Selection>({ kind: "info" });
 
@@ -1171,6 +1307,12 @@ export default function CaseDrawerBody({
   // 进行中的结果请求:重新加载时先 abort 上一次,避免 /result+/code 在 HTTP/1.1
   // 连接池上堆积 pending(SSE 长连接已占 1 个槽,反复点开会很快耗尽 6 连接上限)。
   const reqRef = useRef<AbortController | null>(null);
+
+  const loadMemory = useCallback(() => {
+    apiGet<CaseMemoryResp>(`/suites/${suiteId}/cases/${caseInfo.id}/memory`)
+      .then((data) => setMemory(data))
+      .catch(() => setMemory(null));
+  }, [suiteId, caseInfo.id]);
 
   const loadResult = useCallback(
     (autoSelect: boolean) => {
@@ -1206,7 +1348,9 @@ export default function CaseDrawerBody({
   useEffect(() => {
     setResult(null);
     setCode(null);
+    setMemory(null);
     setSel(isRunning ? { kind: "result" } : { kind: "info" });
+    loadMemory();
     if (!isRunning) loadResult(true);
     return () => reqRef.current?.abort(); // 关抽屉/切换时取消在途请求
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1220,6 +1364,7 @@ export default function CaseDrawerBody({
     prevStatus.current = status;
     if (prev === null) return; // 初次挂载由上面的 effect 处理,这里不重复拉
     if (status === "passed" || status === "failed") loadResult(true);
+    if (status === "passed" || status === "failed") loadMemory();
     if (isRunning) setSel({ kind: "result" }); // 执行中默认停在结果栏(running 视图)
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status]);
@@ -1333,6 +1478,35 @@ export default function CaseDrawerBody({
             </p>
           </button>
 
+          {memory?.latest && (
+            <button
+              onClick={() => setSel({ kind: "memory" })}
+              className={`w-full text-left rounded-lg border p-3 transition-colors ${
+                sel.kind === "memory"
+                  ? memory.eligible
+                    ? "border-brand-300 bg-brand-50/60"
+                    : "border-amber-300 bg-amber-50/60"
+                  : "border-gray-200 hover:bg-gray-50"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                <Wrench size={16} className="text-brand-600 shrink-0" />
+                <span className="text-sm font-medium text-surface-900">
+                  成功经验
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-gray-500 line-clamp-2">
+                {memory.eligible
+                  ? "已命中，可复用执行规格和经验。"
+                  : memory.latest.stale
+                    ? "经验疑似过期，当前不会自动复用。"
+                    : memory.latest.enabled
+                      ? "用例已变化，当前未命中。"
+                      : "已禁用，当前不会自动复用。"}
+              </p>
+            </button>
+          )}
+
           {/* Test result card(执行中显示转圈占位,参考 TestSprite) */}
           {(result || isRunning) && (
             <button
@@ -1384,6 +1558,13 @@ export default function CaseDrawerBody({
               suiteId={suiteId}
               caseInfo={caseInfo}
               spec={result?.spec ?? (liveState?.spec as TestSpec | undefined)}
+            />
+          ) : sel.kind === "memory" ? (
+            <MemoryView
+              suiteId={suiteId}
+              caseId={caseInfo.id}
+              memory={memory}
+              onChanged={loadMemory}
             />
           ) : (
             /* 过程时间线:执行中流式、执行后回溯,全过程一处可见 */

@@ -85,7 +85,8 @@ Node runner stdout 只输出最终 JSON；日志写 stderr 并被 Python 保存�
 
 ```json
 {
-  "skill_names": ["..."]
+  "skill_names": ["..."],
+  "retranslate_case_ids": ["..."]
 }
 ```
 
@@ -121,6 +122,17 @@ playwright
   的逐 token/逐工具时间线；如后续需要，再基于 Midscene 原生 progress/report 事件桥接，而不是自造
   第二套过程模型。
 - 停止执行当前只在启动前检查，runner 执行中协作式中止待补。
+
+## 成功经验复用
+
+Midscene 执行链路增加用例级成功经验复用:
+
+- PASS run 会按用例内容、Suite base_url 和项目版本生成指纹,保存成功 TestSpec 与执行经验总结。
+- 下次同一用例内容未变化时,执行总装会优先复用成功 TestSpec,减少重复翻译和翻译漂移。
+- 执行经验总结会作为用例级上下文注入 `MidsceneCaseAgent` 和 `VisualExecutor`,帮助模型理解业务背景、关键点击位置和状态判断方式。
+- 前端用例抽屉支持查看、禁用/启用成功经验;执行确认弹框支持“本次重新翻译”,用于绕过成功 TestSpec 复用。
+
+该能力不做坐标回放、Playwright 动作录制回放、半确定性回放或模型底层性能优化;它只复用已经验证 PASS 的规格与经验上下文。
 
 ## 结果展示重设计
 

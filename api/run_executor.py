@@ -40,6 +40,7 @@ async def execute_run(
     sse_cb: SSECallback | None = None,
     perm_approver_factory: Callable[[SSECallback], object] | None = None,
     force_skill_names: list[str] | None = None,
+    retranslate_case_ids: list[str] | None = None,
 ) -> None:
     """执行一个 run 到完成(自带独立 Store/loop 资源)。失败不抛,落 failed 状态。
 
@@ -50,6 +51,12 @@ async def execute_run(
         raise ValueError("case_id 与 case_ids 不能同时提供")
     requested_case_ids = [case_id] if case_id is not None else case_ids
     from api.repository import SQLModelRepository, get_suite_settings, resolve_effective_cases
+    from harness.execution_memory import (
+        build_experience_context,
+        case_fingerprint,
+        effective_base_url,
+        learn_from_success,
+    )
     from harness.llm import build_llm_client
     from harness.midscene_agent import MidsceneCaseAgent
     from harness.orchestrator import Orchestrator
@@ -126,13 +133,72 @@ async def execute_run(
                         f"{sk.content.strip()}"
                     )
 
+        bypass_memory = {case_id for case_id in (retranslate_case_ids or []) if case_id}
+        target_case_ids = {case.id for case in cases}
+        if bypass_memory - target_case_ids:
+            raise ValueError("重新翻译用例包含非本次执行用例")
+        memory_by_case = {}
+        memory_sources = {}
+        memory_contexts = {}
+        for case in cases:
+            if case.id in bypass_memory:
+                await _emit("execution_memory", {"case_id": case.id, "status": "bypassed"})
+                continue
+            base_url = effective_base_url(case, suite)
+            fingerprint = case_fingerprint(
+                case,
+                project_id=suite.project_id,
+                version_id=suite.version_id,
+                suite_id=suite.id,
+                base_url=base_url,
+            )
+            memory = await store.find_case_memory(
+                project_id=suite.project_id,
+                version_id=suite.version_id,
+                suite_id=suite.id,
+                case_id=case.id,
+                base_url=base_url,
+                case_hash=fingerprint,
+            )
+            if memory is None:
+                await _emit("execution_memory", {"case_id": case.id, "status": "miss"})
+                continue
+            memory_by_case[case.id] = memory
+            if case.id not in approved_specs:
+                approved_specs[case.id] = memory.spec
+                memory_sources[case.id] = {
+                    "type": "memory",
+                    "memory_id": memory.id,
+                    "source_run_id": memory.source_run_id,
+                    "stale": memory.stale,
+                }
+            context = build_experience_context(memory)
+            if context:
+                memory_contexts[case.id] = context
+            await _emit(
+                "execution_memory",
+                {
+                    "case_id": case.id,
+                    "status": "hit",
+                    "memory_id": memory.id,
+                    "source_run_id": memory.source_run_id,
+                    "stale": memory.stale,
+                    "used_spec": case.id in memory_sources,
+                    "used_experience": bool(context),
+                },
+            )
+
+        llm_client = build_llm_client(llm_config)
+
         @asynccontextmanager
         async def make_agent():
             agent = MidsceneCaseAgent(
-                llm=build_llm_client(llm_config),
+                llm=llm_client,
                 hooks=None,
                 translation_knowledge=translation_knowledge,
                 approved_specs=approved_specs,
+                approved_spec_sources=memory_sources,
+                case_contexts=memory_contexts,
             )
             yield agent
 
@@ -145,6 +211,40 @@ async def execute_run(
             case = _case_by_id.get(record.case_id)
             if case is not None and case.precondition_items:
                 await store.save_case(case)
+            memory = memory_by_case.get(record.case_id)
+            if memory is not None:
+                await store.record_case_memory_outcome(memory.id, passed=record.passed)
+                await _emit(
+                    "execution_memory",
+                    {
+                        "case_id": record.case_id,
+                        "status": "outcome",
+                        "memory_id": memory.id,
+                        "passed": record.passed,
+                    },
+                )
+            if case is not None and record.passed and record.spec is not None:
+                try:
+                    learned = await learn_from_success(
+                        store=store,
+                        llm=llm_client,
+                        suite=suite,
+                        case=case,
+                        record=record,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning("学习成功执行经验失败 case=%s", record.case_id, exc_info=True)
+                    learned = None
+                if learned is not None:
+                    await _emit(
+                        "execution_memory",
+                        {
+                            "case_id": record.case_id,
+                            "status": "learned",
+                            "memory_id": learned.id,
+                            "has_experience": bool(learned.experience.strip()),
+                        },
+                    )
 
         async def _should_abort() -> bool:
             """协作式停止信号:用户「停止」请求落 run_record.cancel_requested,执行链轮询。"""

@@ -148,6 +148,7 @@ export default function SuiteCasesPage() {
   };
   const [runModal, setRunModal] = useState<RunTarget | null>(null);
   const [manualSpecReview, setManualSpecReview] = useState(false);
+  const [retranslateMemory, setRetranslateMemory] = useState(false);
   const [previewing, setPreviewing] = useState(false);
   const previewAbortRef = useRef<AbortController | null>(null);
   const [reviewTarget, setReviewTarget] = useState<RunTarget | null>(null);
@@ -290,6 +291,9 @@ export default function SuiteCasesPage() {
   async function confirmRun() {
     const target = runModal;
     if (!target) return;
+    const retranslateCaseIds = retranslateMemory
+      ? target.caseIds ?? cases.map((c) => c.id)
+      : [];
     if (manualSpecReview) {
       const controller = new AbortController();
       previewAbortRef.current = controller;
@@ -317,12 +321,13 @@ export default function SuiteCasesPage() {
       return;
     }
     setRunModal(null);
-    executeTarget(target);
+    executeTarget(target, undefined, retranslateCaseIds);
   }
 
   function executeTarget(
     target: RunTarget,
     approvedSpecs?: EditableTestSpec[],
+    retranslateCaseIds?: string[],
   ) {
     const approved = Object.fromEntries(
       (approvedSpecs ?? []).map((spec) => [spec.case_id, spec]),
@@ -335,6 +340,7 @@ export default function SuiteCasesPage() {
       allCaseIds: cases.map((c) => c.id),
       skillNames: forceSkills,
       approvedSpecs: approved,
+      retranslateCaseIds: retranslateCaseIds ?? [],
     });
   }
 
@@ -642,6 +648,33 @@ export default function SuiteCasesPage() {
               </div>
 
               <div>
+                <div className="flex items-center justify-between gap-4 px-3 py-3 rounded-md border border-gray-200">
+                  <div>
+                    <div className="text-sm font-medium text-surface-900">本次重新翻译</div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      绕过已沉淀的成功执行规格和经验,重新生成 TestSpec。
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label="本次重新翻译"
+                    aria-checked={retranslateMemory}
+                    onClick={() => setRetranslateMemory((value) => !value)}
+                    className={`relative w-10 h-6 shrink-0 rounded-full transition-colors ${
+                      retranslateMemory ? "bg-brand-600" : "bg-gray-300"
+                    }`}
+                  >
+                    <span
+                      className={`absolute left-0 top-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${
+                        retranslateMemory ? "translate-x-5" : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+              </div>
+
+              <div>
                 <div className="text-xs font-medium text-gray-500 px-1 mb-2">
                   强制加载 Skill
                 </div>
@@ -736,9 +769,12 @@ export default function SuiteCasesPage() {
           }}
           onConfirm={(specs) => {
             const target = reviewTarget;
+            const retranslateCaseIds = retranslateMemory
+              ? target.caseIds ?? cases.map((c) => c.id)
+              : [];
             setReviewSpecs(null);
             setReviewTarget(null);
-            executeTarget(target, specs);
+            executeTarget(target, specs, retranslateCaseIds);
           }}
         />
       )}

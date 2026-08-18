@@ -28,6 +28,8 @@ class MidsceneCaseAgent:
         visual_executor: VisualExecutor | None = None,
         translation_knowledge: str = "",
         approved_specs: dict[str, TestSpec] | None = None,
+        approved_spec_sources: dict[str, dict] | None = None,
+        case_contexts: dict[str, str] | None = None,
         spec_generator: SpecGenerator | None = None,
         hooks: HookManager | None = None,
         step_callback: Callable[[str, dict], Coroutine] | None = None,
@@ -36,13 +38,15 @@ class MidsceneCaseAgent:
         self.visual_executor = visual_executor or VisualExecutor()
         self.translation_knowledge = translation_knowledge
         self.approved_specs = approved_specs or {}
+        self.approved_spec_sources = approved_spec_sources or {}
+        self.case_contexts = case_contexts or {}
         self.spec_generator = spec_generator or SpecGenerator(llm)
         self.hooks = hooks
         self.step_callback = step_callback
 
     async def generate_spec(self, case: TestCase, *, on_delta=None) -> TestSpec:
         return await self.spec_generator.generate(
-            case, knowledge=self.translation_knowledge, on_delta=on_delta
+            case, knowledge=self._context_for(case), on_delta=on_delta
         )
 
     async def run(
@@ -79,15 +83,29 @@ class MidsceneCaseAgent:
                 await self.hooks.run(AFTER_CASE, ctx)
                 return record
 
+        source = self.approved_spec_sources.get(case.id)
         await emit(
-            "phase", {"case_id": case.id, "phase": "spec", "label": "翻译用例为执行规格 (TestSpec)"}
+            "phase",
+            {
+                "case_id": case.id,
+                "phase": "spec",
+                "label": "复用成功执行规格 (TestSpec)" if source else "翻译用例为执行规格 (TestSpec)",
+            },
         )
         if spec is None:
             spec = self.approved_specs.get(case.id)
+            source = self.approved_spec_sources.get(case.id) if spec is not None else None
         if spec is None:
             spec = await self.generate_spec(case)
         recorder.set_spec(spec)
-        await emit("spec_ready", {"case_id": case.id, "spec": spec.model_dump(mode="json")})
+        await emit(
+            "spec_ready",
+            {
+                "case_id": case.id,
+                "spec": spec.model_dump(mode="json"),
+                "source": source or {"type": "translation"},
+            },
+        )
 
         if should_abort is not None and await should_abort():
             record = recorder.finalize(
@@ -103,7 +121,7 @@ class MidsceneCaseAgent:
             run_id=run_id or "norun",
             case=case,
             spec=spec,
-            execution_context=self.translation_knowledge,
+            execution_context=self._context_for(case),
             storage_state_path=storage_state_path,
             capture_storage_state=capture_storage_state,
         )
@@ -141,9 +159,14 @@ class MidsceneCaseAgent:
                 },
             }
         )
+        if source:
+            record_memory = dict(source)
+        else:
+            record_memory = {"type": "none"}
 
         final_result = "" if passed else self._failure_summary(result, assertions)
         record = recorder.finalize(passed=passed, final_result=final_result)
+        record.metrics["execution_memory"] = record_memory
 
         if self.hooks is not None:
             ctx.set("passed", passed)
@@ -151,6 +174,14 @@ class MidsceneCaseAgent:
                 await self.hooks.run(ON_FAILURE, ctx)
             await self.hooks.run(AFTER_CASE, ctx)
         return record
+
+    def _context_for(self, case: TestCase) -> str:
+        extra = self.case_contexts.get(case.id, "").strip()
+        if not extra:
+            return self.translation_knowledge
+        if not self.translation_knowledge.strip():
+            return extra
+        return f"{self.translation_knowledge}\n\n{extra}"
 
     @staticmethod
     def _action_steps(result: VisualExecutionResult) -> list[ActionStep]:

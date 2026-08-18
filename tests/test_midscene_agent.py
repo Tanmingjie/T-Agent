@@ -113,6 +113,65 @@ async def test_midscene_agent_uses_human_approved_spec_without_translation():
 
 
 @pytest.mark.asyncio
+async def test_midscene_agent_reports_memory_spec_source():
+    approved = _spec()
+    visual = _FakeVisualExecutor(
+        VisualExecutionResult(
+            passed=True,
+            stop_reason="completed",
+            phase_results=[
+                VisualPhaseResult(phase_index=0, status="pass"),
+                VisualPhaseResult(phase_index=1, status="pass"),
+            ],
+        )
+    )
+    events = []
+
+    async def cb(ev, data):
+        events.append((ev, data))
+
+    agent = MidsceneCaseAgent(
+        llm=_NoopLLM(),
+        visual_executor=visual,
+        approved_specs={"tc1": approved},
+        approved_spec_sources={"tc1": {"type": "memory", "memory_id": "mem1"}},
+    )
+
+    record = await agent.run(_case(), step_callback=cb, run_id="run1")
+
+    spec_ready = next(data for ev, data in events if ev == "spec_ready")
+    assert spec_ready["source"]["memory_id"] == "mem1"
+    assert record.metrics["execution_memory"]["memory_id"] == "mem1"
+
+
+@pytest.mark.asyncio
+async def test_midscene_agent_injects_only_matching_case_context():
+    visual = _FakeVisualExecutor(
+        VisualExecutionResult(
+            passed=True,
+            stop_reason="completed",
+            phase_results=[
+                VisualPhaseResult(phase_index=0, status="pass"),
+                VisualPhaseResult(phase_index=1, status="pass"),
+            ],
+        )
+    )
+    agent = MidsceneCaseAgent(
+        llm=_NoopLLM(),
+        visual_executor=visual,
+        translation_knowledge="项目规范",
+        case_contexts={"tc1": "tc1 成功经验", "tc2": "tc2 成功经验"},
+    )
+
+    await agent.run(_case(), spec=_spec(), run_id="run1")
+
+    context = visual.calls[0][3]
+    assert "项目规范" in context
+    assert "tc1 成功经验" in context
+    assert "tc2 成功经验" not in context
+
+
+@pytest.mark.asyncio
 async def test_midscene_agent_passes_storage_state_options_to_visual_executor(tmp_path):
     visual = _FakeVisualExecutor(
         VisualExecutionResult(
