@@ -527,9 +527,9 @@ function MemoryView({
                           : "已禁用"}
                   </span>
                 </p>
-                <p>来源 Run: {shown.source_run_id || "-"}</p>
+                <p>来源 PASS Run: {shown.source_run_id || "-"}</p>
                 <p>
-                  使用 {shown.usage_count} 次 · 成功 {shown.success_count} · 失败{" "}
+                  复用 {shown.usage_count} 次 · 复用成功 {shown.success_count} · 复用失败{" "}
                   {shown.failure_count}
                 </p>
                 <p>更新时间: {shown.updated_at ? new Date(shown.updated_at * 1000).toLocaleString() : "-"}</p>
