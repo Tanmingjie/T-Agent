@@ -15,7 +15,7 @@
 ## 环境要求
 
 - Python 3.11+
-- Node.js 18+
+- Node.js 18.19+
 - 翻译模型: 通过 `LLM_*` 配置,可用 DeepSeek / Qwen / Ollama / OpenAI-compatible 网关
 - 视觉模型: 通过 `MIDSCENE_MODEL_*` 配置,必须是 Midscene 支持的多模态视觉模型
 
