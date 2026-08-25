@@ -64,6 +64,10 @@ class RunOptions(BaseModel):
     approved_specs: dict[str, TestSpec] = Field(default_factory=dict)
     # 本次执行强制重新翻译这些用例,绕过成功执行记忆。
     retranslate_case_ids: list[str] = Field(default_factory=list)
+    # 执行前用例可执行性质量闸门。默认开启；低分强制执行需填写原因。
+    quality_gate_enabled: bool = True
+    force_low_quality_cases: bool = False
+    quality_override_reason: str = ""
 
 
 class SpecPreviewOptions(BaseModel):
@@ -71,6 +75,14 @@ class SpecPreviewOptions(BaseModel):
     case_id: str | None = None
     case_ids: list[str] | None = None
     skill_names: list[str] = Field(default_factory=list)
+
+
+class QualityPreviewOptions(BaseModel):
+    case_id: str | None = None
+    case_ids: list[str] | None = None
+    skill_names: list[str] = Field(default_factory=list)
+    force_low_quality_cases: bool = False
+    quality_override_reason: str = ""
 
 
 class MemoryUpdate(BaseModel):
@@ -110,6 +122,87 @@ async def _suite_case(repo, suite_id: str, case_id: str):
     if case is None or case.suite_id != suite_id:
         raise HTTPException(404, "Case not found")
     return suite, case
+
+
+async def _assess_cases(
+    *,
+    suite,
+    cases,
+    skill_names: list[str],
+    store,
+    run_id: str = "",
+    force_low_quality_cases: bool = False,
+    quality_override_reason: str = "",
+):
+    from harness.case_quality import (
+        ASSESSMENT_VERSION,
+        QualityGateOptions,
+        assess_case_executability,
+        assessment_context_hash,
+        assessment_summary,
+        clone_cached_assessment,
+    )
+    from harness.execution_memory import case_fingerprint, effective_base_url
+    from harness.llm import build_llm_client
+
+    if force_low_quality_cases and not quality_override_reason.strip():
+        raise HTTPException(400, "强制执行低质量用例必须填写原因")
+    llm_config, knowledge = await _translation_context(store, suite, skill_names)
+    llm = build_llm_client(llm_config)
+    assessments = []
+    selected = {name for name in skill_names if name}
+    for case in cases:
+        base_url = effective_base_url(case, suite)
+        fingerprint = case_fingerprint(
+            case,
+            project_id=suite.project_id,
+            version_id=suite.version_id,
+            suite_id=suite.id,
+            base_url=base_url,
+        )
+        memory = await store.find_case_memory(
+            project_id=suite.project_id,
+            version_id=suite.version_id,
+            suite_id=suite.id,
+            case_id=case.id,
+            base_url=base_url,
+            case_hash=fingerprint,
+        )
+        gate = QualityGateOptions(
+            force=force_low_quality_cases,
+            override_reason=quality_override_reason,
+        )
+        context_hash = assessment_context_hash(
+            translation_knowledge=knowledge,
+            selected_skill_names=list(selected),
+            memory=memory,
+        )
+        cached = await store.find_reusable_case_assessment(
+            project_id=suite.project_id,
+            version_id=suite.version_id,
+            suite_id=suite.id,
+            case_id=case.id,
+            base_url=base_url,
+            case_hash=fingerprint,
+            assessment_version=ASSESSMENT_VERSION,
+            context_hash=context_hash,
+        )
+        if cached is not None:
+            assessment = clone_cached_assessment(cached, run_id=run_id, gate=gate)
+        else:
+            assessment = await assess_case_executability(
+                llm=llm,
+                suite=suite,
+                case=case,
+                run_id=run_id,
+                translation_knowledge=knowledge,
+                selected_skill_names=list(selected),
+                memory=memory,
+                gate=gate,
+            )
+        await store.save_case_assessment(assessment)
+        assessments.append(assessment)
+    return [assessment_summary(item) for item in assessments]
 
 
 @router.get("/suites/{suite_id}/cases/{case_id}/memory", dependencies=_suite_guard)
@@ -181,6 +274,67 @@ async def update_case_memory(
     return updated.model_dump(mode="json") if updated else {"ok": True}
 
 
+@router.get("/suites/{suite_id}/cases/{case_id}/quality", dependencies=_suite_guard)
+async def get_case_quality(
+    suite_id: str,
+    case_id: str,
+    repo=Depends(get_repo),
+    store=Depends(get_store),
+):
+    suite, case = await _suite_case(repo, suite_id, case_id)
+    latest = await store.latest_case_assessment(
+        project_id=suite.project_id,
+        version_id=suite.version_id,
+        suite_id=suite.id,
+        case_id=case.id,
+    )
+    return {
+        "case_id": case.id,
+        "latest": latest.model_dump(mode="json") if latest else None,
+    }
+
+
+@router.post("/suites/{suite_id}/quality-preview", dependencies=_suite_guard)
+async def preview_case_quality(
+    suite_id: str,
+    options: QualityPreviewOptions,
+    repo=Depends(get_repo),
+    store=Depends(get_store),
+):
+    """执行前质量评估预览。只评分和给建议，不创建 run、不启动 Midscene。"""
+    suite = await repo.get_suite(suite_id)
+    if suite is None:
+        raise HTTPException(404, "Suite not found")
+    all_cases = await repo.list_by_suite(suite_id)
+    if not all_cases:
+        raise HTTPException(400, "Suite 没有用例，请先上传 Excel")
+    requested_case_ids = _normalize_requested_case_ids(
+        legacy_case_id=options.case_id,
+        case_ids=options.case_ids,
+    )
+    settings = await get_suite_settings(store, suite_id)
+    try:
+        cases, _ = resolve_effective_cases(
+            all_cases,
+            requested_case_ids=requested_case_ids,
+            login_setup_case_id=settings.get("login_setup_case_id"),
+        )
+    except ValueError as exc:
+        status_code = (
+            404 if options.case_id and options.case_id not in {c.id for c in all_cases} else 400
+        )
+        raise HTTPException(status_code, str(exc)) from exc
+    assessments = await _assess_cases(
+        suite=suite,
+        cases=cases,
+        skill_names=options.skill_names,
+        force_low_quality_cases=options.force_low_quality_cases,
+        quality_override_reason=options.quality_override_reason,
+        store=store,
+    )
+    return {"assessments": assessments}
+
+
 @router.post("/suites/{suite_id}/spec-preview", dependencies=_suite_guard)
 async def preview_specs(
     suite_id: str,
@@ -239,6 +393,9 @@ async def trigger_run(
     skill_names = options.skill_names if options is not None else []
     approved_specs = options.approved_specs if options is not None else {}
     retranslate_case_ids = options.retranslate_case_ids if options is not None else []
+    quality_gate_enabled = options.quality_gate_enabled if options is not None else True
+    force_low_quality_cases = options.force_low_quality_cases if options is not None else False
+    quality_override_reason = options.quality_override_reason if options is not None else ""
     requested_case_ids = _normalize_requested_case_ids(
         legacy_case_id=case_id,
         case_ids=options.case_ids if options is not None else None,
@@ -266,6 +423,8 @@ async def trigger_run(
         raise HTTPException(400, "人工确认规格包含非本次执行用例")
     if set(retranslate_case_ids) - target_ids:
         raise HTTPException(400, "重新翻译用例包含非本次执行用例")
+    if quality_gate_enabled and force_low_quality_cases and not quality_override_reason.strip():
+        raise HTTPException(400, "强制执行低质量用例必须填写原因")
     for approved_case_id, spec in approved_specs.items():
         if spec.case_id != approved_case_id:
             raise HTTPException(400, f"人工确认规格 case_id 不匹配: {approved_case_id}")
@@ -308,6 +467,9 @@ async def trigger_run(
             case_ids=requested_case_ids,
             skill_names=skill_names,
             retranslate_case_ids=retranslate_case_ids,
+            quality_gate_enabled=quality_gate_enabled,
+            force_low_quality_cases=force_low_quality_cases,
+            quality_override_reason=quality_override_reason,
         )
         return {"run_id": run_id, "status": "queued"}
 
@@ -358,6 +520,9 @@ async def trigger_run(
                 perm_approver_factory=_perm_approver_factory,
                 force_skill_names=skill_names,
                 retranslate_case_ids=retranslate_case_ids,
+                quality_gate_enabled=quality_gate_enabled,
+                force_low_quality_cases=force_low_quality_cases,
+                quality_override_reason=quality_override_reason,
             )
         finally:
             api_loop.call_soon_threadsafe(_live_runs.discard, run_id)

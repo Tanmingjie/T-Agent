@@ -86,14 +86,14 @@ npm install
 cd ..
 ```
 
-如果从未部署过“成功经验复用”版本,还需要执行一次数据库迁移:
+如果从未部署过“成功经验复用 / 用例可执行性评估”版本,还需要执行一次数据库迁移:
 
 ```powershell
 python -m alembic upgrade head
 ```
 
-使用 `python -m alembic` 可以避免 Windows 上 `alembic` 命令未加入 PATH 导致的 `is not recognized` 报错。本次迁移只新增 `case_execution_memory` 表,并给队列模式的 `run_queue` 增加 `retranslate_case_ids` 字段。
-历史 Suite、Case、Run、ExecutionRecord 不需要人工搬迁或重跑;迁移完成后,新的 PASS 执行会逐步沉淀成功经验。
+使用 `python -m alembic` 可以避免 Windows 上 `alembic` 命令未加入 PATH 导致的 `is not recognized` 报错。迁移会新增成功经验表、用例可执行性评估表,并给队列执行表补充重新翻译与质量闸门相关字段。
+历史 Suite、Case、Run、ExecutionRecord 不需要人工搬迁或重跑;迁移完成后,新的 PASS 执行会逐步沉淀成功经验,新的执行/预检会逐步沉淀可执行性评估记录。同一用例内容、项目规范、已选 Skill 和成功经验上下文未变化时,后续执行会自动复用历史可执行性评估缓存,不需要人工迁移或清理旧数据。
 
 服务器不能联网下载浏览器时,不要强行跑 Playwright 浏览器安装；直接配置已有 Chrome/Chromium:
 

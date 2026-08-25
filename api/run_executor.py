@@ -41,6 +41,9 @@ async def execute_run(
     perm_approver_factory: Callable[[SSECallback], object] | None = None,
     force_skill_names: list[str] | None = None,
     retranslate_case_ids: list[str] | None = None,
+    quality_gate_enabled: bool = True,
+    force_low_quality_cases: bool = False,
+    quality_override_reason: str = "",
 ) -> None:
     """执行一个 run 到完成(自带独立 Store/loop 资源)。失败不抛,落 failed 状态。
 
@@ -49,8 +52,18 @@ async def execute_run(
     """
     if case_id is not None and case_ids is not None:
         raise ValueError("case_id 与 case_ids 不能同时提供")
+    if quality_gate_enabled and force_low_quality_cases and not quality_override_reason.strip():
+        raise ValueError("强制执行低质量用例必须填写原因")
     requested_case_ids = [case_id] if case_id is not None else case_ids
     from api.repository import SQLModelRepository, get_suite_settings, resolve_effective_cases
+    from harness.case_quality import (
+        ASSESSMENT_VERSION,
+        QualityGateOptions,
+        assess_case_executability,
+        assessment_context_hash,
+        assessment_summary,
+        clone_cached_assessment,
+    )
     from harness.execution_memory import (
         build_experience_context,
         case_fingerprint,
@@ -133,16 +146,15 @@ async def execute_run(
                         f"{sk.content.strip()}"
                     )
 
+        llm_client = build_llm_client(llm_config)
+
         bypass_memory = {case_id for case_id in (retranslate_case_ids or []) if case_id}
         target_case_ids = {case.id for case in cases}
         if bypass_memory - target_case_ids:
             raise ValueError("重新翻译用例包含非本次执行用例")
         memory_by_case = {}
-        memory_sources = {}
-        memory_contexts = {}
         for case in cases:
             if case.id in bypass_memory:
-                await _emit("execution_memory", {"case_id": case.id, "status": "bypassed"})
                 continue
             base_url = effective_base_url(case, suite)
             fingerprint = case_fingerprint(
@@ -160,10 +172,111 @@ async def execute_run(
                 base_url=base_url,
                 case_hash=fingerprint,
             )
+            if memory is not None:
+                memory_by_case[case.id] = memory
+
+        assessment_by_case = {}
+        if quality_gate_enabled:
+            gate = QualityGateOptions(
+                enabled=quality_gate_enabled,
+                force=force_low_quality_cases,
+                override_reason=quality_override_reason,
+            )
+            for case in cases:
+                base_url = effective_base_url(case, suite)
+                fingerprint = case_fingerprint(
+                    case,
+                    project_id=suite.project_id,
+                    version_id=suite.version_id,
+                    suite_id=suite.id,
+                    base_url=base_url,
+                )
+                context_hash = assessment_context_hash(
+                    translation_knowledge=translation_knowledge,
+                    selected_skill_names=list(force_set),
+                    memory=memory_by_case.get(case.id),
+                )
+                cached = await store.find_reusable_case_assessment(
+                    project_id=suite.project_id,
+                    version_id=suite.version_id,
+                    suite_id=suite.id,
+                    case_id=case.id,
+                    base_url=base_url,
+                    case_hash=fingerprint,
+                    assessment_version=ASSESSMENT_VERSION,
+                    context_hash=context_hash,
+                )
+                if cached is not None:
+                    assessment = clone_cached_assessment(cached, run_id=run_id, gate=gate)
+                else:
+                    assessment = await assess_case_executability(
+                        llm=llm_client,
+                        suite=suite,
+                        case=case,
+                        run_id=run_id,
+                        translation_knowledge=translation_knowledge,
+                        selected_skill_names=list(force_set),
+                        memory=memory_by_case.get(case.id),
+                        gate=gate,
+                    )
+                await store.save_case_assessment(assessment)
+                assessment_by_case[case.id] = assessment
+                await _emit("case_quality", assessment_summary(assessment))
+
+        blocked = [
+            assessment
+            for assessment in assessment_by_case.values()
+            if assessment.gate_decision == "block"
+        ]
+        if blocked:
+            fail_reason = "用例可执行性评分过低，已阻断执行"
+            for case in cases:
+                assessment = assessment_by_case.get(case.id)
+                if assessment is None:
+                    continue
+                await repo.save_record(
+                    ExecutionRecord(
+                        exec_id=f"{run_id}-{case.id}-quality-blocked",
+                        case_id=case.id,
+                        suite_id=suite_id,
+                        run_id=run_id,
+                        passed=False,
+                        final_result=(
+                            "质量闸门阻断执行:"
+                            f" score={assessment.score}, risk={assessment.risk_level}"
+                        ),
+                        metrics={"case_quality": assessment_summary(assessment)},
+                    )
+                )
+                saved_ids.add(case.id)
+                await _emit(
+                    "case_result",
+                    {
+                        "case_id": case.id,
+                        "verdict": "FAIL",
+                        "final_result": "质量闸门阻断执行",
+                    },
+                )
+            await repo.update_run(
+                run_id,
+                status="failed",
+                passed_cases=0,
+                failed_cases=len(cases),
+                finished_at=time.time(),
+            )
+            completed = True
+            return
+
+        memory_sources = {}
+        memory_contexts = {}
+        for case in cases:
+            if case.id in bypass_memory:
+                await _emit("execution_memory", {"case_id": case.id, "status": "bypassed"})
+                continue
+            memory = memory_by_case.get(case.id)
             if memory is None:
                 await _emit("execution_memory", {"case_id": case.id, "status": "miss"})
                 continue
-            memory_by_case[case.id] = memory
             if case.id not in approved_specs:
                 approved_specs[case.id] = memory.spec
                 memory_sources[case.id] = {
@@ -188,8 +301,6 @@ async def execute_run(
                 },
             )
 
-        llm_client = build_llm_client(llm_config)
-
         @asynccontextmanager
         async def make_agent():
             agent = MidsceneCaseAgent(
@@ -206,6 +317,10 @@ async def execute_run(
 
         async def _save_record(record) -> None:
             record.run_id = run_id
+            assessment = assessment_by_case.get(record.case_id)
+            if assessment is not None:
+                record.metrics = dict(record.metrics or {})
+                record.metrics["case_quality"] = assessment_summary(assessment)
             await repo.save_record(record)
             saved_ids.add(record.case_id)
             case = _case_by_id.get(record.case_id)

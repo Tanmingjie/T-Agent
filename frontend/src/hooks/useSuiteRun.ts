@@ -24,11 +24,31 @@ export interface PhaseStatus {
   label: string;
 }
 
+export interface QualityAssessmentState {
+  case_id: string;
+  run_id?: string;
+  case_hash?: string;
+  cache_hit?: boolean;
+  source_assessment_id?: string;
+  score: number;
+  risk_level: string;
+  gate_decision: string;
+  dimensions?: unknown[];
+  issues?: unknown[];
+  rewrite_suggestions?: unknown[];
+  draft_steps?: string[];
+  draft_expected?: string[];
+  override_reason?: string;
+  error?: string;
+  updated_at?: number;
+}
+
 export interface CaseRunState {
   status: CaseRunStatus;
   steps: StepStatus[];
   phases: PhaseStatus[]; // 生命周期阶段流(翻译/执行/断言/代码),最后一个为当前进行中
   spec?: unknown; // 翻译阶段完成后实时推送的 TestSpec(执行中也能看执行规格)
+  quality?: QualityAssessmentState; // 执行前质量闸门评估结果
 }
 
 // 流式文本(spec 翻译增量 / 当前步思考增量):**高频**逐 token 更新。**不进 `statuses`
@@ -59,6 +79,9 @@ interface StartRunOptions {
   skillNames?: string[];
   approvedSpecs?: Record<string, unknown>;
   retranslateCaseIds?: string[];
+  qualityGateEnabled?: boolean;
+  forceLowQualityCases?: boolean;
+  qualityOverrideReason?: string;
 }
 
 /**
@@ -205,6 +228,15 @@ export function useSuiteRun(suiteId: string | undefined) {
           upd(d.case_id as string, (c) => ({ ...c, spec: d.spec }));
         });
 
+        es.addEventListener("case_quality", (e) => {
+          const d = safeParse((e as MessageEvent).data);
+          if (!d) return;
+          upd(d.case_id as string, (c) => ({
+            ...c,
+            quality: d as unknown as QualityAssessmentState,
+          }));
+        });
+
         es.addEventListener("step_change", (e) => {
           const d = safeParse((e as MessageEvent).data);
           if (!d) return;
@@ -288,6 +320,9 @@ export function useSuiteRun(suiteId: string | undefined) {
       skillNames,
       approvedSpecs,
       retranslateCaseIds,
+      qualityGateEnabled,
+      forceLowQualityCases,
+      qualityOverrideReason,
     }: StartRunOptions) => {
       if (!suiteId) return;
       stop();
@@ -310,6 +345,9 @@ export function useSuiteRun(suiteId: string | undefined) {
           skill_names: skillNames ?? [],
           approved_specs: approvedSpecs ?? {},
           retranslate_case_ids: retranslateCaseIds ?? [],
+          quality_gate_enabled: qualityGateEnabled ?? true,
+          force_low_quality_cases: forceLowQualityCases ?? false,
+          quality_override_reason: qualityOverrideReason ?? "",
         });
         setRunId(run_id);
         attach(run_id);

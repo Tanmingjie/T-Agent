@@ -101,6 +101,7 @@ interface CaseMetrics {
   };
   healing?: { action?: number };
   assertions?: { pass?: number; fail?: number; skipped?: number; ai_judged?: number; total?: number };
+  case_quality?: CaseQualityAssessment;
 }
 
 interface MidsceneArtifactFile {
@@ -153,6 +154,52 @@ interface CaseMemoryResp {
   current?: CaseExecutionMemory | null;
   latest?: CaseExecutionMemory | null;
   eligible: boolean;
+}
+
+interface CaseQualityIssue {
+  code?: string;
+  severity: string;
+  message: string;
+  suggestion?: string;
+}
+
+interface CaseQualityDimension {
+  name: string;
+  score: number;
+  reason?: string;
+}
+
+interface CaseRewriteSuggestion {
+  target: string;
+  original?: string;
+  suggestion: string;
+  reason?: string;
+}
+
+interface CaseQualityAssessment {
+  id: string;
+  case_id: string;
+  run_id?: string;
+  case_hash?: string;
+  cache_hit?: boolean;
+  source_assessment_id?: string;
+  score: number;
+  risk_level: string;
+  gate_decision: string;
+  dimensions?: CaseQualityDimension[];
+  issues?: CaseQualityIssue[];
+  rewrite_suggestions?: CaseRewriteSuggestion[];
+  draft_steps?: string[];
+  draft_expected?: string[];
+  context_sources?: string[];
+  override_reason?: string;
+  error?: string;
+  updated_at?: number;
+}
+
+interface CaseQualityResp {
+  case_id: string;
+  latest?: CaseQualityAssessment | null;
 }
 
 interface CodeResp {
@@ -568,6 +615,174 @@ function MemoryView({
             </h4>
             <CodeBlock code={JSON.stringify(shown.spec, null, 2)} />
           </section>
+        </>
+      )}
+    </div>
+  );
+}
+
+function QualityView({
+  quality,
+  loading,
+}: {
+  quality: CaseQualityResp | null;
+  loading?: boolean;
+}) {
+  const latest = quality?.latest;
+  const badge =
+    latest?.gate_decision === "block"
+      ? "bg-red-50 text-red-700 border-red-200"
+      : latest?.gate_decision === "warn"
+        ? "bg-amber-50 text-amber-700 border-amber-200"
+        : "bg-brand-50 text-brand-700 border-brand-200";
+
+  return (
+    <div className="p-6 space-y-6 max-w-3xl">
+      <section>
+        <h3 className="flex items-center gap-1.5 text-sm font-semibold text-surface-900 mb-1">
+          <AlertTriangle size={15} className="text-amber-600" />
+          用例可执行性评估
+        </h3>
+        <p className="text-xs text-gray-400">
+          执行前评估用例描述是否足够具体，并给出阻断原因与改写建议。
+        </p>
+      </section>
+
+      <section className="rounded-lg border border-gray-200 bg-white p-4">
+        <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2">
+          闸门规则
+        </h4>
+        <div className="space-y-2 text-sm">
+          <p className="text-brand-700">评分 ≥80：直接执行。</p>
+          <p className="text-amber-700">评分 60–79：提示风险，但允许执行。</p>
+          <p className="text-red-700">评分 &lt;60 或评估异常：默认阻断，不启动 Midscene。</p>
+        </div>
+      </section>
+
+      {loading && !latest ? (
+        <div className="rounded-md border border-brand-100 bg-brand-50 px-4 py-8 text-center text-sm text-brand-700">
+          <Loader2 size={18} className="mx-auto mb-2 animate-spin" />
+          正在执行可执行性评估…
+        </div>
+      ) : !latest ? (
+        <div className="rounded-md border border-dashed border-gray-200 bg-white px-4 py-8 text-center text-sm text-gray-400">
+          暂无评估记录。点击执行或批量执行时会自动评估。
+        </div>
+      ) : (
+        <>
+          <section className="rounded-lg border border-gray-200 bg-white p-4 space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-3xl font-semibold text-surface-900">
+                  {latest.score}
+                  <span className="text-sm font-normal text-gray-400"> / 100</span>
+                </p>
+                <p className="mt-1 text-xs text-gray-500">
+                  更新时间: {latest.updated_at ? new Date(latest.updated_at * 1000).toLocaleString() : "-"}
+                </p>
+              </div>
+              <span className={`rounded-full border px-2.5 py-1 text-xs font-medium ${badge}`}>
+                {latest.gate_decision === "block"
+                  ? "阻断"
+                  : latest.gate_decision === "warn"
+                    ? "提醒"
+                    : "允许执行"}
+              </span>
+            </div>
+            {latest.override_reason && (
+              <p className="rounded-md bg-amber-50 px-3 py-2 text-xs text-amber-700">
+                强制执行原因: {latest.override_reason}
+              </p>
+            )}
+            {latest.cache_hit && (
+              <p className="rounded-md bg-brand-50 px-3 py-2 text-xs text-brand-700">
+                本次复用历史评估缓存
+                {latest.source_assessment_id ? `（来源 ${latest.source_assessment_id.slice(0, 8)}）` : ""}
+                ，未重复调用评估模型。
+              </p>
+            )}
+            {latest.error && (
+              <p className="rounded-md bg-red-50 px-3 py-2 text-xs text-red-700">
+                评估异常: {latest.error}
+              </p>
+            )}
+          </section>
+
+          {!!latest.dimensions?.length && (
+            <section>
+              <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2">
+                维度评分
+              </h4>
+              <div className="grid grid-cols-1 gap-2">
+                {latest.dimensions.map((item) => (
+                  <div key={item.name} className="rounded-md border border-gray-200 bg-white p-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-medium text-surface-900">{item.name}</span>
+                      <span className="text-sm font-semibold text-brand-700">{item.score}</span>
+                    </div>
+                    {item.reason && <p className="mt-1 text-xs text-gray-500">{item.reason}</p>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {!!latest.issues?.length && (
+            <section>
+              <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2">
+                问题与建议
+              </h4>
+              <div className="space-y-2">
+                {latest.issues.map((issue, index) => (
+                  <div key={`${issue.code ?? issue.message}-${index}`} className="rounded-md border border-gray-200 bg-white p-3">
+                    <p className="text-sm text-surface-900">
+                      <span className={issue.severity === "blocking" ? "text-red-600" : "text-amber-600"}>
+                        {issue.severity === "blocking" ? "阻断 · " : "提醒 · "}
+                      </span>
+                      {issue.message}
+                    </p>
+                    {issue.suggestion && <p className="mt-1 text-xs text-gray-500">{issue.suggestion}</p>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
+
+          {(!!latest.draft_steps?.length || !!latest.draft_expected?.length) && (
+            <section>
+              <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2">
+                可复制改写草稿
+              </h4>
+              <CodeBlock
+                code={JSON.stringify(
+                  {
+                    steps: latest.draft_steps ?? [],
+                    expected: latest.draft_expected ?? [],
+                  },
+                  null,
+                  2,
+                )}
+              />
+            </section>
+          )}
+
+          {!!latest.rewrite_suggestions?.length && (
+            <section>
+              <h4 className="text-[11px] font-medium uppercase tracking-wider text-gray-400 mb-2">
+                改写建议
+              </h4>
+              <div className="space-y-2">
+                {latest.rewrite_suggestions.map((item, index) => (
+                  <div key={`${item.target}-${index}`} className="rounded-md border border-gray-200 bg-white p-3">
+                    <p className="text-xs text-gray-400">{item.target}</p>
+                    {item.original && <p className="mt-1 text-xs text-gray-500">原文: {item.original}</p>}
+                    <p className="mt-1 text-sm text-surface-900">建议: {item.suggestion}</p>
+                    {item.reason && <p className="mt-1 text-xs text-gray-500">{item.reason}</p>}
+                  </div>
+                ))}
+              </div>
+            </section>
+          )}
         </>
       )}
     </div>
@@ -1255,7 +1470,11 @@ function BlinkCursor() {
   );
 }
 
-type Selection = { kind: "info" } | { kind: "memory" } | { kind: "result" };
+type Selection =
+  | { kind: "info" }
+  | { kind: "memory" }
+  | { kind: "quality" }
+  | { kind: "result" };
 
 interface DisplayStep {
   no: number; // 用于截图 URL (history 用 step_no);live/spec 用序号
@@ -1275,6 +1494,7 @@ export default function CaseDrawerBody({
   caseInfo,
   status,
   liveState,
+  qualityPending,
   onRun,
   runDisabled,
   subscribeStream,
@@ -1285,6 +1505,7 @@ export default function CaseDrawerBody({
   caseInfo: CaseInfo;
   status: CaseRunStatus;
   liveState?: CaseRunState;
+  qualityPending?: boolean;
   onRun?: (caseId: string) => void;
   runDisabled?: boolean;
   subscribeStream?: StreamApi["subscribeStream"];
@@ -1300,6 +1521,7 @@ export default function CaseDrawerBody({
   );
   const [result, setResult] = useState<CaseResult | null>(null);
   const [memory, setMemory] = useState<CaseMemoryResp | null>(null);
+  const [quality, setQuality] = useState<CaseQualityResp | null>(null);
   const [code, setCode] = useState<string | null>(null);
   const [sel, setSel] = useState<Selection>({ kind: "info" });
 
@@ -1308,11 +1530,46 @@ export default function CaseDrawerBody({
   // 连接池上堆积 pending(SSE 长连接已占 1 个槽,反复点开会很快耗尽 6 连接上限)。
   const reqRef = useRef<AbortController | null>(null);
 
+  const setQualityIfCurrent = useCallback(
+    (next: CaseQualityResp | null) => {
+      setQuality((previous) => {
+        const currentRunQuality = previous?.latest;
+        const incoming = next?.latest;
+        if (!incoming && runId && currentRunQuality?.run_id === runId) {
+          return previous;
+        }
+        if (
+          runId &&
+          currentRunQuality?.run_id === runId &&
+          incoming?.run_id &&
+          incoming.run_id !== runId
+        ) {
+          return previous;
+        }
+        if (
+          currentRunQuality?.updated_at &&
+          incoming?.updated_at &&
+          incoming.updated_at < currentRunQuality.updated_at
+        ) {
+          return previous;
+        }
+        return next;
+      });
+    },
+    [runId],
+  );
+
   const loadMemory = useCallback(() => {
     apiGet<CaseMemoryResp>(`/suites/${suiteId}/cases/${caseInfo.id}/memory`)
       .then((data) => setMemory(data))
       .catch(() => setMemory(null));
   }, [suiteId, caseInfo.id]);
+
+  const loadQuality = useCallback(() => {
+    apiGet<CaseQualityResp>(`/suites/${suiteId}/cases/${caseInfo.id}/quality`)
+      .then((data) => setQualityIfCurrent(data))
+      .catch(() => setQualityIfCurrent(null));
+  }, [suiteId, caseInfo.id, setQualityIfCurrent]);
 
   const loadResult = useCallback(
     (autoSelect: boolean) => {
@@ -1349,12 +1606,26 @@ export default function CaseDrawerBody({
     setResult(null);
     setCode(null);
     setMemory(null);
-    setSel(isRunning ? { kind: "result" } : { kind: "info" });
+    setQuality(null);
+    setSel(qualityPending ? { kind: "quality" } : isRunning ? { kind: "result" } : { kind: "info" });
     loadMemory();
+    if (!qualityPending) loadQuality();
     if (!isRunning) loadResult(true);
     return () => reqRef.current?.abort(); // 关抽屉/切换时取消在途请求
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [suiteId, runId, caseInfo.id]);
+
+  useEffect(() => {
+    if (!qualityPending) return;
+    setQuality(null);
+    setSel({ kind: "quality" });
+  }, [qualityPending]);
+
+  useEffect(() => {
+    if (!liveState?.quality) return;
+    setQuality({ case_id: caseInfo.id, latest: liveState.quality as CaseQualityAssessment });
+    setSel({ kind: "quality" });
+  }, [caseInfo.id, liveState?.quality]);
 
   // 用例在本次会话内跑完(running→passed/failed):重新拉结果,免得抽屉停在"执行中"。
   // 只在**状态真正变化**时响应:跳过初次挂载,否则会与上面的挂载 effect 重复请求一次。
@@ -1363,11 +1634,13 @@ export default function CaseDrawerBody({
     const prev = prevStatus.current;
     prevStatus.current = status;
     if (prev === null) return; // 初次挂载由上面的 effect 处理,这里不重复拉
-    if (status === "passed" || status === "failed") loadResult(true);
+    const qualityBlocked = liveState?.quality?.gate_decision === "block";
+    if (status === "passed" || status === "failed") loadResult(!qualityBlocked);
     if (status === "passed" || status === "failed") loadMemory();
+    if (status === "passed" || status === "failed") loadQuality();
     if (isRunning) setSel({ kind: "result" }); // 执行中默认停在结果栏(running 视图)
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [status]);
+  }, [status, liveState?.quality?.gate_decision]);
 
   // 统一步骤列表:history(有截图) > live(实时) > spec(规格)
   const steps: DisplayStep[] = useMemo(() => {
@@ -1507,6 +1780,45 @@ export default function CaseDrawerBody({
             </button>
           )}
 
+          {(quality?.latest || qualityPending) && (
+            <button
+              onClick={() => setSel({ kind: "quality" })}
+              className={`w-full text-left rounded-lg border p-3 transition-colors ${
+                sel.kind === "quality"
+                  ? quality?.latest?.gate_decision === "block"
+                    ? "border-red-300 bg-red-50/60"
+                    : quality?.latest?.gate_decision === "warn"
+                      ? "border-amber-300 bg-amber-50/60"
+                      : "border-brand-300 bg-brand-50/60"
+                  : "border-gray-200 hover:bg-gray-50"
+              }`}
+            >
+              <div className="flex items-center gap-2">
+                {qualityPending && !quality?.latest ? (
+                  <Loader2 size={16} className="text-brand-600 shrink-0 animate-spin" />
+                ) : quality?.latest?.gate_decision === "block" ? (
+                  <XCircle size={16} className="text-red-600 shrink-0" />
+                ) : quality?.latest?.gate_decision === "warn" ? (
+                  <AlertTriangle size={16} className="text-amber-600 shrink-0" />
+                ) : (
+                  <CheckCircle size={16} className="text-brand-600 shrink-0" />
+                )}
+                <span className="text-sm font-medium text-surface-900">
+                  可执行性评估
+                </span>
+              </div>
+              <p className="mt-1 text-xs text-gray-500 line-clamp-2">
+                {qualityPending && !quality?.latest
+                  ? "正在执行前评估…"
+                  : quality?.latest?.gate_decision === "block"
+                    ? `评分 ${quality.latest.score}，默认阻断执行。`
+                    : quality?.latest?.gate_decision === "warn"
+                      ? `评分 ${quality.latest.score}，建议先优化描述。`
+                      : `评分 ${quality?.latest?.score ?? "-"}，可执行。`}
+              </p>
+            </button>
+          )}
+
           {/* Test result card(执行中显示转圈占位,参考 TestSprite) */}
           {(result || isRunning) && (
             <button
@@ -1566,6 +1878,8 @@ export default function CaseDrawerBody({
               memory={memory}
               onChanged={loadMemory}
             />
+          ) : sel.kind === "quality" ? (
+            <QualityView quality={quality} loading={qualityPending} />
           ) : (
             /* 过程时间线:执行中流式、执行后回溯,全过程一处可见 */
             <TimelineView

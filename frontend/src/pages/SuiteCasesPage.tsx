@@ -150,9 +150,16 @@ export default function SuiteCasesPage() {
   const [manualSpecReview, setManualSpecReview] = useState(false);
   const [retranslateMemory, setRetranslateMemory] = useState(false);
   const [previewing, setPreviewing] = useState(false);
+  const [forceLowQuality, setForceLowQuality] = useState(false);
+  const [qualityOverrideReason, setQualityOverrideReason] = useState("");
   const previewAbortRef = useRef<AbortController | null>(null);
   const [reviewTarget, setReviewTarget] = useState<RunTarget | null>(null);
   const [reviewSpecs, setReviewSpecs] = useState<EditableTestSpec[] | null>(null);
+
+  useEffect(() => {
+    setForceLowQuality(false);
+    setQualityOverrideReason("");
+  }, [runModal?.source, runModal?.caseIds?.join(","), forceSkills.join(",")]);
 
   // 执行状态来自布局层的 RunProvider(切 tab 不丢失;高频更新只重渲染本页消费者,
   // 不带动侧栏/面包屑)。不再由本页持有 SSE。
@@ -294,6 +301,10 @@ export default function SuiteCasesPage() {
     const retranslateCaseIds = retranslateMemory
       ? target.caseIds ?? cases.map((c) => c.id)
       : [];
+    if (forceLowQuality && !qualityOverrideReason.trim()) {
+      alert("强制执行低分用例必须填写原因。");
+      return;
+    }
     if (manualSpecReview) {
       const controller = new AbortController();
       previewAbortRef.current = controller;
@@ -332,15 +343,18 @@ export default function SuiteCasesPage() {
     const approved = Object.fromEntries(
       (approvedSpecs ?? []).map((spec) => [spec.case_id, spec]),
     );
-    if (target.source !== "single") {
-      setSelected(null);
-    }
+    const firstCaseId = target.caseIds?.[0] ?? cases[0]?.id;
+    const firstCase = cases.find((c) => c.id === firstCaseId);
+    if (firstCase) setSelected(firstCase);
     run.start({
       caseIds: target.caseIds,
       allCaseIds: cases.map((c) => c.id),
       skillNames: forceSkills,
       approvedSpecs: approved,
       retranslateCaseIds: retranslateCaseIds ?? [],
+      qualityGateEnabled: true,
+      forceLowQualityCases: forceLowQuality,
+      qualityOverrideReason,
     });
   }
 
@@ -556,15 +570,21 @@ export default function SuiteCasesPage() {
         }
       >
         {selected && (
-          <CaseDrawerBody
-            suiteId={id!}
-            runId={effectiveRunId}
-            caseInfo={selected}
-            status={statusOf(selected.id)}
-            liveState={selRun}
-            onRun={runOne}
-            runDisabled={run.running}
-            subscribeStream={run.subscribeStream}
+            <CaseDrawerBody
+              suiteId={id!}
+              runId={effectiveRunId}
+              caseInfo={selected}
+              status={statusOf(selected.id)}
+              liveState={selRun}
+              qualityPending={
+                run.running &&
+                !!selRun &&
+                !selRun.quality &&
+                statusOf(selected.id) === "pending"
+              }
+              onRun={runOne}
+              runDisabled={run.running}
+              subscribeStream={run.subscribeStream}
             getStream={run.getStream}
           />
         )}
@@ -672,6 +692,43 @@ export default function SuiteCasesPage() {
                     />
                   </button>
                 </div>
+              </div>
+
+              <div className="rounded-md border border-gray-200 px-3 py-3 space-y-3">
+                <div className="flex items-center justify-between gap-4">
+                  <div>
+                    <div className="text-sm font-medium text-surface-900">
+                      强制执行低分用例
+                    </div>
+                    <div className="text-xs text-gray-500 mt-1">
+                      若已确认质量闸门阻断可忽略，可填写原因后绕过本次阻断。
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-label="强制执行低分用例"
+                    aria-checked={forceLowQuality}
+                    onClick={() => setForceLowQuality((value) => !value)}
+                    className={`relative w-10 h-6 shrink-0 rounded-full transition-colors ${
+                      forceLowQuality ? "bg-red-500" : "bg-gray-300"
+                    }`}
+                  >
+                    <span
+                      className={`absolute left-0 top-1 w-4 h-4 rounded-full bg-white shadow-sm transition-transform ${
+                        forceLowQuality ? "translate-x-5" : "translate-x-1"
+                      }`}
+                    />
+                  </button>
+                </div>
+                {forceLowQuality && (
+                  <textarea
+                    value={qualityOverrideReason}
+                    onChange={(event) => setQualityOverrideReason(event.target.value)}
+                    placeholder="填写强制执行原因，例如：试点调试 / 业务已确认可执行"
+                    className="w-full min-h-16 rounded-md border border-red-200 px-2 py-1.5 text-xs focus:outline-none focus:ring-2 focus:ring-red-200"
+                  />
+                )}
               </div>
 
               <div>

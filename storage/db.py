@@ -33,6 +33,7 @@ import json
 
 from input.models import (
     AuditLog,
+    CaseExecutabilityAssessment,
     CaseExecutionMemory,
     ExecutionRecord,
     PageVocabulary,
@@ -111,6 +112,35 @@ class CaseExecutionMemoryRow(SQLModel, table=True):
     success_count: int = 0
     failure_count: int = 0
     consecutive_failures: int = 0
+    created_at: float = 0.0
+    updated_at: float = 0.0
+
+
+class CaseExecutabilityAssessmentRow(SQLModel, table=True):
+    __tablename__ = "case_executability_assessment"
+    id: str = Field(primary_key=True)
+    project_id: str = Field(default="", index=True)
+    version_id: str = Field(default="", index=True)
+    suite_id: str = Field(default="", index=True)
+    case_id: str = Field(default="", index=True)
+    run_id: str = Field(default="", index=True)
+    case_hash: str = Field(default="", index=True)
+    base_url: str = ""
+    assessment_version: str = Field(default="", index=True)
+    context_hash: str = Field(default="", index=True)
+    cache_hit: bool = Field(default=False, index=True)
+    source_assessment_id: str = Field(default="", index=True)
+    score: int = 0
+    risk_level: str = Field(default="blocked", index=True)
+    gate_decision: str = Field(default="block", index=True)
+    dimensions: list = Field(default_factory=list, sa_column=Column(JSON))
+    issues: list = Field(default_factory=list, sa_column=Column(JSON))
+    rewrite_suggestions: list = Field(default_factory=list, sa_column=Column(JSON))
+    draft_steps: list = Field(default_factory=list, sa_column=Column(JSON))
+    draft_expected: list = Field(default_factory=list, sa_column=Column(JSON))
+    context_sources: list = Field(default_factory=list, sa_column=Column(JSON))
+    override_reason: str = ""
+    error: str = ""
     created_at: float = 0.0
     updated_at: float = 0.0
 
@@ -204,6 +234,9 @@ class RunQueueRow(SQLModel, table=True):
     # 触发时落库,worker 领取后透传给 execute_run(embedded 模式直接走函数参数不经此列)。
     skill_names: list = Field(default_factory=list, sa_column=Column(JSON))
     retranslate_case_ids: list = Field(default_factory=list, sa_column=Column(JSON))
+    quality_gate_enabled: bool = True
+    force_low_quality_cases: bool = False
+    quality_override_reason: str = ""
 
 
 class RunEventRow(SQLModel, table=True):
@@ -668,6 +701,100 @@ class Store:
             await s.commit()
             return True
 
+    # —— CaseExecutabilityAssessment(用例可执行性评估)——
+
+    async def save_case_assessment(self, assessment: CaseExecutabilityAssessment) -> None:
+        data = assessment.model_dump(mode="json")
+        now = time.time()
+        data["created_at"] = assessment.created_at or now
+        data["updated_at"] = now
+        assessment.created_at = data["created_at"]
+        assessment.updated_at = now
+        async with self._sf() as s:
+            await s.merge(CaseExecutabilityAssessmentRow(**data))
+            await s.commit()
+
+    async def get_case_assessment(self, assessment_id: str) -> CaseExecutabilityAssessment | None:
+        async with self._sf() as s:
+            row = await s.get(CaseExecutabilityAssessmentRow, assessment_id)
+            return CaseExecutabilityAssessment(**row.model_dump()) if row else None
+
+    async def latest_case_assessment(
+        self,
+        *,
+        project_id: str = "",
+        version_id: str = "",
+        suite_id: str = "",
+        case_id: str,
+    ) -> CaseExecutabilityAssessment | None:
+        stmt = (
+            select(CaseExecutabilityAssessmentRow)
+            .where(
+                CaseExecutabilityAssessmentRow.project_id == project_id,
+                CaseExecutabilityAssessmentRow.version_id == version_id,
+                CaseExecutabilityAssessmentRow.suite_id == suite_id,
+                CaseExecutabilityAssessmentRow.case_id == case_id,
+            )
+            .order_by(
+                CaseExecutabilityAssessmentRow.updated_at.desc(),
+                CaseExecutabilityAssessmentRow.created_at.desc(),
+                CaseExecutabilityAssessmentRow.id.desc(),
+            )
+        )
+        async with self._sf() as s:
+            row = (await s.exec(stmt)).first()
+            return CaseExecutabilityAssessment(**row.model_dump()) if row else None
+
+    async def find_reusable_case_assessment(
+        self,
+        *,
+        project_id: str = "",
+        version_id: str = "",
+        suite_id: str = "",
+        case_id: str,
+        base_url: str,
+        case_hash: str,
+        assessment_version: str,
+        context_hash: str,
+    ) -> CaseExecutabilityAssessment | None:
+        stmt = (
+            select(CaseExecutabilityAssessmentRow)
+            .where(
+                CaseExecutabilityAssessmentRow.project_id == project_id,
+                CaseExecutabilityAssessmentRow.version_id == version_id,
+                CaseExecutabilityAssessmentRow.suite_id == suite_id,
+                CaseExecutabilityAssessmentRow.case_id == case_id,
+                CaseExecutabilityAssessmentRow.base_url == base_url,
+                CaseExecutabilityAssessmentRow.case_hash == case_hash,
+                CaseExecutabilityAssessmentRow.assessment_version == assessment_version,
+                CaseExecutabilityAssessmentRow.context_hash == context_hash,
+                CaseExecutabilityAssessmentRow.cache_hit == False,  # noqa: E712
+                CaseExecutabilityAssessmentRow.risk_level != "error",
+                CaseExecutabilityAssessmentRow.gate_decision != "overridden",
+                CaseExecutabilityAssessmentRow.override_reason == "",
+            )
+            .order_by(
+                CaseExecutabilityAssessmentRow.updated_at.desc(),
+                CaseExecutabilityAssessmentRow.created_at.desc(),
+                CaseExecutabilityAssessmentRow.id.desc(),
+            )
+        )
+        async with self._sf() as s:
+            row = (await s.exec(stmt)).first()
+            return CaseExecutabilityAssessment(**row.model_dump()) if row else None
+
+    async def list_run_case_assessments(self, run_id: str) -> list[CaseExecutabilityAssessment]:
+        stmt = (
+            select(CaseExecutabilityAssessmentRow)
+            .where(CaseExecutabilityAssessmentRow.run_id == run_id)
+            .order_by(CaseExecutabilityAssessmentRow.case_id)
+        )
+        async with self._sf() as s:
+            return [
+                CaseExecutabilityAssessment(**row.model_dump())
+                for row in (await s.exec(stmt)).all()
+            ]
+
     # —— PageVocabulary(按缓存键 upsert)——
 
     async def save_vocabulary(self, v: PageVocabulary) -> None:
@@ -968,6 +1095,9 @@ class Store:
         case_ids: list[str] | None = None,
         skill_names: list[str] | None = None,
         retranslate_case_ids: list[str] | None = None,
+        quality_gate_enabled: bool = True,
+        force_low_quality_cases: bool = False,
+        quality_override_reason: str = "",
     ) -> None:
         async with self._sf() as s:
             s.add(
@@ -981,6 +1111,9 @@ class Store:
                     created_at=time.time(),
                     skill_names=skill_names or [],
                     retranslate_case_ids=retranslate_case_ids or [],
+                    quality_gate_enabled=quality_gate_enabled,
+                    force_low_quality_cases=force_low_quality_cases,
+                    quality_override_reason=quality_override_reason,
                 )
             )
             await s.commit()

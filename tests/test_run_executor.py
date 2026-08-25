@@ -59,7 +59,13 @@ async def test_execute_run_marks_failed_and_saves_placeholders_on_interruption(
     async def sse(ev, data):
         events.append(ev)
 
-    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx", sse_cb=sse)
+    await execute_run(
+        db_url=db_url,
+        run_id=run_id,
+        suite_id="sx",
+        sse_cb=sse,
+        quality_gate_enabled=False,
+    )
 
     # run 落 failed(不再僵尸 running)
     run = await repo.get_run(run_id)
@@ -112,7 +118,13 @@ async def test_execute_run_no_placeholder_for_already_saved_case(tmp_path, monke
     async def sse(ev, data):
         return None
 
-    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx", sse_cb=sse)
+    await execute_run(
+        db_url=db_url,
+        run_id=run_id,
+        suite_id="sx",
+        sse_cb=sse,
+        quality_gate_enabled=False,
+    )
 
     recs = {r.case_id: r for r in await repo.list_records_by_run(run_id)}
     assert recs["t1"].passed is True and recs["t1"].final_result == "真PASS"  # 真记录未被覆盖
@@ -154,7 +166,13 @@ async def test_execute_run_persists_events_to_run_event_for_replay(tmp_path, mon
     monkeypatch.setattr(orch_mod, "Orchestrator", _EmittingOrch)
 
     # sse_cb=None:没有 live 通道也必须落表
-    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx", sse_cb=None)
+    await execute_run(
+        db_url=db_url,
+        run_id=run_id,
+        suite_id="sx",
+        sse_cb=None,
+        quality_gate_enabled=False,
+    )
 
     events = await store.list_run_events(run_id, after_seq=0)
     types = [e.event_type for e in events]
@@ -210,6 +228,7 @@ async def test_execute_run_uses_midscene_agent_with_selected_skill_context(tmp_p
         run_id=run_id,
         suite_id="sx",
         force_skill_names=["登录流程"],
+        quality_gate_enabled=False,
     )
 
     assert captured["agent_class"] == "MidsceneCaseAgent"
@@ -266,7 +285,7 @@ async def test_execute_run_loads_human_approved_specs_from_run_event(tmp_path, m
 
     monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
 
-    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx")
+    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx", quality_gate_enabled=False)
 
     assert captured["spec"].phases[0].steps == ["人工步骤"]
     assert captured["spec"].phases[0].expected == "人工预期"
@@ -341,7 +360,7 @@ async def test_execute_run_reuses_successful_case_memory(tmp_path, monkeypatch):
 
     monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
 
-    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx")
+    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx", quality_gate_enabled=False)
 
     assert captured["spec"].phases[0].steps == ["记忆步骤"]
     assert captured["source"]["type"] == "memory"
@@ -423,7 +442,7 @@ async def test_execute_run_human_spec_overrides_memory(tmp_path, monkeypatch):
 
     monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
 
-    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx")
+    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx", quality_gate_enabled=False)
 
     assert captured["spec"].phases[0].steps == ["人工步骤"]
     assert "t1" not in captured["sources"]
@@ -494,6 +513,7 @@ async def test_execute_run_retranslate_bypasses_memory(tmp_path, monkeypatch):
         run_id="memory-bypass-run",
         suite_id="sx",
         retranslate_case_ids=["t1"],
+        quality_gate_enabled=False,
     )
 
     assert "t1" not in captured["approved_specs"]
@@ -545,7 +565,13 @@ async def test_execute_run_uses_effective_cases_and_cleans_temporary_auth_state(
 
     monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
 
-    await execute_run(db_url=db_url, run_id=run_id, suite_id="sx", case_id="t1")
+    await execute_run(
+        db_url=db_url,
+        run_id=run_id,
+        suite_id="sx",
+        case_id="t1",
+        quality_gate_enabled=False,
+    )
 
     assert captured["case_ids"] == ["login", "t1"]
     assert captured["setup_id"] == "login"
@@ -595,6 +621,7 @@ async def test_execute_run_preserves_selected_scope_order_and_parallelism(tmp_pa
         run_id="selected-run",
         suite_id="sx",
         case_ids=["t3", "t1"],
+        quality_gate_enabled=False,
     )
 
     assert captured["case_ids"] == ["t1", "t3"]

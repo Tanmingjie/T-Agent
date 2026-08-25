@@ -204,6 +204,62 @@ class CaseExecutionMemory(BaseModel):
     updated_at: float = Field(default_factory=time.time)
 
 
+class CaseQualityDimension(BaseModel):
+    """用例可执行性评估维度得分。"""
+
+    name: str
+    score: int = 0
+    reason: str = ""
+
+
+class CaseQualityIssue(BaseModel):
+    """用例可执行性问题。"""
+
+    code: str
+    severity: str = "warning"  # blocking | warning
+    message: str
+    suggestion: str = ""
+
+
+class CaseRewriteSuggestion(BaseModel):
+    """非破坏性用例改写建议。"""
+
+    target: str  # step | expected | skill | sop | case
+    original: str = ""
+    suggestion: str = ""
+    reason: str = ""
+
+
+class CaseExecutabilityAssessment(BaseModel):
+    """用例可执行性评估:执行前质量闸门与改写建议。"""
+
+    id: str
+    project_id: str = ""
+    version_id: str = ""
+    suite_id: str = ""
+    case_id: str = ""
+    run_id: str = ""
+    case_hash: str = ""
+    base_url: str = ""
+    assessment_version: str = ""
+    context_hash: str = ""
+    cache_hit: bool = False
+    source_assessment_id: str = ""
+    score: int = 0
+    risk_level: str = "blocked"  # pass | warn | blocked | error
+    gate_decision: str = "block"  # allow | warn | block | overridden
+    dimensions: list[CaseQualityDimension] = []
+    issues: list[CaseQualityIssue] = []
+    rewrite_suggestions: list[CaseRewriteSuggestion] = []
+    draft_steps: list[str] = []
+    draft_expected: list[str] = []
+    context_sources: list[str] = []
+    override_reason: str = ""
+    error: str = ""
+    created_at: float = Field(default_factory=time.time)
+    updated_at: float = Field(default_factory=time.time)
+
+
 class Suite(BaseModel):
     """用例套件(规格 §4)。"""
 

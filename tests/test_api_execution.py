@@ -259,7 +259,14 @@ async def test_run_login_setup_case_itself_is_not_duplicated(client, monkeypatch
 async def test_run_queue_mode_persists_skill_names(client, monkeypatch):
     """queue 模式:执行触发带 skill_names → 落 run_queue,worker 领取后透传强制加载。"""
     monkeypatch.setenv("RUN_MODE", "queue")
-    r = await client.post("/api/suites/sx/run", json={"skill_names": ["登录流程", "下单校验"]})
+    r = await client.post(
+        "/api/suites/sx/run",
+        json={
+            "skill_names": ["登录流程", "下单校验"],
+            "force_low_quality_cases": True,
+            "quality_override_reason": "试点验证",
+        },
+    )
     assert r.status_code == 200
     assert r.json()["status"] == "queued"
     run_id = r.json()["run_id"]
@@ -269,6 +276,9 @@ async def test_run_queue_mode_persists_skill_names(client, monkeypatch):
     queued = await srv._store.get_queued_run(run_id)
     assert queued is not None
     assert queued.skill_names == ["登录流程", "下单校验"]
+    assert queued.quality_gate_enabled is True
+    assert queued.force_low_quality_cases is True
+    assert queued.quality_override_reason == "试点验证"
 
 
 @pytest.mark.asyncio

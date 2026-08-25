@@ -36,6 +36,23 @@ async def test_enqueue_and_claim_preserves_selected_case_ids(store):
     assert claimed.case_id is None
 
 
+async def test_enqueue_and_claim_preserves_quality_gate_options(store):
+    await store.enqueue_run(
+        "quality",
+        "s1",
+        "p1",
+        quality_gate_enabled=True,
+        force_low_quality_cases=True,
+        quality_override_reason="试点验证",
+    )
+
+    claimed = await store.claim_next_run("w1")
+
+    assert claimed.quality_gate_enabled is True
+    assert claimed.force_low_quality_cases is True
+    assert claimed.quality_override_reason == "试点验证"
+
+
 async def test_legacy_single_case_queue_row_remains_readable(store):
     await store.enqueue_run("legacy", "s1", "p1", case_id="A")
 

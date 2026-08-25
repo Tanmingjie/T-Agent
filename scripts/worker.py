@@ -106,6 +106,9 @@ async def _run_one(db_url: str, claimed) -> None:
             perm_approver_factory=_make_approver,
             force_skill_names=list(claimed.skill_names or []),
             retranslate_case_ids=list(claimed.retranslate_case_ids or []),
+            quality_gate_enabled=bool(claimed.quality_gate_enabled),
+            force_low_quality_cases=bool(claimed.force_low_quality_cases),
+            quality_override_reason=claimed.quality_override_reason or "",
         )
         status = "done"
     except Exception:  # noqa: BLE001
