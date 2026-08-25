@@ -1770,7 +1770,11 @@ export default function CaseDrawerBody({
               </div>
               <p className="mt-1 text-xs text-gray-500 line-clamp-2">
                 {memory.eligible
-                  ? "已命中，可复用执行规格和经验。"
+                  ? qualityPending && !quality?.latest
+                    ? "已命中，正作为评估上下文参与判断。"
+                    : quality?.latest?.gate_decision === "block"
+                      ? "已命中，但质量闸门阻断，本次未复用。"
+                      : "已命中，评估通过后可复用执行规格和经验。"
                   : memory.latest.stale
                     ? "经验疑似过期，当前不会自动复用。"
                     : memory.latest.enabled
