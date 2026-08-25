@@ -580,6 +580,76 @@ async def test_execute_run_uses_effective_cases_and_cleans_temporary_auth_state(
 
 
 @pytest.mark.asyncio
+async def test_execute_run_uses_uploaded_auth_state_and_skips_login_setup(tmp_path, monkeypatch):
+    db_url = f"sqlite+aiosqlite:///{tmp_path}/uploaded-auth.db"
+    monkeypatch.setenv("TAGENT_AUTH_STATE_ROOT", str(tmp_path / "auth-states"))
+    store = Store(url=db_url)
+    await store.init()
+    repo = SQLModelRepository(store)
+    await repo.create(Suite(id="sx", name="SX", base_url="https://x.com"))
+    await repo.bulk_insert(
+        [
+            TestCase(
+                id="login", name="Login", steps=["login"], base_url="https://x.com", suite_id="sx"
+            ),
+            TestCase(id="t1", name="C1", steps=["a"], base_url="https://x.com", suite_id="sx"),
+        ]
+    )
+    await set_suite_settings(store, "sx", "trust", login_setup_case_id="login")
+    run_id = "uploaded-auth-run"
+    await repo.create_run(run_id, "sx", 1, None, None)
+
+    from storage.auth_state import save_suite_auth_state, suite_auth_state_path
+
+    save_suite_auth_state(
+        "sx",
+        {
+            "cookies": [
+                {
+                    "name": "sid",
+                    "value": "secret",
+                    "domain": "x.com",
+                    "path": "/",
+                }
+            ],
+            "origins": [],
+        },
+    )
+
+    import harness.orchestrator as orch_mod
+
+    captured = {}
+
+    class _InspectingOrch:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def run_suite(self, cases, **kwargs):
+            captured["case_ids"] = [case.id for case in cases]
+            captured["login_setup_case"] = kwargs["login_setup_case"]
+            captured["storage_state_path"] = kwargs["storage_state_path"]
+
+            class _R:
+                passed_count = 1
+                failed_count = 0
+
+            return _R()
+
+    monkeypatch.setattr(orch_mod, "Orchestrator", _InspectingOrch)
+
+    await execute_run(
+        db_url=db_url,
+        run_id=run_id,
+        suite_id="sx",
+        quality_gate_enabled=False,
+    )
+
+    assert captured["case_ids"] == ["t1"]
+    assert captured["login_setup_case"] is None
+    assert captured["storage_state_path"] == suite_auth_state_path("sx")
+
+
+@pytest.mark.asyncio
 async def test_execute_run_preserves_selected_scope_order_and_parallelism(tmp_path, monkeypatch):
     db_url = f"sqlite+aiosqlite:///{tmp_path}/selected.db"
     store = Store(url=db_url)

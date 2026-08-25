@@ -13,7 +13,8 @@ from storage.db import Store
 
 
 @pytest.fixture
-async def client():
+async def client(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAGENT_AUTH_STATE_ROOT", str(tmp_path / "auth-states"))
     store = Store(url="sqlite+aiosqlite://")
     await store.init()
     repo = SQLModelRepository(store)
@@ -69,6 +70,7 @@ async def test_get_settings_default(client):
     assert r.status_code == 200
     assert r.json()["permission_mode"] == "trust"
     assert r.json()["login_setup_case_id"] is None
+    assert r.json()["auth_state"]["uploaded"] is False
 
 
 @pytest.mark.asyncio
@@ -100,6 +102,50 @@ async def test_update_settings_rejects_login_case_outside_suite(client, case_id)
     )
     assert r.status_code == 400
     assert "当前 Suite" in r.json()["detail"]
+
+
+@pytest.mark.asyncio
+async def test_upload_and_clear_suite_auth_state(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("TAGENT_AUTH_STATE_ROOT", str(tmp_path / "auth-states"))
+    state = {
+        "cookies": [
+            {
+                "name": "sid",
+                "value": "secret",
+                "domain": "x.com",
+                "path": "/",
+                "expires": -1,
+                "httpOnly": True,
+                "secure": True,
+                "sameSite": "Lax",
+            }
+        ],
+        "origins": [{"origin": "https://x.com", "localStorage": []}],
+    }
+
+    r = await client.post("/api/suites/sx/auth-state", json={"storage_state": state})
+    assert r.status_code == 200
+    assert r.json()["auth_state"]["uploaded"] is True
+
+    settings = await client.get("/api/suites/sx/settings")
+    assert settings.json()["auth_state"]["uploaded"] is True
+
+    r = await client.delete("/api/suites/sx/auth-state")
+    assert r.status_code == 200
+    assert r.json()["auth_state"]["uploaded"] is False
+
+
+@pytest.mark.asyncio
+async def test_upload_suite_auth_state_rejects_bad_shape(client, tmp_path, monkeypatch):
+    monkeypatch.setenv("TAGENT_AUTH_STATE_ROOT", str(tmp_path / "auth-states"))
+
+    r = await client.post(
+        "/api/suites/sx/auth-state",
+        json={"storage_state": {"cookies": "not-list"}},
+    )
+
+    assert r.status_code == 400
+    assert "cookies" in r.json()["detail"]
 
 
 @pytest.mark.asyncio

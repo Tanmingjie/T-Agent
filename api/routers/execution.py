@@ -22,6 +22,12 @@ from api.auth import require_suite_access
 from api.execution_worker import spawn_run
 from api.repository import get_suite_settings, resolve_effective_cases, set_suite_settings
 from input.models import TestSpec
+from storage.auth_state import (
+    delete_suite_auth_state,
+    has_suite_auth_state,
+    save_suite_auth_state,
+    suite_auth_state_meta,
+)
 
 router = APIRouter(tags=["execution"])
 
@@ -87,6 +93,10 @@ class QualityPreviewOptions(BaseModel):
 
 class MemoryUpdate(BaseModel):
     enabled: bool
+
+
+class AuthStateUpload(BaseModel):
+    storage_state: dict = Field(default_factory=dict)
 
 
 def _normalize_requested_case_ids(
@@ -313,11 +323,13 @@ async def preview_case_quality(
         case_ids=options.case_ids,
     )
     settings = await get_suite_settings(store, suite_id)
+    uploaded_auth_state = has_suite_auth_state(suite_id)
     try:
         cases, _ = resolve_effective_cases(
             all_cases,
             requested_case_ids=requested_case_ids,
             login_setup_case_id=settings.get("login_setup_case_id"),
+            skip_login_setup=uploaded_auth_state,
         )
     except ValueError as exc:
         status_code = (
@@ -357,11 +369,13 @@ async def preview_specs(
         case_ids=options.case_ids,
     )
     settings = await get_suite_settings(store, suite_id)
+    uploaded_auth_state = has_suite_auth_state(suite_id)
     try:
         cases, _ = resolve_effective_cases(
             all_cases,
             requested_case_ids=requested_case_ids,
             login_setup_case_id=settings.get("login_setup_case_id"),
+            skip_login_setup=uploaded_auth_state,
         )
     except ValueError as exc:
         status_code = (
@@ -408,11 +422,13 @@ async def trigger_run(
     if not all_cases:
         raise HTTPException(400, "Suite 没有用例，请先上传 Excel")
     settings = await get_suite_settings(store, suite_id)
+    uploaded_auth_state = has_suite_auth_state(suite_id)
     try:
         cases, _ = resolve_effective_cases(
             all_cases,
             requested_case_ids=requested_case_ids,
             login_setup_case_id=settings.get("login_setup_case_id"),
+            skip_login_setup=uploaded_auth_state,
         )
     except ValueError as exc:
         status_code = 404 if case_id and case_id not in {c.id for c in all_cases} else 400
@@ -600,7 +616,34 @@ async def stream_events(
 
 @router.get("/suites/{suite_id}/settings", dependencies=_suite_guard)
 async def get_settings(suite_id: str, store=Depends(get_store)):
-    return await get_suite_settings(store, suite_id)
+    settings = await get_suite_settings(store, suite_id)
+    settings["auth_state"] = suite_auth_state_meta(suite_id)
+    return settings
+
+
+@router.post("/suites/{suite_id}/auth-state", dependencies=_suite_guard)
+async def upload_auth_state(
+    suite_id: str,
+    body: AuthStateUpload,
+    repo=Depends(get_repo),
+):
+    suite = await repo.get_suite(suite_id)
+    if suite is None:
+        raise HTTPException(404, "Suite not found")
+    try:
+        meta = save_suite_auth_state(suite_id, body.storage_state)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "auth_state": meta}
+
+
+@router.delete("/suites/{suite_id}/auth-state", dependencies=_suite_guard)
+async def clear_auth_state(suite_id: str, repo=Depends(get_repo)):
+    suite = await repo.get_suite(suite_id)
+    if suite is None:
+        raise HTTPException(404, "Suite not found")
+    deleted = delete_suite_auth_state(suite_id)
+    return {"ok": True, "deleted": deleted, "auth_state": suite_auth_state_meta(suite_id)}
 
 
 class SettingsUpdate(BaseModel):

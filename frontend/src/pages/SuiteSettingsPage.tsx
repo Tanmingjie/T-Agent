@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { apiGet, apiPut, apiDelete } from "../api/client";
-import { Trash2, Check } from "lucide-react";
+import { apiGet, apiPut, apiPost, apiDelete } from "../api/client";
+import { Trash2, Check, Upload, X } from "lucide-react";
 
 interface SuiteResp {
   name: string;
@@ -13,6 +13,11 @@ interface SuiteSettings {
   permission_mode: string;
   parallelism: number;
   login_setup_case_id: string | null;
+  auth_state?: {
+    uploaded: boolean;
+    size: number;
+    updated_at: number | null;
+  };
 }
 
 function Row({ label, value }: { label: string; value: React.ReactNode }) {
@@ -30,6 +35,7 @@ export default function SuiteSettingsPage() {
   const [suite, setSuite] = useState<SuiteResp | null>(null);
   const [settings, setSettings] = useState<SuiteSettings | null>(null);
   const [saved, setSaved] = useState(false);
+  const [authBusy, setAuthBusy] = useState(false);
 
   useEffect(() => {
     apiGet<SuiteResp>(`/suites/${id}`)
@@ -66,6 +72,44 @@ export default function SuiteSettingsPage() {
     }
   }
 
+  async function uploadAuthState(file: File | null) {
+    if (!settings || !file) return;
+    setAuthBusy(true);
+    try {
+      const storageState = JSON.parse(await file.text());
+      const resp = await apiPost<{ auth_state: SuiteSettings["auth_state"] }>(
+        `/suites/${id}/auth-state`,
+        { storage_state: storageState },
+      );
+      setSettings({ ...settings, auth_state: resp.auth_state });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      alert("上传失败: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
+  async function clearAuthState() {
+    if (!settings) return;
+    setAuthBusy(true);
+    try {
+      const resp = await apiDelete(`/suites/${id}/auth-state`);
+      setSettings({
+        ...settings,
+        auth_state: { uploaded: false, size: 0, updated_at: null },
+      });
+      void resp;
+      setSaved(true);
+      setTimeout(() => setSaved(false), 1500);
+    } catch (e) {
+      alert("清除失败: " + (e instanceof Error ? e.message : String(e)));
+    } finally {
+      setAuthBusy(false);
+    }
+  }
+
   async function remove() {
     if (
       !window.confirm(
@@ -80,6 +124,8 @@ export default function SuiteSettingsPage() {
       alert("删除失败: " + (e instanceof Error ? e.message : String(e)));
     }
   }
+
+  const authState = settings?.auth_state;
 
   return (
     <div>
@@ -151,6 +197,50 @@ export default function SuiteSettingsPage() {
               </option>
             ))}
           </select>
+        </div>
+        <div className="flex items-center justify-between px-5 py-4 border-t border-gray-100">
+          <div>
+            <p className="text-sm font-medium text-surface-900">上传登录态</p>
+            <p className="text-xs text-gray-500 mt-0.5">
+              已上传时执行会直接加载 storageState，并跳过登录准备用例。
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <span
+              className={`text-xs ${
+                authState?.uploaded
+                  ? "text-brand-700"
+                  : "text-gray-400"
+              }`}
+            >
+              {authState?.uploaded
+                ? `已上传 ${Math.max(1, Math.round((authState.size || 0) / 1024))} KB`
+                : "未上传"}
+            </span>
+            <label className="inline-flex items-center gap-1.5 border border-gray-300 text-surface-700 px-3 py-1.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors cursor-pointer">
+              <Upload size={15} /> 上传
+              <input
+                type="file"
+                accept="application/json,.json"
+                className="hidden"
+                disabled={authBusy || !settings}
+                onChange={(e) => {
+                  void uploadAuthState(e.target.files?.[0] ?? null);
+                  e.currentTarget.value = "";
+                }}
+              />
+            </label>
+            {authState?.uploaded && (
+              <button
+                type="button"
+                onClick={clearAuthState}
+                disabled={authBusy}
+                className="inline-flex items-center gap-1.5 border border-gray-300 text-gray-600 px-3 py-1.5 rounded-md text-sm font-medium hover:bg-gray-50 transition-colors disabled:opacity-50"
+              >
+                <X size={15} /> 清除
+              </button>
+            )}
+          </div>
         </div>
       </div>
 

@@ -74,6 +74,7 @@ async def execute_run(
     from harness.midscene_agent import MidsceneCaseAgent
     from harness.orchestrator import Orchestrator
     from input.models import ExecutionRecord, TestSpec
+    from storage.auth_state import has_suite_auth_state, suite_auth_state_path
     from storage.db import Store
 
     store = Store(url=db_url)
@@ -117,12 +118,14 @@ async def execute_run(
         llm_config = await store.get_llm_config(suite.project_id) if suite.project_id else None
         settings_row = await get_suite_settings(store, suite_id)
         parallelism = int(settings_row.get("parallelism", 1))
+        uploaded_auth_state = has_suite_auth_state(suite_id)
         cases, login_setup_case = resolve_effective_cases(
             all_cases,
             requested_case_ids=requested_case_ids,
             login_setup_case_id=settings_row.get("login_setup_case_id"),
+            skip_login_setup=uploaded_auth_state,
         )
-        storage_state_path = None
+        storage_state_path = suite_auth_state_path(suite_id) if uploaded_auth_state else None
         if login_setup_case is not None:
             auth_temp_dir = tempfile.TemporaryDirectory(prefix=f"t-agent-auth-{run_id}-")
             storage_state_path = Path(auth_temp_dir.name).resolve() / "storage-state.json"

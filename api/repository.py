@@ -350,6 +350,7 @@ def resolve_effective_cases(
     *,
     requested_case_ids: list[str] | None = None,
     login_setup_case_id: str | None = None,
+    skip_login_setup: bool = False,
 ) -> tuple[list[TestCase], TestCase | None]:
     """Resolve the cases that belong to one run, with login setup first."""
     by_id = {case.id: case for case in cases}
@@ -365,6 +366,9 @@ def resolve_effective_cases(
             raise ValueError(f"用例 {', '.join(missing)} 不存在于该套件")
         selected = set(requested_case_ids)
         requested = [case for case in cases if case.id in selected]
+
+    if skip_login_setup and login_setup_case_id:
+        return [case for case in requested if case.id != login_setup_case_id], None
 
     if not login_setup_case_id:
         return requested, None

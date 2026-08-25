@@ -27,11 +27,35 @@ Suite 可以指定一条现有用例作为“登录准备用例”。每次执�
 无需在多选列表中额外勾选；如果已经勾选，平台仍只执行一次。直接执行登录用例本身时，它也
 只执行一次。Run 的实际用例总数包含自动加入的登录准备用例。
 
+## 上传登录态
+
+如果登录准备用例会被手机验证阻断，可以在 Suite 的“设置”中上传本地准备好的 Playwright
+`storageState` JSON。上传后，平台执行该 Suite 时会直接加载这个状态文件，并跳过配置的登录
+准备用例。
+
+上传文件需要是 Playwright `browserContext.storageState()` 导出的 JSON，至少包含：
+
+- `cookies`: Cookie 数组。通常要同时包含业务系统域名和统一登录/SSO 域名。
+- `origins`: 各域名的 localStorage/IndexedDB 状态数组；没有 localStorage 时可以为空数组。
+
+不需要上传用户名和密码。`storageState` 不包含 `sessionStorage`；如果系统只把登录凭据放在
+`sessionStorage`，需要后续扩展单独的导出/恢复逻辑，或改用持久浏览器 Profile。
+
+本地导出方式：
+
+```powershell
+node scripts/export_storage_state.js --url https://your-system.example/login --out storage/auth-states/your-system.json
+```
+
+脚本会打开一个可见浏览器窗口。手动完成用户名、密码和手机验证，确认已经进入系统首页后，
+回到终端按回车，脚本会导出可上传的 `storageState` JSON。
+
 ## 执行规则
 
 - 登录用例成功后，平台捕获 Playwright `storageState`，包含 Cookie、localStorage 和 IndexedDB。
 - 每条业务用例仍使用独立 BrowserContext，只加载相同的初始登录状态，不共享页面运行副作用。
 - 登录用例失败或认证状态捕获失败时，业务用例不会启动，结果中会标记为“未执行”。
 - 状态仅在当前 Run 内有效，Run 完成、失败、中止或异常后都会删除，不跨 Run 复用。
+- 上传登录态保存在服务器 `TAGENT_AUTH_STATE_ROOT` 目录下，跨 Run 复用；清除上传态后恢复原执行规则。
 - `storageState` 不包含 `sessionStorage`。如果系统只在 `sessionStorage` 中保存登录凭据，当前能力
   无法复用该登录状态。
